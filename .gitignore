@@ -1,0 +1,12 @@
+node_modules/
+.local-docs/
+AGENTS.md
+openspec/
+config/config.yaml
+.claude/
+.codex/
+.cursor/
+.gemini/
+.kilocode/
+.kiro/
+.opencode/

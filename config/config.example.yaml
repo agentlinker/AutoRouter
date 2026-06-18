@@ -1,0 +1,85 @@
+server:
+  host: 127.0.0.1
+  port: 8811
+  request_timeout_ms: 120000
+  gateway_token_env: AUTO_ROUTER_TOKEN
+
+defaults:
+  model: auto
+  policy: balanced
+  privacy_level: normal
+
+trace:
+  directory: /tmp/autorouter-traces
+  log_prompts: false
+
+providers:
+  openrouter:
+    type: openrouter
+    base_url: https://openrouter.ai/api/v1
+    trust_level: medium
+    privacy_level: normal
+    usage_trust: medium
+    accounts:
+      - id: openrouter-main
+        account_type: api_key
+        api_key_env: OPENROUTER_API_KEY
+
+  relay-a:
+    type: openai_compatible
+    base_url: https://relay-a.example.com/v1
+    trust_level: low
+    privacy_level: public_only
+    usage_trust: low
+    accounts:
+      - id: relay-a-main
+        account_type: api_key
+        api_key_env: RELAY_A_API_KEY
+        quota:
+          monthly_usd_limit: 5
+
+  local-ollama:
+    type: ollama
+    base_url: http://127.0.0.1:11434
+    trust_level: high
+    privacy_level: private
+    usage_trust: high
+    accounts:
+      - id: local
+        account_type: local_model
+
+models:
+  auto:
+    policy: balanced
+    candidates:
+      - provider: openrouter
+        account: openrouter-main
+        model: anthropic/claude-sonnet-4
+      - provider: relay-a
+        account: relay-a-main
+        model: deepseek-chat
+      - provider: local-ollama
+        account: local
+        model: qwen2.5-coder:32b
+
+policies:
+  balanced:
+    min_trust_level: medium
+    allow_public_only_provider: false
+    fallback_enabled: true
+    sticky_session: true
+
+prices:
+  openrouter:
+    anthropic/claude-sonnet-4:
+      input_per_1m: 3
+      output_per_1m: 15
+      source: openrouter
+      confidence: medium
+
+  relay-a:
+    deepseek-chat:
+      input_per_1m: 0.5
+      output_per_1m: 1.5
+      source: manual
+      confidence: low

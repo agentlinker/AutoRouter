@@ -1,0 +1,29 @@
+{
+  "name": "auto-router",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local trusted model provider router for agent clients.",
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "build": "tsup src/main.ts --format esm --dts --clean",
+    "start": "node dist/main.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "fastify": "^5.0.0",
+    "pino": "^9.0.0",
+    "undici": "^7.0.0",
+    "yaml": "^2.6.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
