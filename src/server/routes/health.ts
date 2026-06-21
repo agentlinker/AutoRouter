@@ -7,7 +7,7 @@ export async function registerHealthRoute(
   fastify: FastifyInstance,
   state: RouterState
 ) {
-  fastify.get("/v1/auto-router/health", async () => {
+  fastify.get("/v1/autorouter/health", async () => {
     const checkedEndpoints = await Promise.all(
       state.endpoints.map(async (endpointState) => {
         const endpointConfig = state.config.endpoints[endpointState.id];
@@ -19,26 +19,32 @@ export async function registerHealthRoute(
           return endpointState;
         }
 
-        const accountConfig = endpointConfig.accounts.find(
-          (account) => account.id === accountState.id
-        );
-        const apiKey = accountConfig?.api_key_env
-          ? process.env[accountConfig.api_key_env]
+        const accountConfig = state.config.accounts[accountState.id];
+        const apiKey = accountConfig?.credential_env
+          ? process.env[accountConfig.credential_env]
           : undefined;
-        const adapter = state.adapters.get(endpointConfig.protocol);
+        const adapter = state.adapters.get(endpointConfig.adapter);
+        const providerState = state.providers.find(
+          (provider) => provider.id === endpointState.provider_id
+        );
+        const platformState = state.platforms.find(
+          (platform) => platform.id === endpointState.platform_id
+        );
+        const healthModel = Object.entries(state.config.models).find(
+          ([, model]) => model.endpoint === endpointState.id
+        );
         let healthResult: HealthResult = { status: "down" };
 
-        try {
+        if (providerState && platformState && healthModel) {
           healthResult = await adapter.healthCheck({
-            endpointId: endpointState.id,
-            platformId: endpointConfig.platform,
-            accountId: accountState.id,
-            model: "health-check",
-            endpointConfig,
-            apiKey
+            platform: platformState,
+            provider: providerState,
+            endpoint: endpointState,
+            account: accountState,
+            modelId: healthModel[0],
+            model: healthModel[1],
+            credential: apiKey
           });
-        } catch {
-          healthResult = { status: "down" };
         }
 
         endpointState.health = healthResult.status;

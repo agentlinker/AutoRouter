@@ -31,18 +31,18 @@ export class OpenRouterAdapter implements ProviderAdapter {
       "http-referer": "https://autorouter.local"
     };
 
-    if (target.apiKey) {
-      headers.authorization = `Bearer ${target.apiKey}`;
+    if (target.credential) {
+      headers.authorization = `Bearer ${target.credential}`;
     }
 
     let response;
     try {
-      response = await request(`${target.endpointConfig.base_url}/chat/completions`, {
+      response = await request(`${target.endpoint.base_url}/chat/completions`, {
         method: "POST",
         headers,
         body: JSON.stringify({
           ...requestBody,
-          model: target.model
+          model: target.model.model_name
         })
       });
     } catch (error) {

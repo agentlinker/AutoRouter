@@ -1,8 +1,9 @@
 node_modules/
-.local-docs/
+plan/
 AGENTS.md
 openspec/
 config/config.yaml
+data/
 .claude/
 .codex/
 .cursor/

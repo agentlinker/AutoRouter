@@ -21,6 +21,7 @@ async function main() {
     config,
     logger,
     platforms: registry.platforms,
+    providers: registry.providers,
     endpoints: registry.endpoints,
     accounts: registry.accounts,
     priceTable,
@@ -35,7 +36,7 @@ async function main() {
     port: config.server.port
   });
 
-  logger.info({ address }, "autorouter listening");
+  logger.info({ address }, "AutoRouter listening");
 }
 
 main().catch((error) => {

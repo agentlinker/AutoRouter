@@ -1,8 +1,58 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { MockAgent, setGlobalDispatcher } from "undici";
 
 import { OpenAiCompatibleAdapter } from "../../src/providers/openaiCompatible.js";
 import { HttpError } from "../../src/utils/httpErrors.js";
+
+function createRouteTarget(baseUrl: string) {
+  return {
+    platform: {
+      id: "openai",
+      protocol: "openai"
+    },
+    provider: {
+      id: "demo",
+      display_name: "Demo",
+      trust_level: "medium",
+      privacy_level: "normal",
+      usage_trust: "medium"
+    },
+    endpoint: {
+      id: "demo-openai",
+      provider_id: "demo",
+      platform_id: "openai",
+      adapter: "openai_compatible",
+      base_url: baseUrl,
+      enabled: true,
+      capabilities: {
+        streaming: true,
+        tools: true,
+        json_mode: true
+      },
+      health: "unknown" as const,
+      recent_error_count: 0
+    },
+    account: {
+      id: "acc",
+      endpoint_id: "demo-openai",
+      account_type: "api_key",
+      enabled: true,
+      available: true,
+      recent_error_count: 0
+    },
+    modelId: "demo-model",
+    model: {
+      endpoint: "demo-openai",
+      model_name: "gpt-test",
+      capabilities: {
+        streaming: true,
+        tools: true,
+        json_mode: true
+      }
+    },
+    credential: "test"
+  };
+}
 
 describe("OpenAiCompatibleAdapter", () => {
   it("maps rate limit responses to retryable provider_rate_limited", async () => {
@@ -31,29 +81,10 @@ describe("OpenAiCompatibleAdapter", () => {
           messages: [{ role: "user", content: "hello" }],
           stream: false,
           tools: [],
-          metadata: {}
+          metadata: {},
+          context_tokens_est: 10
         },
-        {
-          endpointId: "demo-openai",
-          platformId: "demo",
-          accountId: "acc",
-          model: "gpt-test",
-          endpointConfig: {
-            platform: "demo",
-            protocol: "openai_compatible",
-            base_url: "https://adapter.example.com/v1",
-            enabled: true,
-            accounts: [
-              {
-                id: "acc",
-                account_type: "api_key",
-                api_key_env: "DEMO_API_KEY",
-                enabled: true
-              }
-            ]
-          },
-          apiKey: "test"
-        }
+        createRouteTarget("https://adapter.example.com/v1")
       )
     ).rejects.toMatchObject({
       code: "provider_rate_limited",
@@ -89,29 +120,10 @@ describe("OpenAiCompatibleAdapter", () => {
           messages: [{ role: "user", content: "hello" }],
           stream: false,
           tools: [],
-          metadata: {}
+          metadata: {},
+          context_tokens_est: 10
         },
-        {
-          endpointId: "demo-openai",
-          platformId: "demo",
-          accountId: "acc",
-          model: "gpt-test",
-          endpointConfig: {
-            platform: "demo",
-            protocol: "openai_compatible",
-            base_url: "https://adapter-auth.example.com/v1",
-            enabled: true,
-            accounts: [
-              {
-                id: "acc",
-                account_type: "api_key",
-                api_key_env: "DEMO_API_KEY",
-                enabled: true
-              }
-            ]
-          },
-          apiKey: "test"
-        }
+        createRouteTarget("https://adapter-auth.example.com/v1")
       )
     ).rejects.toMatchObject({
       code: "provider_auth_failed",
@@ -131,29 +143,10 @@ describe("OpenAiCompatibleAdapter", () => {
           messages: [{ role: "user", content: "hello" }],
           stream: false,
           tools: [],
-          metadata: {}
+          metadata: {},
+          context_tokens_est: 10
         },
-        {
-          endpointId: "demo-openai",
-          platformId: "demo",
-          accountId: "acc",
-          model: "gpt-test",
-          endpointConfig: {
-            platform: "demo",
-            protocol: "openai_compatible",
-            base_url: "http://127.0.0.1:65534/v1",
-            enabled: true,
-            accounts: [
-              {
-                id: "acc",
-                account_type: "api_key",
-                api_key_env: "DEMO_API_KEY",
-                enabled: true
-              }
-            ]
-          },
-          apiKey: "test"
-        }
+        createRouteTarget("http://127.0.0.1:65534/v1")
       )
     ).rejects.toMatchObject({
       code: "provider_unreachable",

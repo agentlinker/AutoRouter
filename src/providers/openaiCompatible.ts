@@ -27,9 +27,9 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
 
   public async healthCheck(target: RouteTarget): Promise<HealthResult> {
     try {
-      const response = await request(`${target.endpointConfig.base_url}/models`, {
+      const response = await request(`${target.endpoint.base_url}/models`, {
         method: "GET",
-        headers: buildHeaders(target.apiKey)
+        headers: buildHeaders(target.credential)
       });
 
       if (response.statusCode >= 200 && response.statusCode < 400) {
@@ -51,14 +51,14 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
   ): Promise<ProviderResponse> {
     const upstreamPayload = {
       ...requestBody,
-      model: target.model
+      model: target.model.model_name
     };
 
     let response;
     try {
-      response = await request(`${target.endpointConfig.base_url}/chat/completions`, {
+      response = await request(`${target.endpoint.base_url}/chat/completions`, {
         method: "POST",
-        headers: buildHeaders(target.apiKey),
+        headers: buildHeaders(target.credential),
         body: JSON.stringify(upstreamPayload)
       });
     } catch (error) {
@@ -123,15 +123,15 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
   ): AsyncIterable<ProviderStreamChunk> {
     const upstreamPayload = {
       ...requestBody,
-      model: target.model,
+      model: target.model.model_name,
       stream: true
     };
 
     let response;
     try {
-      response = await request(`${target.endpointConfig.base_url}/chat/completions`, {
+      response = await request(`${target.endpoint.base_url}/chat/completions`, {
         method: "POST",
-        headers: buildHeaders(target.apiKey),
+        headers: buildHeaders(target.credential),
         body: JSON.stringify(upstreamPayload)
       });
     } catch (error) {

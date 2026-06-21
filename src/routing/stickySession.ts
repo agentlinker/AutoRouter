@@ -1,7 +1,10 @@
 export interface StickyRoute {
+  routeId: string;
+  platformId: string;
+  providerId: string;
   endpointId: string;
   accountId: string;
-  model: string;
+  modelId: string;
 }
 
 export class StickySessionStore {

@@ -34,4 +34,5 @@ export interface NormalizedChatRequest {
   temperature?: number;
   max_tokens?: number;
   metadata: Record<string, unknown>;
+  context_tokens_est: number;
 }

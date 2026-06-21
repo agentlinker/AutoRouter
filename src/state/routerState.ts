@@ -8,6 +8,11 @@ import type { TraceStore } from "../trace/traceStore.js";
 
 export interface PlatformRuntimeState {
   id: string;
+  protocol: string;
+}
+
+export interface ProviderRuntimeState {
+  id: string;
   display_name: string;
   trust_level: string;
   privacy_level: string;
@@ -16,9 +21,16 @@ export interface PlatformRuntimeState {
 
 export interface EndpointRuntimeState {
   id: string;
+  provider_id: string;
   platform_id: string;
-  protocol: string;
+  adapter: string;
+  base_url: string;
   enabled: boolean;
+  capabilities: {
+    streaming: boolean;
+    tools: boolean;
+    json_mode: boolean;
+  };
   health: "unknown" | "healthy" | "degraded" | "down";
   recent_error_count: number;
 }
@@ -42,6 +54,7 @@ export interface RouterState {
   config: RouterConfig;
   logger: pino.Logger;
   platforms: PlatformRuntimeState[];
+  providers: ProviderRuntimeState[];
   endpoints: EndpointRuntimeState[];
   accounts: AccountRuntimeState[];
   priceTable: PriceTable;

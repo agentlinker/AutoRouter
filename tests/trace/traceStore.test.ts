@@ -25,6 +25,7 @@ describe("TraceStore", () => {
       session_id: "sess-1",
       request: {
         model: "auto",
+        normalized_model: "auto",
         prompt_hash: "sha256:abc",
         stream: false,
         has_tools: false,
@@ -63,6 +64,7 @@ describe("TraceStore", () => {
     const latest = store.latest();
     expect(latest?.trace_id).toBe("trace-1");
     expect(latest?.request.prompt_hash).toBe("sha256:abc");
+    expect(latest?.request.normalized_model).toBe("auto");
     expect(latest?.policy_hits).toContain("session_sticky");
     expect(latest?.execution.status).toBe("success");
     expect(JSON.stringify(latest)).not.toContain("hello world");
@@ -76,6 +78,7 @@ describe("TraceStore", () => {
       session_id: null,
       request: {
         model: "auto",
+        normalized_model: "auto",
         prompt_hash: "sha256:def",
         stream: false,
         has_tools: false,

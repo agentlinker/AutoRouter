@@ -10,76 +10,136 @@ defaults:
   privacy_level: normal
 
 trace:
-  directory: /tmp/autorouter-traces
+  directory: ./data/traces
   log_prompts: false
 
 providers:
   openrouter:
-    type: openrouter
-    base_url: https://openrouter.ai/api/v1
+    display_name: OpenRouter
     trust_level: medium
     privacy_level: normal
     usage_trust: medium
+    protocol: openai
+    adapter: openrouter
+    base_url: https://openrouter.ai/api/v1
+    capabilities:
+      streaming: true
+      tools: true
+      json_mode: true
     accounts:
-      - id: openrouter-main
-        account_type: api_key
-        api_key_env: OPENROUTER_API_KEY
+      - id: main
+        credential_env: OPENROUTER_API_KEY
+    models:
+      - id: sonnet
+        model_name: anthropic/claude-sonnet-4
+        context_window: 200000
+        capabilities:
+          streaming: true
+          tools: true
+          json_mode: true
+        pricing:
+          input_per_1m: 3
+          output_per_1m: 15
+          source: openrouter
+          confidence: medium
 
   relay-a:
-    type: openai_compatible
-    base_url: https://relay-a.example.com/v1
+    display_name: Relay A
     trust_level: low
     privacy_level: public_only
     usage_trust: low
+    protocol: openai
+    adapter: openai_compatible
+    base_url: https://relay-a.example.com/v1
+    capabilities:
+      streaming: true
+      tools: true
+      json_mode: true
     accounts:
-      - id: relay-a-main
-        account_type: api_key
-        api_key_env: RELAY_A_API_KEY
+      - id: main
+        credential_env: RELAY_A_API_KEY
         quota:
           monthly_usd_limit: 5
+    models:
+      - id: deepseek
+        model_name: deepseek-chat
+        context_window: 64000
+        capabilities:
+          streaming: true
+          tools: true
+          json_mode: true
+        pricing:
+          input_per_1m: 0.5
+          output_per_1m: 1.5
+          source: manual
+          confidence: low
+
+  anthropic-direct:
+    display_name: Anthropic Direct
+    trust_level: high
+    privacy_level: normal
+    usage_trust: high
+    protocol: anthropic
+    adapter: anthropic
+    base_url: https://api.anthropic.com/v1
+    capabilities:
+      streaming: true
+      tools: true
+      json_mode: false
+    accounts:
+      - id: main
+        credential_env: ANTHROPIC_API_KEY
+    models:
+      - id: sonnet
+        model_name: claude-sonnet-4-20250514
+        context_window: 200000
+        capabilities:
+          streaming: true
+          tools: true
+          json_mode: false
+        pricing:
+          input_per_1m: 3
+          output_per_1m: 15
+          source: official
+          confidence: high
 
   local-ollama:
-    type: ollama
-    base_url: http://127.0.0.1:11434
+    display_name: Local Ollama
     trust_level: high
     privacy_level: private
     usage_trust: high
+    protocol: openai
+    adapter: ollama
+    base_url: http://127.0.0.1:11434
+    capabilities:
+      streaming: true
+      tools: false
+      json_mode: false
     accounts:
       - id: local
         account_type: local_model
+    models:
+      - id: qwen-local
+        model_name: qwen2.5-coder:32b
+        context_window: 32000
+        capabilities:
+          streaming: true
+          tools: false
+          json_mode: false
 
-models:
+routes:
   auto:
     policy: balanced
     candidates:
       - provider: openrouter
-        account: openrouter-main
-        model: anthropic/claude-sonnet-4
+        account: main
+        model: sonnet
       - provider: relay-a
-        account: relay-a-main
-        model: deepseek-chat
+        account: main
+        model: deepseek
+      - provider: anthropic-direct
+        account: main
+        model: sonnet
       - provider: local-ollama
         account: local
-        model: qwen2.5-coder:32b
-
-policies:
-  balanced:
-    min_trust_level: medium
-    allow_public_only_provider: false
-    fallback_enabled: true
-    sticky_session: true
-
-prices:
-  openrouter:
-    anthropic/claude-sonnet-4:
-      input_per_1m: 3
-      output_per_1m: 15
-      source: openrouter
-      confidence: medium
-
-  relay-a:
-    deepseek-chat:
-      input_per_1m: 0.5
-      output_per_1m: 1.5
-      source: manual
-      confidence: low
+        model: qwen-local

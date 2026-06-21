@@ -8,17 +8,16 @@ export interface PriceEstimate {
 export class PriceTable {
   public constructor(private readonly config: RouterConfig) {}
 
-  private getPriceEntry(providerId: string, modelId: string): PriceEntryConfig | null {
-    return this.config.prices[providerId]?.[modelId] ?? null;
+  private getPriceEntry(modelId: string): PriceEntryConfig | null {
+    return this.config.models[modelId]?.pricing ?? null;
   }
 
   public estimateCost(
-    providerId: string,
     modelId: string,
     inputTokens?: number,
     outputTokens?: number
   ): PriceEstimate {
-    const entry = this.getPriceEntry(providerId, modelId);
+    const entry = this.getPriceEntry(modelId);
     if (!entry || (!inputTokens && !outputTokens)) {
       return {
         estimatedUsd: null,

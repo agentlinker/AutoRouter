@@ -4,23 +4,32 @@ import type { RouterConfig } from "../config/schema.js";
 import type {
   AccountRuntimeState,
   EndpointRuntimeState,
-  PlatformRuntimeState
+  PlatformRuntimeState,
+  ProviderRuntimeState
 } from "../state/routerState.js";
 import { HttpError } from "../utils/httpErrors.js";
 import type { StickyRoute } from "./stickySession.js";
 
 export interface SelectedRoute {
+  requestedModel: string;
+  normalizedModel: string;
+  routeId: string;
   platform: PlatformRuntimeState;
+  provider: ProviderRuntimeState;
   endpoint: EndpointRuntimeState;
   account: AccountRuntimeState;
+  modelId: string;
   model: string;
   candidateIndex: number;
 }
 
 export interface CandidateEvaluation {
-  endpoint: string;
+  routeId: string;
   platform: string;
+  provider: string;
+  endpoint: string;
   account: string;
+  modelId: string;
   model: string;
   filteredReason?: string;
   score?: number;
@@ -39,14 +48,15 @@ function trustLevelScore(level: string): number {
   }
 }
 
-function canUseProvider(
+function canUseCandidate(
   config: RouterConfig,
-  platform: PlatformRuntimeState,
+  provider: ProviderRuntimeState,
   endpoint: EndpointRuntimeState,
   account: AccountRuntimeState,
-  candidateModel: string,
+  modelContextWindow: number | undefined,
   hasTools: boolean,
   requiresJson: boolean,
+  requestedContextTokens: number,
   privacyLevel: string,
   minTrustLevel: string
 ): string | null {
@@ -68,15 +78,15 @@ function canUseProvider(
 
   if (
     privacyLevel !== "public_only" &&
-    platform.privacy_level === "public_only" &&
+    provider.privacy_level === "public_only" &&
     !config.policies[config.defaults.policy]?.allow_public_only_provider
   ) {
     return "privacy_level_not_allowed";
   }
 
   if (
-    (minTrustLevel === "high" && platform.trust_level !== "high") ||
-    (minTrustLevel === "medium" && platform.trust_level === "low")
+    (minTrustLevel === "high" && provider.trust_level !== "high") ||
+    (minTrustLevel === "medium" && provider.trust_level === "low")
   ) {
     return "trust_level_not_allowed";
   }
@@ -85,11 +95,15 @@ function canUseProvider(
     return "quota_exhausted";
   }
 
-  if (hasTools && candidateModel.includes("deepseek")) {
+  if (modelContextWindow !== undefined && requestedContextTokens > modelContextWindow) {
+    return "context_window_exceeded";
+  }
+
+  if (hasTools && !endpoint.capabilities.tools) {
     return "tool_capability_not_supported";
   }
 
-  if (requiresJson && candidateModel.includes("ollama")) {
+  if (requiresJson && !endpoint.capabilities.json_mode) {
     return "json_capability_not_supported";
   }
 
@@ -101,21 +115,38 @@ export function selectRoute(
   modelCatalog: ModelCatalog,
   _priceTable: PriceTable,
   platforms: PlatformRuntimeState[],
+  providers: ProviderRuntimeState[],
   endpoints: EndpointRuntimeState[],
   accounts: AccountRuntimeState[],
-  modelId: string,
+  routeId: string,
   hasTools: boolean,
   requiresJson: boolean,
+  requestedContextTokens: number,
   privacyLevel: string,
   stickyRoute?: StickyRoute | null
 ): {
   selected: SelectedRoute;
+  requestedModel: string;
+  normalizedModel: string;
   candidates: CandidateEvaluation[];
   filtered: CandidateEvaluation[];
 } {
-  const candidates = modelCatalog.getCandidates(modelId);
+  const resolvedTarget = modelCatalog.resolveRequestTarget(routeId);
+  if (!resolvedTarget) {
+    throw new HttpError(400, "model_not_found", `Unknown route or model: ${routeId}`);
+  }
+
+  const candidates = resolvedTarget.candidates;
   if (candidates.length === 0) {
-    throw new HttpError(400, "model_not_found", `Unknown model or alias: ${modelId}`);
+    if (resolvedTarget.mode === "provider_model") {
+      throw new HttpError(
+        400,
+        "provider_model_not_found",
+        `Unknown provider/model target: ${routeId}`
+      );
+    }
+
+    throw new HttpError(400, "model_not_found", `Unknown route or model: ${routeId}`);
   }
 
   const evaluations: CandidateEvaluation[] = [];
@@ -126,40 +157,49 @@ export function selectRoute(
 
   for (const [index, candidate] of candidates.entries()) {
     const endpoint = endpoints.find((item) => item.id === candidate.endpoint);
+    const provider = endpoint
+      ? providers.find((item) => item.id === endpoint.provider_id)
+      : undefined;
     const platform = endpoint
       ? platforms.find((item) => item.id === endpoint.platform_id)
       : undefined;
-    const account = accounts.find(
-      (item) => item.endpoint_id === candidate.endpoint && item.id === candidate.account
-    );
+    const account = accounts.find((item) => item.id === candidate.account);
+    const modelDefinition = modelCatalog.resolveModel(candidate.modelId);
 
-    if (!endpoint || !platform || !account) {
+    if (!endpoint || !provider || !platform || !account || !modelDefinition) {
       filtered.push({
+        routeId: candidate.routeId,
+        platform: platform?.id ?? "unknown",
+        provider: provider?.id ?? "unknown",
         endpoint: candidate.endpoint,
-        platform: endpoint?.platform_id ?? "unknown",
         account: candidate.account,
+        modelId: candidate.modelId,
         model: candidate.model,
         filteredReason: "candidate_not_found"
       });
       continue;
     }
 
-    const filteredReason = canUseProvider(
+    const filteredReason = canUseCandidate(
       config,
-      platform,
+      provider,
       endpoint,
       account,
-      candidate.model,
+      modelDefinition.context_window,
       hasTools,
       requiresJson,
+      requestedContextTokens,
       privacyLevel,
       minTrustLevel
     );
     if (filteredReason) {
       filtered.push({
-        endpoint: candidate.endpoint,
+        routeId: candidate.routeId,
         platform: platform.id,
+        provider: provider.id,
+        endpoint: endpoint.id,
         account: candidate.account,
+        modelId: candidate.modelId,
         model: candidate.model,
         filteredReason
       });
@@ -168,36 +208,47 @@ export function selectRoute(
 
     const stickyScore =
       stickyRoute &&
+      stickyRoute.routeId === candidate.routeId &&
+      stickyRoute.platformId === platform.id &&
+      stickyRoute.providerId === provider.id &&
       stickyRoute.endpointId === endpoint.id &&
       stickyRoute.accountId === account.id &&
-      stickyRoute.model === candidate.model
+      stickyRoute.modelId === candidate.modelId
         ? 10
         : 0;
     const quotaPressurePenalty =
       account.quota?.remaining_usd !== undefined && account.quota.remaining_usd < 1 ? 10 : 0;
     const recentErrorPenalty =
       endpoint.recent_error_count * 5 + account.recent_error_count * 5;
-    const healthScore = endpoint.health === "healthy" ? 30 : endpoint.health === "degraded" ? 15 : 20;
+    const healthScore =
+      endpoint.health === "healthy" ? 30 : endpoint.health === "degraded" ? 15 : 20;
     const score =
       healthScore +
-      trustLevelScore(platform.trust_level) * 20 +
+      trustLevelScore(provider.trust_level) * 20 +
       stickyScore -
       quotaPressurePenalty -
       recentErrorPenalty;
 
-    const evaluation = {
-      endpoint: candidate.endpoint,
+    evaluations.push({
+      routeId: candidate.routeId,
       platform: platform.id,
+      provider: provider.id,
+      endpoint: endpoint.id,
       account: candidate.account,
+      modelId: candidate.modelId,
       model: candidate.model,
       score,
       sticky: stickyScore > 0
-    };
-    evaluations.push(evaluation);
+    });
     passed.push({
+      routeId: candidate.routeId,
+      requestedModel: resolvedTarget.requested,
+      normalizedModel: resolvedTarget.normalized,
       platform,
+      provider,
       endpoint,
       account,
+      modelId: candidate.modelId,
       model: candidate.model,
       candidateIndex: index,
       score
@@ -212,6 +263,8 @@ export function selectRoute(
 
   return {
     selected: passed[0],
+    requestedModel: resolvedTarget.requested,
+    normalizedModel: resolvedTarget.normalized,
     candidates: evaluations,
     filtered
   };

@@ -1,6 +1,6 @@
-# auto-router
+# AutoRouter
 
-`auto-router` is a local model routing gateway for agent clients. It exposes an OpenAI-compatible API, routes requests across configured providers and accounts, records route traces, and explains routing decisions.
+`AutoRouter` is a local model routing gateway for agent clients. It exposes an OpenAI-compatible API, routes requests across configured providers and accounts, records route traces, and explains routing decisions.
 
 ## Current MVP
 
@@ -8,8 +8,8 @@ The current implementation includes:
 
 - Local `POST /v1/chat/completions`
 - Local `GET /v1/models`
-- Local `GET /v1/auto-router/health`
-- Local `GET /v1/auto-router/explain/latest`
+- Local `GET /v1/autorouter/health`
+- Local `GET /v1/autorouter/explain/latest`
 - OpenAI-compatible, OpenRouter, and Ollama adapters
 - Sticky sessions, fallback routing, trace logging, and basic cost estimation
 
@@ -26,6 +26,14 @@ The public template lives at:
 ```bash
 config/config.example.yaml
 ```
+
+This file currently reflects the target concept model draft documented in:
+
+```bash
+docs/concept-model.md
+```
+
+The implementation already follows parts of this structure, but the config schema is still converging toward the full draft.
 
 Create your local runtime config:
 
@@ -56,7 +64,7 @@ npm run dev
 ```bash
 curl -s \
   -H "Authorization: Bearer dev-token" \
-  http://127.0.0.1:8811/v1/auto-router/health
+  http://127.0.0.1:8811/v1/autorouter/health
 ```
 
 Expected:
@@ -101,24 +109,28 @@ Expected:
 
 - Returns a provider response body
 - Response headers include:
-  - `x-auto-router-trace-id`
-  - `x-auto-router-platform`
-  - `x-auto-router-endpoint`
-  - `x-auto-router-model`
-  - `x-auto-router-account`
+  - `x-autorouter-trace-id`
+  - `x-autorouter-normalized-model`
+
+Notes:
+
+- The gateway keeps response headers minimal by default.
+- Detailed routing internals such as provider, endpoint, account, fallback chain, and filter reasons are not exposed in response headers.
+- Use `x-autorouter-trace-id` with `GET /v1/autorouter/explain/latest` or local trace files for routing diagnostics.
 
 ### Explain Latest
 
 ```bash
 curl -s \
   -H "Authorization: Bearer dev-token" \
-  http://127.0.0.1:8811/v1/auto-router/explain/latest
+  http://127.0.0.1:8811/v1/autorouter/explain/latest
 ```
 
 Expected:
 
 - Returns the last trace id
-- Returns selected provider/model
+- Returns the original requested model and normalized model selector
+- Returns selected route details from the latest trace
 - Returns fallback history when the primary route failed
 
 ### Trace Privacy Check

@@ -6,11 +6,12 @@ export async function registerExplainRoute(
   fastify: FastifyInstance,
   traceStore: TraceStore
 ) {
-  fastify.get("/v1/auto-router/explain/latest", async () => {
+  fastify.get("/v1/autorouter/explain/latest", async () => {
     const latestTrace = traceStore.latest();
     if (!latestTrace) {
       return {
         trace_id: null,
+        request: null,
         selected: null,
         filtered: [],
         fallbacks: []
@@ -19,6 +20,10 @@ export async function registerExplainRoute(
 
       return {
         trace_id: latestTrace.trace_id,
+        request: {
+          model: latestTrace.request.model,
+          normalized_model: latestTrace.request.normalized_model
+        },
         selected: latestTrace.selected
           ? {
             endpoint: latestTrace.selected.endpoint,

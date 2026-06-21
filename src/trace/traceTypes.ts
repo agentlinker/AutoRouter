@@ -1,7 +1,10 @@
 export interface TraceCandidate {
+  route_id?: string;
   endpoint: string;
-  platform?: string;
+  platform: string;
+  provider?: string;
   account: string;
+  model_id?: string;
   model: string;
   reason?: string;
 }
@@ -12,6 +15,7 @@ export interface RouteTrace {
   session_id: string | null;
   request: {
     model: string;
+    normalized_model: string;
     prompt_hash: string;
     stream: boolean;
     has_tools: boolean;
@@ -20,9 +24,12 @@ export interface RouteTrace {
   candidates: TraceCandidate[];
   filtered: TraceCandidate[];
   selected: {
+    route_id?: string;
     endpoint: string;
     platform: string;
+    provider?: string;
     account_hash: string;
+    model_id?: string;
     model: string;
   } | null;
   policy_hits: string[];

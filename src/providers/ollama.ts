@@ -14,4 +14,12 @@ export class OllamaAdapter implements ProviderAdapter {
   ) {
     return this.delegate.chatCompletion(...args);
   }
+
+  public async *streamChatCompletion(
+    ...args: Parameters<NonNullable<OpenAiCompatibleAdapter["streamChatCompletion"]>>
+  ) {
+    for await (const chunk of this.delegate.streamChatCompletion!(...args)) {
+      yield chunk;
+    }
+  }
 }

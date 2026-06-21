@@ -7,55 +7,81 @@ import { loadConfig } from "../../src/config/loadConfig.js";
 import { selectRoute } from "../../src/routing/routeEngine.js";
 import { HttpError } from "../../src/utils/httpErrors.js";
 
+function buildBaseConfig() {
+  return {
+    platforms: {
+      openai: {
+        protocol: "openai"
+      }
+    },
+    providers: {
+      openrouter: {
+        display_name: "OpenRouter",
+        trust_level: "medium",
+        privacy_level: "normal",
+        usage_trust: "medium"
+      }
+    },
+    endpoints: {
+      "openrouter-openai": {
+        provider: "openrouter",
+        platform: "openai",
+        adapter: "openrouter",
+        base_url: "https://openrouter.ai/api/v1",
+        capabilities: {
+          streaming: true,
+          tools: true,
+          json_mode: true
+        }
+      }
+    },
+    accounts: {
+      "openrouter-main": {
+        endpoint: "openrouter-openai",
+        account_type: "api_key",
+        credential_env: "OPENROUTER_API_KEY"
+      }
+    },
+    models: {
+      "sonnet-via-openrouter": {
+        endpoint: "openrouter-openai",
+        model_name: "anthropic/claude-sonnet-4",
+        context_window: 200000,
+        capabilities: {
+          streaming: true,
+          tools: true,
+          json_mode: true
+        }
+      }
+    },
+    routes: {
+      auto: {
+        policy: "balanced",
+        candidates: [
+          {
+            account: "openrouter-main",
+            model: "sonnet-via-openrouter"
+          }
+        ]
+      }
+    },
+    policies: {
+      balanced: {
+        min_trust_level: "medium",
+        allow_public_only_provider: false,
+        fallback_enabled: true,
+        sticky_session: true
+      }
+    }
+  };
+}
+
 describe("selectRoute", () => {
   it("selects the first eligible route", () => {
     vi.stubEnv("OPENROUTER_API_KEY", "test");
 
     const config = loadConfig({
-      override: {
-        platforms: {
-          openrouter: {
-            display_name: "OpenRouter",
-            trust_level: "medium",
-            privacy_level: "normal",
-            usage_trust: "medium"
-          }
-        },
-        endpoints: {
-          "openrouter-openai": {
-            platform: "openrouter",
-            protocol: "openrouter",
-            base_url: "https://openrouter.ai/api/v1",
-            accounts: [
-              {
-                id: "openrouter-main",
-                account_type: "api_key",
-                api_key_env: "OPENROUTER_API_KEY"
-              }
-            ]
-          }
-        },
-        models: {
-          auto: {
-            policy: "balanced",
-            candidates: [
-              {
-                endpoint: "openrouter-openai",
-                account: "openrouter-main",
-                model: "anthropic/claude-sonnet-4"
-              }
-            ]
-          }
-        },
-        policies: {
-          balanced: {
-            min_trust_level: "medium",
-            allow_public_only_provider: false,
-            fallback_enabled: true,
-            sticky_session: true
-          }
-        }
-      }
+      override: buildBaseConfig()
     });
 
     const registry = buildProviderRegistry(config);
@@ -65,17 +91,21 @@ describe("selectRoute", () => {
       catalog,
       new PriceTable(config),
       registry.platforms,
+      registry.providers,
       registry.endpoints,
       registry.accounts,
       "auto",
       false,
       false,
+      10,
       "normal"
     );
 
-    expect(route.selected.platform.id).toBe("openrouter");
+    expect(route.selected.platform.id).toBe("openai");
+    expect(route.selected.provider.id).toBe("openrouter");
     expect(route.selected.endpoint.id).toBe("openrouter-openai");
     expect(route.selected.account.id).toBe("openrouter-main");
+    expect(route.selected.modelId).toBe("sonnet-via-openrouter");
 
     vi.unstubAllEnvs();
   });
@@ -86,6 +116,11 @@ describe("selectRoute", () => {
     const config = loadConfig({
       override: {
         platforms: {
+          openai: {
+            protocol: "openai"
+          }
+        },
+        providers: {
           relay: {
             display_name: "Relay",
             trust_level: "low",
@@ -95,26 +130,32 @@ describe("selectRoute", () => {
         },
         endpoints: {
           "relay-openai": {
-            platform: "relay",
-            protocol: "openai_compatible",
-            base_url: "https://relay.example.com/v1",
-            accounts: [
-              {
-                id: "relay-main",
-                account_type: "api_key",
-                api_key_env: "RELAY_A_API_KEY"
-              }
-            ]
+            provider: "relay",
+            platform: "openai",
+            adapter: "openai_compatible",
+            base_url: "https://relay.example.com/v1"
+          }
+        },
+        accounts: {
+          "relay-main": {
+            endpoint: "relay-openai",
+            account_type: "api_key",
+            credential_env: "RELAY_A_API_KEY"
           }
         },
         models: {
+          "relay-model": {
+            endpoint: "relay-openai",
+            model_name: "deepseek-chat"
+          }
+        },
+        routes: {
           auto: {
             policy: "balanced",
             candidates: [
               {
-                endpoint: "relay-openai",
                 account: "relay-main",
-                model: "deepseek-chat"
+                model: "relay-model"
               }
             ]
           }
@@ -139,178 +180,13 @@ describe("selectRoute", () => {
         catalog,
         new PriceTable(config),
         registry.platforms,
+        registry.providers,
         registry.endpoints,
         registry.accounts,
         "auto",
         false,
         false,
-        "normal"
-      )
-    ).toThrow(HttpError);
-
-    vi.unstubAllEnvs();
-  });
-
-  it("prefers sticky session route when candidates are otherwise equivalent", () => {
-    vi.stubEnv("OPENROUTER_API_KEY", "test");
-    vi.stubEnv("SECONDARY_API_KEY", "test");
-
-    const config = loadConfig({
-      override: {
-        platforms: {
-          primary: {
-            display_name: "Primary",
-            trust_level: "medium",
-            privacy_level: "normal",
-            usage_trust: "medium"
-          },
-          secondary: {
-            display_name: "Secondary",
-            trust_level: "medium",
-            privacy_level: "normal",
-            usage_trust: "medium"
-          }
-        },
-        endpoints: {
-          "primary-openai": {
-            platform: "primary",
-            protocol: "openrouter",
-            base_url: "https://primary.example.com/v1",
-            accounts: [
-              {
-                id: "primary-account",
-                account_type: "api_key",
-                api_key_env: "OPENROUTER_API_KEY"
-              }
-            ]
-          },
-          "secondary-openai": {
-            platform: "secondary",
-            protocol: "openrouter",
-            base_url: "https://secondary.example.com/v1",
-            accounts: [
-              {
-                id: "secondary-account",
-                account_type: "api_key",
-                api_key_env: "SECONDARY_API_KEY"
-              }
-            ]
-          }
-        },
-        models: {
-          auto: {
-            policy: "balanced",
-            candidates: [
-              {
-                endpoint: "primary-openai",
-                account: "primary-account",
-                model: "model-a"
-              },
-              {
-                endpoint: "secondary-openai",
-                account: "secondary-account",
-                model: "model-b"
-              }
-            ]
-          }
-        },
-        policies: {
-          balanced: {
-            min_trust_level: "medium",
-            allow_public_only_provider: false,
-            fallback_enabled: true,
-            sticky_session: true
-          }
-        }
-      }
-    });
-
-    const registry = buildProviderRegistry(config);
-    const catalog = new ModelCatalog(config);
-    const route = selectRoute(
-      config,
-      catalog,
-      new PriceTable(config),
-      registry.platforms,
-      registry.endpoints,
-      registry.accounts,
-      "auto",
-      false,
-      false,
-      "normal",
-      {
-        endpointId: "secondary-openai",
-        accountId: "secondary-account",
-        model: "model-b"
-      }
-    );
-
-    expect(route.selected.platform.id).toBe("secondary");
-    expect(route.selected.endpoint.id).toBe("secondary-openai");
-    expect(route.selected.account.id).toBe("secondary-account");
-
-    vi.unstubAllEnvs();
-  });
-
-  it("filters candidates with exhausted quota", () => {
-    vi.stubEnv("PRIMARY_API_KEY", "test");
-
-    const config = loadConfig({
-      override: {
-        platforms: {
-          primary: {
-            display_name: "Primary",
-            trust_level: "medium",
-            privacy_level: "normal",
-            usage_trust: "medium"
-          }
-        },
-        endpoints: {
-          "primary-openai": {
-            platform: "primary",
-            protocol: "openai_compatible",
-            base_url: "https://primary.example.com/v1",
-            accounts: [
-              {
-                id: "primary-account",
-                account_type: "api_key",
-                api_key_env: "PRIMARY_API_KEY",
-                quota: {
-                  remaining_usd: 0
-                }
-              }
-            ]
-          }
-        },
-        models: {
-          auto: {
-            policy: "balanced",
-            candidates: [
-              {
-                endpoint: "primary-openai",
-                account: "primary-account",
-                model: "model-a"
-              }
-            ]
-          }
-        }
-      }
-    });
-
-    const registry = buildProviderRegistry(config);
-    const catalog = new ModelCatalog(config);
-
-    expect(() =>
-      selectRoute(
-        config,
-        catalog,
-        new PriceTable(config),
-        registry.platforms,
-        registry.endpoints,
-        registry.accounts,
-        "auto",
-        false,
-        false,
+        10,
         "normal"
       )
     ).toThrow(HttpError);

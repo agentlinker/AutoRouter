@@ -1,13 +1,20 @@
-import type { EndpointConfig } from "../config/schema.js";
+import type { ModelDefinitionConfig } from "../config/schema.js";
 import type { NormalizedChatRequest } from "../routing/types.js";
+import type {
+  AccountRuntimeState,
+  EndpointRuntimeState,
+  PlatformRuntimeState,
+  ProviderRuntimeState
+} from "../state/routerState.js";
 
 export interface RouteTarget {
-  endpointId: string;
-  platformId: string;
-  accountId: string;
-  model: string;
-  endpointConfig: EndpointConfig;
-  apiKey?: string;
+  platform: PlatformRuntimeState;
+  provider: ProviderRuntimeState;
+  endpoint: EndpointRuntimeState;
+  account: AccountRuntimeState;
+  modelId: string;
+  model: ModelDefinitionConfig;
+  credential?: string;
 }
 
 export interface HealthResult {

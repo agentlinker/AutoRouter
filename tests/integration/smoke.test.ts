@@ -69,6 +69,11 @@ describe("local smoke", () => {
     const config = loadConfig({
       override: {
         platforms: {
+          openai: {
+            protocol: "openai"
+          }
+        },
+        providers: {
           smoke: {
             display_name: "Smoke",
             trust_level: "medium",
@@ -78,24 +83,40 @@ describe("local smoke", () => {
         },
         endpoints: {
           "smoke-openai": {
-            platform: "smoke",
-            protocol: "openai_compatible",
+            provider: "smoke",
+            platform: "openai",
+            adapter: "openai_compatible",
             base_url: "https://smoke.example.com/v1",
-            accounts: [
-              {
-                id: "smoke-account",
-                account_type: "api_key",
-                api_key_env: "SMOKE_API_KEY"
-              }
-            ]
+            capabilities: {
+              streaming: true,
+              tools: true,
+              json_mode: true
+            }
+          }
+        },
+        accounts: {
+          "smoke-account": {
+            endpoint: "smoke-openai",
+            account_type: "api_key",
+            credential_env: "SMOKE_API_KEY"
           }
         },
         models: {
+          "smoke-model": {
+            endpoint: "smoke-openai",
+            model_name: "smoke-model",
+            capabilities: {
+              streaming: true,
+              tools: true,
+              json_mode: true
+            }
+          }
+        },
+        routes: {
           auto: {
             policy: "balanced",
             candidates: [
               {
-                endpoint: "smoke-openai",
                 account: "smoke-account",
                 model: "smoke-model"
               }
@@ -118,6 +139,7 @@ describe("local smoke", () => {
       config,
       logger: createLogger(),
       platforms: registry.platforms,
+      providers: registry.providers,
       endpoints: registry.endpoints,
       accounts: registry.accounts,
       priceTable: new PriceTable(config),
@@ -130,7 +152,7 @@ describe("local smoke", () => {
 
     const healthResponse = await gateway.inject({
       method: "GET",
-      url: "/v1/auto-router/health",
+      url: "/v1/autorouter/health",
       headers: {
         authorization: "Bearer smoke-token"
       }
@@ -161,7 +183,7 @@ describe("local smoke", () => {
 
     const explainResponse = await gateway.inject({
       method: "GET",
-      url: "/v1/auto-router/explain/latest",
+      url: "/v1/autorouter/explain/latest",
       headers: {
         authorization: "Bearer smoke-token"
       }

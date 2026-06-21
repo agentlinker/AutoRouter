@@ -19,42 +19,51 @@ export async function registerChatCompletionsRoute(
     const sessionId =
       typeof normalizedRequest.metadata.session_id === "string"
         ? normalizedRequest.metadata.session_id
-        : typeof request.headers["x-auto-router-session-id"] === "string"
-          ? request.headers["x-auto-router-session-id"]
+        : typeof request.headers["x-autorouter-session-id"] === "string"
+          ? request.headers["x-autorouter-session-id"]
           : null;
     const privacyLevel =
       typeof normalizedRequest.metadata.privacy_level === "string"
         ? normalizedRequest.metadata.privacy_level
         : state.config.defaults.privacy_level;
+
     const routeDecision = selectRoute(
       state.config,
       modelCatalog,
       state.priceTable,
       state.platforms,
+      state.providers,
       state.endpoints,
       state.accounts,
       normalizedRequest.model,
       normalizedRequest.tools.length > 0,
       normalizedRequest.response_format !== undefined,
+      normalizedRequest.context_tokens_est,
       privacyLevel,
       sessionId ? state.stickySessions.get(sessionId) : null
     );
+
     const traceId = randomUUID();
     const startedAt = Date.now();
     const promptHash = sha256(JSON.stringify(normalizedRequest.messages));
+
     const orderedCandidates = routeDecision.candidates
       .map((candidate) => {
+        const provider = state.providers.find((item) => item.id === candidate.provider);
         const endpoint = state.endpoints.find((item) => item.id === candidate.endpoint);
         const platform = state.platforms.find((item) => item.id === candidate.platform);
-        const account = state.accounts.find(
-          (item) => item.endpoint_id === candidate.endpoint && item.id === candidate.account
-        );
+        const account = state.accounts.find((item) => item.id === candidate.account);
+        const model = modelCatalog.resolveModel(candidate.modelId);
 
         return {
+          routeId: candidate.routeId,
+          provider,
           endpoint,
           platform,
           account,
-          model: candidate.model,
+          modelId: candidate.modelId,
+          model,
+          modelName: candidate.model,
           score: candidate.score ?? 0
         };
       })
@@ -62,54 +71,67 @@ export async function registerChatCompletionsRoute(
         (
           candidate
         ): candidate is {
+          routeId: string;
+          provider: NonNullable<(typeof candidate)["provider"]>;
           endpoint: NonNullable<(typeof candidate)["endpoint"]>;
           platform: NonNullable<(typeof candidate)["platform"]>;
           account: NonNullable<(typeof candidate)["account"]>;
-          model: string;
+          modelId: string;
+          model: NonNullable<(typeof candidate)["model"]>;
+          modelName: string;
           score: number;
-        } => Boolean(candidate.endpoint && candidate.platform && candidate.account)
+        } =>
+          Boolean(
+            candidate.provider &&
+              candidate.endpoint &&
+              candidate.platform &&
+              candidate.account &&
+              candidate.model
+          )
       )
       .sort((left, right) => right.score - left.score);
 
     let providerResponse;
     let selectedRoute = routeDecision.selected;
-    const fallbackHistory: Array<{ endpoint: string; platform: string; account: string; model: string }> = [];
+    const fallbackHistory: Array<{
+      route_id: string;
+      endpoint: string;
+      platform: string;
+      provider: string;
+      account: string;
+      model_id: string;
+      model: string;
+    }> = [];
     let lastError: unknown;
 
     for (const [index, candidate] of orderedCandidates.entries()) {
-      const endpointConfig = state.config.endpoints[candidate.endpoint.id];
-      const accountConfig = endpointConfig.accounts.find(
-        (account) => account.id === candidate.account.id
-      );
-
+      const accountConfig = state.config.accounts[candidate.account.id];
       if (!accountConfig) {
         lastError = new HttpError(500, "account_not_found", "Configured account missing");
         continue;
       }
 
-      const apiKey = accountConfig.api_key_env
-        ? process.env[accountConfig.api_key_env]
+      const credential = accountConfig.credential_env
+        ? process.env[accountConfig.credential_env]
         : undefined;
-      const adapter = state.adapters.get(endpointConfig.protocol);
+      const adapter = state.adapters.get(candidate.endpoint.adapter as never);
 
       try {
         if (normalizedRequest.stream && adapter.streamChatCompletion) {
-          reply.header("content-type", "text/event-stream; charset=utf-8");
-          reply.header("cache-control", "no-cache");
-          reply.header("connection", "keep-alive");
-          reply.header("x-auto-router-trace-id", traceId);
-          reply.header("x-auto-router-endpoint", candidate.endpoint.id);
-          reply.header("x-auto-router-platform", candidate.platform.id);
-          reply.header("x-auto-router-model", candidate.model);
-          reply.header("x-auto-router-account", candidate.account.id);
+          reply.raw.setHeader("content-type", "text/event-stream; charset=utf-8");
+          reply.raw.setHeader("cache-control", "no-cache");
+          reply.raw.setHeader("connection", "keep-alive");
+          reply.raw.setHeader("x-autorouter-trace-id", traceId);
+          reply.raw.setHeader("x-autorouter-normalized-model", routeDecision.normalizedModel);
 
           for await (const chunk of adapter.streamChatCompletion(normalizedRequest, {
-            endpointId: candidate.endpoint.id,
-            platformId: candidate.platform.id,
-            accountId: candidate.account.id,
+            platform: candidate.platform,
+            provider: candidate.provider,
+            endpoint: candidate.endpoint,
+            account: candidate.account,
+            modelId: candidate.modelId,
             model: candidate.model,
-            endpointConfig,
-            apiKey
+            credential
           })) {
             reply.raw.write(chunk.raw);
           }
@@ -122,19 +144,26 @@ export async function registerChatCompletionsRoute(
           };
         } else {
           providerResponse = await adapter.chatCompletion(normalizedRequest, {
-            endpointId: candidate.endpoint.id,
-            platformId: candidate.platform.id,
-            accountId: candidate.account.id,
+            platform: candidate.platform,
+            provider: candidate.provider,
+            endpoint: candidate.endpoint,
+            account: candidate.account,
+            modelId: candidate.modelId,
             model: candidate.model,
-            endpointConfig,
-            apiKey
+            credential
           });
         }
+
         selectedRoute = {
+          requestedModel: routeDecision.requestedModel,
+          normalizedModel: routeDecision.normalizedModel,
+          routeId: candidate.routeId,
           platform: candidate.platform,
+          provider: candidate.provider,
           endpoint: candidate.endpoint,
           account: candidate.account,
-          model: candidate.model,
+          modelId: candidate.modelId,
+          model: candidate.modelName,
           candidateIndex: index
         };
         break;
@@ -154,48 +183,65 @@ export async function registerChatCompletionsRoute(
 
         if (index < orderedCandidates.length - 1) {
           fallbackHistory.push({
+            route_id: candidate.routeId,
             endpoint: candidate.endpoint.id,
             platform: candidate.platform.id,
+            provider: candidate.provider.id,
             account: candidate.account.id,
-            model: candidate.model
+            model_id: candidate.modelId,
+            model: candidate.modelName
           });
         }
-
       }
     }
+
+    const baseTrace = {
+      trace_id: traceId,
+      timestamp: new Date().toISOString(),
+      session_id: sessionId,
+      request: {
+        model: normalizedRequest.model,
+        normalized_model: routeDecision.normalizedModel,
+        prompt_hash: promptHash,
+        stream: normalizedRequest.stream,
+        has_tools: normalizedRequest.tools.length > 0,
+        privacy_level: privacyLevel
+      },
+      candidates: routeDecision.candidates.map((candidate) => ({
+        route_id: candidate.routeId,
+        endpoint: candidate.endpoint,
+        platform: candidate.platform,
+        provider: candidate.provider,
+        account: candidate.account,
+        model_id: candidate.modelId,
+        model: candidate.model
+      })),
+      filtered: routeDecision.filtered.map((candidate) => ({
+        route_id: candidate.routeId,
+        endpoint: candidate.endpoint,
+        platform: candidate.platform,
+        provider: candidate.provider,
+        account: candidate.account,
+        model_id: candidate.modelId,
+        model: candidate.model,
+        reason: candidate.filteredReason
+      })),
+      selected: {
+        route_id: selectedRoute.routeId,
+        endpoint: selectedRoute.endpoint.id,
+        platform: selectedRoute.platform.id,
+        provider: selectedRoute.provider.id,
+        account_hash: sha256(selectedRoute.account.id),
+        model_id: selectedRoute.modelId,
+        model: selectedRoute.model
+      },
+      fallbacks: fallbackHistory
+    };
 
     if (!providerResponse) {
       const latencyMs = Date.now() - startedAt;
       state.traceStore.append({
-        trace_id: traceId,
-        timestamp: new Date().toISOString(),
-        session_id: sessionId,
-        request: {
-          model: normalizedRequest.model,
-          prompt_hash: promptHash,
-          stream: normalizedRequest.stream,
-          has_tools: normalizedRequest.tools.length > 0,
-          privacy_level: privacyLevel
-        },
-        candidates: routeDecision.candidates.map((candidate) => ({
-          endpoint: candidate.endpoint,
-          platform: candidate.platform,
-          account: candidate.account,
-          model: candidate.model
-        })),
-        filtered: routeDecision.filtered.map((candidate) => ({
-          endpoint: candidate.endpoint,
-          platform: candidate.platform,
-          account: candidate.account,
-          model: candidate.model,
-          reason: candidate.filteredReason
-        })),
-        selected: {
-          endpoint: selectedRoute.endpoint.id,
-          platform: selectedRoute.platform.id,
-          account_hash: sha256(selectedRoute.account.id),
-          model: selectedRoute.model
-        },
+        ...baseTrace,
         policy_hits: sessionId ? ["session_sticky", "fallback_chain"] : ["fallback_chain"],
         execution: {
           status: "failed",
@@ -207,9 +253,9 @@ export async function registerChatCompletionsRoute(
           estimated_usd: null,
           actual_usd: null,
           price_confidence: "unknown"
-        },
-        fallbacks: fallbackHistory
+        }
       });
+
       throw lastError instanceof Error
         ? lastError
         : new HttpError(503, "all_candidates_failed", "All candidates failed", true);
@@ -217,50 +263,24 @@ export async function registerChatCompletionsRoute(
 
     const latencyMs = Date.now() - startedAt;
     const priceEstimate = state.priceTable.estimateCost(
-      selectedRoute.endpoint.id,
-      selectedRoute.model,
+      selectedRoute.modelId,
       providerResponse.usage?.prompt_tokens,
       providerResponse.usage?.completion_tokens
     );
 
     if (sessionId) {
       state.stickySessions.set(sessionId, {
+        routeId: selectedRoute.routeId,
+        platformId: selectedRoute.platform.id,
+        providerId: selectedRoute.provider.id,
         endpointId: selectedRoute.endpoint.id,
         accountId: selectedRoute.account.id,
-        model: selectedRoute.model
+        modelId: selectedRoute.modelId
       });
     }
 
     state.traceStore.append({
-      trace_id: traceId,
-      timestamp: new Date().toISOString(),
-      session_id: sessionId,
-      request: {
-        model: normalizedRequest.model,
-        prompt_hash: promptHash,
-        stream: normalizedRequest.stream,
-        has_tools: normalizedRequest.tools.length > 0,
-        privacy_level: privacyLevel
-      },
-      candidates: routeDecision.candidates.map((candidate) => ({
-        endpoint: candidate.endpoint,
-        platform: candidate.platform,
-        account: candidate.account,
-        model: candidate.model
-      })),
-      filtered: routeDecision.filtered.map((candidate) => ({
-        endpoint: candidate.endpoint,
-        platform: candidate.platform,
-        account: candidate.account,
-        model: candidate.model,
-        reason: candidate.filteredReason
-      })),
-      selected: {
-        endpoint: selectedRoute.endpoint.id,
-        platform: selectedRoute.platform.id,
-        account_hash: sha256(selectedRoute.account.id),
-        model: selectedRoute.model
-      },
+      ...baseTrace,
       policy_hits: sessionId ? ["session_sticky"] : [],
       execution: {
         status: "success",
@@ -273,19 +293,15 @@ export async function registerChatCompletionsRoute(
         estimated_usd: priceEstimate.estimatedUsd,
         actual_usd: null,
         price_confidence: priceEstimate.confidence
-      },
-      fallbacks: fallbackHistory
+      }
     });
 
     if (normalizedRequest.stream) {
       return reply;
     }
 
-    reply.header("x-auto-router-trace-id", traceId);
-    reply.header("x-auto-router-endpoint", selectedRoute.endpoint.id);
-    reply.header("x-auto-router-platform", selectedRoute.platform.id);
-    reply.header("x-auto-router-model", selectedRoute.model);
-    reply.header("x-auto-router-account", selectedRoute.account.id);
+    reply.header("x-autorouter-trace-id", traceId);
+    reply.header("x-autorouter-normalized-model", selectedRoute.normalizedModel);
 
     return providerResponse.body;
   });

@@ -20,6 +20,7 @@ export function normalizeChatRequest(
     response_format: body.response_format,
     temperature: body.temperature,
     max_tokens: body.max_tokens,
-    metadata: body.metadata ?? {}
+    metadata: body.metadata ?? {},
+    context_tokens_est: JSON.stringify(body.messages).length
   };
 }

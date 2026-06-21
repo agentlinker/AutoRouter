@@ -3,10 +3,11 @@ import { z } from "zod";
 export const trustLevelSchema = z.enum(["low", "medium", "high"]);
 export const privacyLevelSchema = z.enum(["public_only", "normal", "private"]);
 export const usageTrustSchema = z.enum(["low", "medium", "high"]);
-export const protocolTypeSchema = z.enum([
+export const adapterTypeSchema = z.enum([
   "openai_compatible",
   "openrouter",
-  "ollama"
+  "ollama",
+  "anthropic"
 ]);
 export const accountTypeSchema = z.enum(["api_key", "local_model"]);
 export const healthStatusSchema = z.enum(["unknown", "healthy", "degraded", "down"]);
@@ -19,40 +20,47 @@ export const quotaSchema = z
   })
   .strict();
 
-export const accountSchema = z
+export const platformSchema = z
   .object({
-    id: z.string().min(1),
-    account_type: accountTypeSchema,
-    api_key_env: z.string().min(1).optional(),
-    enabled: z.boolean().default(true),
-    quota: quotaSchema.optional()
+    protocol: z.string().min(1)
   })
   .strict();
 
-export const platformSchema = z
+export const providerSchema = z
   .object({
     display_name: z.string().min(1),
-    trust_level: trustLevelSchema.optional(),
-    privacy_level: privacyLevelSchema.optional(),
-    usage_trust: usageTrustSchema.optional(),
+    trust_level: trustLevelSchema.default("low"),
+    privacy_level: privacyLevelSchema.default("public_only"),
+    usage_trust: usageTrustSchema.default("low")
+  })
+  .strict();
+
+export const endpointCapabilitiesSchema = z
+  .object({
+    streaming: z.boolean().default(true),
+    tools: z.boolean().default(false),
+    json_mode: z.boolean().default(false)
   })
   .strict();
 
 export const endpointSchema = z
   .object({
+    provider: z.string().min(1),
     platform: z.string().min(1),
-    protocol: protocolTypeSchema,
+    adapter: adapterTypeSchema,
     base_url: z.string().url(),
     enabled: z.boolean().default(true),
-    accounts: z.array(accountSchema).min(1)
+    capabilities: endpointCapabilitiesSchema.default({})
   })
   .strict();
 
-export const modelCandidateSchema = z
+export const accountSchema = z
   .object({
     endpoint: z.string().min(1),
-    account: z.string().min(1),
-    model: z.string().min(1)
+    account_type: accountTypeSchema,
+    credential_env: z.string().min(1).optional(),
+    enabled: z.boolean().default(true),
+    quota: quotaSchema.optional()
   })
   .strict();
 
@@ -62,14 +70,39 @@ export const priceEntrySchema = z
     output_per_1m: z.number().nonnegative().optional(),
     cached_input_per_1m: z.number().nonnegative().optional(),
     source: z.enum(["official", "openrouter", "manual", "estimated"]).default("manual"),
-    confidence: z.enum(["low", "medium", "high"]).default("unknown" as never)
+    confidence: z.enum(["low", "medium", "high"]).default("low")
   })
   .strict();
 
-export const modelAliasSchema = z
+export const modelCapabilitiesSchema = z
+  .object({
+    streaming: z.boolean().default(true),
+    tools: z.boolean().default(false),
+    json_mode: z.boolean().default(false)
+  })
+  .strict();
+
+export const modelDefinitionSchema = z
+  .object({
+    endpoint: z.string().min(1),
+    model_name: z.string().min(1),
+    context_window: z.number().int().positive().optional(),
+    capabilities: modelCapabilitiesSchema.default({}),
+    pricing: priceEntrySchema.optional()
+  })
+  .strict();
+
+export const routeCandidateSchema = z
+  .object({
+    account: z.string().min(1),
+    model: z.string().min(1)
+  })
+  .strict();
+
+export const routeSchema = z
   .object({
     policy: z.string().min(1),
-    candidates: z.array(modelCandidateSchema).min(1)
+    candidates: z.array(routeCandidateSchema).min(1)
   })
   .strict();
 
@@ -84,7 +117,7 @@ export const policySchema = z
 
 export const traceSchema = z
   .object({
-    directory: z.string().default("/tmp/autorouter-traces"),
+    directory: z.string().default("./data/traces"),
     log_prompts: z.boolean().default(false)
   })
   .strict();
@@ -112,31 +145,32 @@ export const routerConfigSchema = z
     defaults: defaultsSchema.default({}),
     trace: traceSchema.default({}),
     platforms: z.record(z.string(), platformSchema).default({}),
+    providers: z.record(z.string(), providerSchema).default({}),
     endpoints: z.record(z.string(), endpointSchema).default({}),
-    models: z.record(z.string(), modelAliasSchema).default({}),
-    policies: z.record(z.string(), policySchema).default({}),
-    prices: z
-      .record(
-        z.string(),
-        z.record(z.string(), priceEntrySchema)
-      )
-      .default({})
+    accounts: z.record(z.string(), accountSchema).default({}),
+    models: z.record(z.string(), modelDefinitionSchema).default({}),
+    routes: z.record(z.string(), routeSchema).default({}),
+    policies: z.record(z.string(), policySchema).default({})
   })
   .strict();
 
 export type TrustLevel = z.infer<typeof trustLevelSchema>;
 export type PrivacyLevel = z.infer<typeof privacyLevelSchema>;
 export type UsageTrust = z.infer<typeof usageTrustSchema>;
-export type ProtocolType = z.infer<typeof protocolTypeSchema>;
+export type AdapterType = z.infer<typeof adapterTypeSchema>;
 export type AccountType = z.infer<typeof accountTypeSchema>;
 export type HealthStatus = z.infer<typeof healthStatusSchema>;
 export type QuotaConfig = z.infer<typeof quotaSchema>;
-export type AccountConfig = z.infer<typeof accountSchema>;
 export type PlatformConfig = z.infer<typeof platformSchema>;
+export type ProviderConfig = z.infer<typeof providerSchema>;
+export type EndpointCapabilitiesConfig = z.infer<typeof endpointCapabilitiesSchema>;
 export type EndpointConfig = z.infer<typeof endpointSchema>;
-export type ModelCandidateConfig = z.infer<typeof modelCandidateSchema>;
-export type ModelAliasConfig = z.infer<typeof modelAliasSchema>;
+export type AccountConfig = z.infer<typeof accountSchema>;
 export type PriceEntryConfig = z.infer<typeof priceEntrySchema>;
+export type ModelCapabilitiesConfig = z.infer<typeof modelCapabilitiesSchema>;
+export type ModelDefinitionConfig = z.infer<typeof modelDefinitionSchema>;
+export type RouteCandidateConfig = z.infer<typeof routeCandidateSchema>;
+export type RouteConfig = z.infer<typeof routeSchema>;
 export type PolicyConfig = z.infer<typeof policySchema>;
 export type TraceConfig = z.infer<typeof traceSchema>;
 export type ServerConfig = z.infer<typeof serverSchema>;
