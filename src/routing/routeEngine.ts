@@ -1,6 +1,11 @@
 import type { ModelCatalog } from "../catalog/modelCatalog.js";
 import type { PriceTable } from "../catalog/priceTable.js";
-import type { RouterConfig } from "../config/schema.js";
+import type {
+  PolicyConfig,
+  PolicyThresholdsConfig,
+  PolicyWeightsConfig,
+  RouterConfig
+} from "../config/schema.js";
 import type {
   AccountRuntimeState,
   EndpointRuntimeState,
@@ -48,8 +53,43 @@ function trustLevelScore(level: string): number {
   }
 }
 
+function normalizeScore(value: number, maxValue: number): number {
+  if (maxValue <= 0) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(1, value / maxValue));
+}
+
+function resolvePolicy(config: RouterConfig, routeId: string): PolicyConfig {
+  const routePolicyId = config.routes[routeId]?.policy ?? config.defaults.policy;
+  return config.policies[routePolicyId] ?? config.policies[config.defaults.policy] ?? {
+    thresholds: {
+      min_trust_level: "low",
+      allow_public_only_provider: false,
+      require_tools: false,
+      require_json_mode: false
+    },
+    weights: {
+      health: 1,
+      trust: 1,
+      cost: 0,
+      quality: 0,
+      context: 0,
+      tools: 0,
+      sticky: 0,
+      error_penalty: 1,
+      quota_penalty: 1
+    },
+    min_trust_level: "low",
+    allow_public_only_provider: false,
+    fallback_enabled: true,
+    sticky_session: false
+  };
+}
+
 function canUseCandidate(
-  config: RouterConfig,
+  thresholds: PolicyThresholdsConfig,
   provider: ProviderRuntimeState,
   endpoint: EndpointRuntimeState,
   account: AccountRuntimeState,
@@ -57,8 +97,7 @@ function canUseCandidate(
   hasTools: boolean,
   requiresJson: boolean,
   requestedContextTokens: number,
-  privacyLevel: string,
-  minTrustLevel: string
+  privacyLevel: string
 ): string | null {
   if (!endpoint.enabled) {
     return "endpoint_disabled";
@@ -79,14 +118,14 @@ function canUseCandidate(
   if (
     privacyLevel !== "public_only" &&
     provider.privacy_level === "public_only" &&
-    !config.policies[config.defaults.policy]?.allow_public_only_provider
+    !thresholds.allow_public_only_provider
   ) {
     return "privacy_level_not_allowed";
   }
 
   if (
-    (minTrustLevel === "high" && provider.trust_level !== "high") ||
-    (minTrustLevel === "medium" && provider.trust_level === "low")
+    (thresholds.min_trust_level === "high" && provider.trust_level !== "high") ||
+    (thresholds.min_trust_level === "medium" && provider.trust_level === "low")
   ) {
     return "trust_level_not_allowed";
   }
@@ -99,21 +138,103 @@ function canUseCandidate(
     return "context_window_exceeded";
   }
 
-  if (hasTools && !endpoint.capabilities.tools) {
+  if ((thresholds.require_tools || hasTools) && !endpoint.capabilities.tools) {
     return "tool_capability_not_supported";
   }
 
-  if (requiresJson && !endpoint.capabilities.json_mode) {
+  if ((thresholds.require_json_mode || requiresJson) && !endpoint.capabilities.json_mode) {
     return "json_capability_not_supported";
+  }
+
+  if (
+    thresholds.min_context_window !== undefined &&
+    (modelContextWindow === undefined || modelContextWindow < thresholds.min_context_window)
+  ) {
+    return "context_window_not_sufficient";
   }
 
   return null;
 }
 
+function evaluateCandidateScore(
+  weights: PolicyWeightsConfig,
+  provider: ProviderRuntimeState,
+  endpoint: EndpointRuntimeState,
+  account: AccountRuntimeState,
+  modelContextWindow: number | undefined,
+  hasTools: boolean,
+  requestedContextTokens: number,
+  stickyRoute: StickyRoute | null | undefined,
+  candidate: {
+    routeId: string;
+    platformId: string;
+    providerId: string;
+    endpointId: string;
+    accountId: string;
+    modelId: string;
+  },
+  priceTable: PriceTable
+): { score: number; sticky: boolean } {
+  const sticky =
+    Boolean(
+      stickyRoute &&
+        stickyRoute.routeId === candidate.routeId &&
+        stickyRoute.platformId === candidate.platformId &&
+        stickyRoute.providerId === candidate.providerId &&
+        stickyRoute.endpointId === candidate.endpointId &&
+        stickyRoute.accountId === candidate.accountId &&
+        stickyRoute.modelId === candidate.modelId
+    );
+  const stickyScore = sticky ? 1 : 0;
+
+  const trustScore = trustLevelScore(provider.trust_level);
+  const healthScore =
+    endpoint.health === "healthy" ? 1 : endpoint.health === "degraded" ? 0.5 : 0.2;
+  const quotaPressurePenalty =
+    account.quota?.remaining_usd !== undefined && account.quota.remaining_usd < 1 ? 1 : 0;
+  const recentErrorPenalty = normalizeScore(
+    endpoint.recent_error_count + account.recent_error_count,
+    10
+  );
+  const contextScore =
+    modelContextWindow !== undefined
+      ? Math.min(1, requestedContextTokens > 0
+          ? modelContextWindow / Math.max(requestedContextTokens, 1)
+          : 1)
+      : 0;
+  const toolsScore =
+    hasTools ? (endpoint.capabilities.tools ? 1 : 0) : endpoint.capabilities.tools ? 0.6 : 0;
+  const qualityScore =
+    (endpoint.capabilities.tools ? 0.4 : 0) +
+    (endpoint.capabilities.json_mode ? 0.2 : 0) +
+    Math.min(0.4, contextScore * 0.4);
+  const costEstimate = priceTable.estimateCost(candidate.modelId, requestedContextTokens, 512);
+  const costScore =
+    costEstimate.estimatedUsd === null
+      ? 0
+      : 1 / (1 + costEstimate.estimatedUsd * 100);
+
+  const score =
+    weights.health * healthScore +
+    weights.trust * trustScore +
+    weights.cost * costScore +
+    weights.quality * qualityScore +
+    weights.context * contextScore +
+    weights.tools * toolsScore +
+    weights.sticky * stickyScore -
+    weights.error_penalty * recentErrorPenalty -
+    weights.quota_penalty * quotaPressurePenalty;
+
+  return {
+    score,
+    sticky
+  };
+}
+
 export function selectRoute(
   config: RouterConfig,
   modelCatalog: ModelCatalog,
-  _priceTable: PriceTable,
+  priceTable: PriceTable,
   platforms: PlatformRuntimeState[],
   providers: ProviderRuntimeState[],
   endpoints: EndpointRuntimeState[],
@@ -152,8 +273,11 @@ export function selectRoute(
   const evaluations: CandidateEvaluation[] = [];
   const filtered: CandidateEvaluation[] = [];
   const passed: Array<SelectedRoute & { score: number }> = [];
-  const policy = config.policies[config.defaults.policy];
-  const minTrustLevel = policy?.min_trust_level ?? "low";
+  const effectiveRouteId =
+    resolvedTarget.mode === "route_alias" ? resolvedTarget.requested : config.defaults.model;
+  const policy = resolvePolicy(config, effectiveRouteId);
+  const thresholds = policy.thresholds;
+  const weights = policy.weights;
 
   for (const [index, candidate] of candidates.entries()) {
     const endpoint = endpoints.find((item) => item.id === candidate.endpoint);
@@ -181,7 +305,7 @@ export function selectRoute(
     }
 
     const filteredReason = canUseCandidate(
-      config,
+      thresholds,
       provider,
       endpoint,
       account,
@@ -189,8 +313,7 @@ export function selectRoute(
       hasTools,
       requiresJson,
       requestedContextTokens,
-      privacyLevel,
-      minTrustLevel
+      privacyLevel
     );
     if (filteredReason) {
       filtered.push({
@@ -206,28 +329,25 @@ export function selectRoute(
       continue;
     }
 
-    const stickyScore =
-      stickyRoute &&
-      stickyRoute.routeId === candidate.routeId &&
-      stickyRoute.platformId === platform.id &&
-      stickyRoute.providerId === provider.id &&
-      stickyRoute.endpointId === endpoint.id &&
-      stickyRoute.accountId === account.id &&
-      stickyRoute.modelId === candidate.modelId
-        ? 10
-        : 0;
-    const quotaPressurePenalty =
-      account.quota?.remaining_usd !== undefined && account.quota.remaining_usd < 1 ? 10 : 0;
-    const recentErrorPenalty =
-      endpoint.recent_error_count * 5 + account.recent_error_count * 5;
-    const healthScore =
-      endpoint.health === "healthy" ? 30 : endpoint.health === "degraded" ? 15 : 20;
-    const score =
-      healthScore +
-      trustLevelScore(provider.trust_level) * 20 +
-      stickyScore -
-      quotaPressurePenalty -
-      recentErrorPenalty;
+    const { score, sticky } = evaluateCandidateScore(
+      weights,
+      provider,
+      endpoint,
+      account,
+      modelDefinition.context_window,
+      hasTools,
+      requestedContextTokens,
+      stickyRoute,
+      {
+        routeId: candidate.routeId,
+        platformId: platform.id,
+        providerId: provider.id,
+        endpointId: endpoint.id,
+        accountId: account.id,
+        modelId: candidate.modelId
+      },
+      priceTable
+    );
 
     evaluations.push({
       routeId: candidate.routeId,
@@ -238,7 +358,7 @@ export function selectRoute(
       modelId: candidate.modelId,
       model: candidate.model,
       score,
-      sticky: stickyScore > 0
+      sticky
     });
     passed.push({
       routeId: candidate.routeId,

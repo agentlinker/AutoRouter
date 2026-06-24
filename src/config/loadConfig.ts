@@ -228,9 +228,50 @@ function normalizeRoutes(rawRoutes: Record<string, unknown>): ConfigSource {
   return normalizedRoutes;
 }
 
+function normalizePolicies(rawPolicies: Record<string, unknown>): ConfigSource {
+  const normalizedPolicies: Record<string, unknown> = {};
+
+  for (const [policyId, policyValue] of Object.entries(rawPolicies)) {
+    const policy = toRecord(policyValue);
+    const thresholds = toRecord(policy.thresholds);
+    const weights = toRecord(policy.weights);
+
+    normalizedPolicies[policyId] = {
+      thresholds: {
+        min_trust_level:
+          thresholds.min_trust_level ?? policy.min_trust_level ?? "low",
+        allow_public_only_provider:
+          thresholds.allow_public_only_provider ?? policy.allow_public_only_provider ?? false,
+        require_tools: thresholds.require_tools ?? false,
+        require_json_mode: thresholds.require_json_mode ?? false,
+        min_context_window: thresholds.min_context_window
+      },
+      weights: {
+        health: weights.health ?? 1,
+        trust: weights.trust ?? 1,
+        cost: weights.cost ?? 0,
+        quality: weights.quality ?? 0,
+        context: weights.context ?? 0,
+        tools: weights.tools ?? 0,
+        sticky: weights.sticky ?? (policy.sticky_session ? 1 : 0),
+        error_penalty: weights.error_penalty ?? 1,
+        quota_penalty: weights.quota_penalty ?? 1
+      },
+      min_trust_level: policy.min_trust_level ?? thresholds.min_trust_level ?? "low",
+      allow_public_only_provider:
+        policy.allow_public_only_provider ?? thresholds.allow_public_only_provider ?? false,
+      fallback_enabled: policy.fallback_enabled ?? true,
+      sticky_session: policy.sticky_session ?? false
+    };
+  }
+
+  return normalizedPolicies;
+}
+
 function normalizeConfigShape(rawConfig: ConfigSource): ConfigSource {
   const providersBlock = toRecord(rawConfig.providers);
   const routesBlock = toRecord(rawConfig.routes);
+  const policiesBlock = toRecord(rawConfig.policies);
   const platformsBlock = toRecord(rawConfig.platforms);
   const endpointsBlock = toRecord(rawConfig.endpoints);
   const accountsBlock = toRecord(rawConfig.accounts);
@@ -239,6 +280,8 @@ function normalizeConfigShape(rawConfig: ConfigSource): ConfigSource {
   const normalizedProviderBlocks = normalizeProviders(providersBlock);
   const normalizedRoutes =
     Object.keys(routesBlock).length > 0 ? normalizeRoutes(routesBlock) : {};
+  const normalizedPolicies =
+    Object.keys(policiesBlock).length > 0 ? normalizePolicies(policiesBlock) : {};
 
   const rest = { ...rawConfig };
   delete rest.providers;
@@ -247,6 +290,7 @@ function normalizeConfigShape(rawConfig: ConfigSource): ConfigSource {
   delete rest.accounts;
   delete rest.models;
   delete rest.routes;
+  delete rest.policies;
 
   return {
     ...rest,
@@ -255,7 +299,8 @@ function normalizeConfigShape(rawConfig: ConfigSource): ConfigSource {
     endpoints: mergeObjects({}, endpointsBlock, toRecord(normalizedProviderBlocks.endpoints)),
     accounts: mergeObjects({}, accountsBlock, toRecord(normalizedProviderBlocks.accounts)),
     models: mergeObjects({}, modelsBlock, toRecord(normalizedProviderBlocks.models)),
-    routes: normalizedRoutes
+    routes: normalizedRoutes,
+    policies: normalizedPolicies
   };
 }
 

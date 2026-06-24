@@ -96,30 +96,41 @@ describe("ModelCatalog", () => {
 
     const catalog = new ModelCatalog(config);
 
-    expect(catalog.resolveRequestTarget("auto/gpt-5.5")).toMatchObject({
+    const autoModel = catalog.resolveRequestTarget("auto/gpt-5.5");
+    expect(autoModel).toMatchObject({
       mode: "auto_model",
       normalized: "auto/gpt-5.5",
-      candidates: [{ modelId: "demo/gpt-5-5", account: "demo/main" }]
+      candidates: expect.arrayContaining([
+        expect.objectContaining({ modelId: "demo/gpt-5-5", account: "demo/main" })
+      ])
     });
     expect(catalog.resolveRequestTarget("demo/gpt-5.5")).toMatchObject({
       mode: "provider_model",
       normalized: "demo/gpt-5.5",
-      candidates: [{ modelId: "demo/gpt-5-5", account: "demo/main" }]
+      candidates: expect.arrayContaining([
+        expect.objectContaining({ modelId: "demo/gpt-5-5", account: "demo/main" })
+      ])
     });
     expect(catalog.resolveRequestTarget("demo/qwen/qwen3.6-plus")).toMatchObject({
       mode: "provider_model",
       normalized: "demo/qwen/qwen3.6-plus",
-      candidates: [{ modelId: "demo/qwen-plus", account: "demo/main" }]
+      candidates: expect.arrayContaining([
+        expect.objectContaining({ modelId: "demo/qwen-plus", account: "demo/main" })
+      ])
     });
     expect(catalog.resolveRequestTarget("auto")).toMatchObject({
       mode: "route_alias",
       normalized: "auto",
-      candidates: [{ modelId: "demo/auto", account: "demo/main" }]
+      candidates: expect.arrayContaining([
+        expect.objectContaining({ modelId: "demo/auto", account: "demo/main" })
+      ])
     });
     expect(catalog.resolveRequestTarget("gpt-5.5")).toMatchObject({
       mode: "bare_model",
       normalized: "auto/gpt-5.5",
-      candidates: [{ modelId: "demo/gpt-5-5", account: "demo/main" }]
+      candidates: expect.arrayContaining([
+        expect.objectContaining({ modelId: "demo/gpt-5-5", account: "demo/main" })
+      ])
     });
   });
 });

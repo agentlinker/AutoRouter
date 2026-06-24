@@ -41,6 +41,16 @@ describe("loadConfig", () => {
               }
             ]
           }
+        },
+        policies: {
+          balanced: {
+            min_trust_level: "medium",
+            sticky_session: true,
+            weights: {
+              cost: 1.2,
+              quality: 0.8
+            }
+          }
         }
       }
     });
@@ -52,5 +62,8 @@ describe("loadConfig", () => {
     expect(config.models["demo/chat"].model_name).toBe("gpt-test");
     expect(config.routes.auto.candidates[0].account).toBe("demo/main");
     expect(config.routes.auto.candidates[0].model).toBe("demo/chat");
+    expect(config.policies.balanced.thresholds.min_trust_level).toBe("medium");
+    expect(config.policies.balanced.weights.cost).toBe(1.2);
+    expect(config.policies.balanced.weights.sticky).toBe(1);
   });
 });

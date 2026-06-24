@@ -193,4 +193,198 @@ describe("selectRoute", () => {
 
     vi.unstubAllEnvs();
   });
+
+  it("selects different candidates for cheap and coding routes based on policy weights", () => {
+    vi.stubEnv("PRIMARY_API_KEY", "primary");
+    vi.stubEnv("CHEAP_API_KEY", "cheap");
+
+    const config = loadConfig({
+      override: {
+        providers: {
+          premium: {
+            display_name: "Premium",
+            trust_level: "high",
+            privacy_level: "normal",
+            usage_trust: "high",
+            protocol: "openai",
+            adapter: "openai_compatible",
+            base_url: "https://premium.example.com/v1",
+            capabilities: {
+              streaming: true,
+              tools: true,
+              json_mode: true
+            },
+            accounts: [{ id: "main", credential_env: "PRIMARY_API_KEY" }],
+            models: [
+              {
+                id: "gpt-5-5",
+                model_name: "gpt-5.5",
+                context_window: 1000000,
+                capabilities: {
+                  streaming: true,
+                  tools: true,
+                  json_mode: true
+                },
+                pricing: {
+                  input_per_1m: 10,
+                  output_per_1m: 20,
+                  source: "manual",
+                  confidence: "medium"
+                }
+              }
+            ]
+          },
+          budget: {
+            display_name: "Budget",
+            trust_level: "medium",
+            privacy_level: "normal",
+            usage_trust: "medium",
+            protocol: "openai",
+            adapter: "openai_compatible",
+            base_url: "https://budget.example.com/v1",
+            capabilities: {
+              streaming: true,
+              tools: true,
+              json_mode: true
+            },
+            accounts: [{ id: "main", credential_env: "CHEAP_API_KEY" }],
+            models: [
+              {
+                id: "gpt-5-4-mini",
+                model_name: "gpt-5.4-mini",
+                context_window: 256000,
+                capabilities: {
+                  streaming: true,
+                  tools: true,
+                  json_mode: true
+                },
+                pricing: {
+                  input_per_1m: 1,
+                  output_per_1m: 2,
+                  source: "manual",
+                  confidence: "medium"
+                }
+              }
+            ]
+          }
+        },
+        routes: {
+          auto: {
+            policy: "balanced",
+            candidates: [
+              { provider: "premium", account: "main", model: "gpt-5-5" },
+              { provider: "budget", account: "main", model: "gpt-5-4-mini" }
+            ]
+          },
+          cheap: {
+            policy: "cost_first",
+            candidates: [
+              { provider: "premium", account: "main", model: "gpt-5-5" },
+              { provider: "budget", account: "main", model: "gpt-5-4-mini" }
+            ]
+          },
+          coding: {
+            policy: "coding_first",
+            candidates: [
+              { provider: "premium", account: "main", model: "gpt-5-5" },
+              { provider: "budget", account: "main", model: "gpt-5-4-mini" }
+            ]
+          }
+        },
+        policies: {
+          balanced: {
+            min_trust_level: "low",
+            sticky_session: true,
+            weights: {
+              health: 1,
+              trust: 1,
+              quality: 0.8,
+              cost: 0.3,
+              context: 0.2,
+              tools: 0.2,
+              sticky: 0.4,
+              error_penalty: 1,
+              quota_penalty: 1
+            }
+          },
+          cost_first: {
+            thresholds: {
+              min_trust_level: "low"
+            },
+            weights: {
+              health: 0.5,
+              trust: 0.4,
+              quality: 0.1,
+              cost: 2,
+              context: 0.1,
+              tools: 0.1,
+              sticky: 0,
+              error_penalty: 0.5,
+              quota_penalty: 0.5
+            }
+          },
+          coding_first: {
+            thresholds: {
+              min_trust_level: "low",
+              require_tools: true
+            },
+            weights: {
+              health: 0.8,
+              trust: 0.8,
+              quality: 1,
+              cost: 0.1,
+              context: 1,
+              tools: 1.5,
+              sticky: 0.2,
+              error_penalty: 0.6,
+              quota_penalty: 0.3
+            }
+          }
+        },
+        defaults: {
+          model: "auto",
+          policy: "balanced",
+          privacy_level: "normal"
+        }
+      }
+    });
+
+    const registry = buildProviderRegistry(config);
+    const catalog = new ModelCatalog(config);
+    const priceTable = new PriceTable(config);
+
+    const cheapRoute = selectRoute(
+      config,
+      catalog,
+      priceTable,
+      registry.platforms,
+      registry.providers,
+      registry.endpoints,
+      registry.accounts,
+      "cheap",
+      false,
+      false,
+      1000,
+      "normal"
+    );
+    const codingRoute = selectRoute(
+      config,
+      catalog,
+      priceTable,
+      registry.platforms,
+      registry.providers,
+      registry.endpoints,
+      registry.accounts,
+      "coding",
+      true,
+      false,
+      1000,
+      "normal"
+    );
+
+    expect(cheapRoute.selected.provider.id).toBe("budget");
+    expect(codingRoute.selected.provider.id).toBe("premium");
+
+    vi.unstubAllEnvs();
+  });
 });

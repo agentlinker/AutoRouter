@@ -106,8 +106,34 @@ export const routeSchema = z
   })
   .strict();
 
+export const policyThresholdsSchema = z
+  .object({
+    min_trust_level: trustLevelSchema.default("low"),
+    allow_public_only_provider: z.boolean().default(false),
+    require_tools: z.boolean().default(false),
+    require_json_mode: z.boolean().default(false),
+    min_context_window: z.number().int().positive().optional()
+  })
+  .strict();
+
+export const policyWeightsSchema = z
+  .object({
+    health: z.number().nonnegative().default(1),
+    trust: z.number().nonnegative().default(1),
+    cost: z.number().nonnegative().default(0),
+    quality: z.number().nonnegative().default(0),
+    context: z.number().nonnegative().default(0),
+    tools: z.number().nonnegative().default(0),
+    sticky: z.number().nonnegative().default(0),
+    error_penalty: z.number().nonnegative().default(1),
+    quota_penalty: z.number().nonnegative().default(1)
+  })
+  .strict();
+
 export const policySchema = z
   .object({
+    thresholds: policyThresholdsSchema.default({}),
+    weights: policyWeightsSchema.default({}),
     min_trust_level: trustLevelSchema.default("low"),
     allow_public_only_provider: z.boolean().default(false),
     fallback_enabled: z.boolean().default(true),
@@ -171,6 +197,8 @@ export type ModelCapabilitiesConfig = z.infer<typeof modelCapabilitiesSchema>;
 export type ModelDefinitionConfig = z.infer<typeof modelDefinitionSchema>;
 export type RouteCandidateConfig = z.infer<typeof routeCandidateSchema>;
 export type RouteConfig = z.infer<typeof routeSchema>;
+export type PolicyThresholdsConfig = z.infer<typeof policyThresholdsSchema>;
+export type PolicyWeightsConfig = z.infer<typeof policyWeightsSchema>;
 export type PolicyConfig = z.infer<typeof policySchema>;
 export type TraceConfig = z.infer<typeof traceSchema>;
 export type ServerConfig = z.infer<typeof serverSchema>;

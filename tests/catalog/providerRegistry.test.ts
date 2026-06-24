@@ -58,11 +58,12 @@ describe("buildProviderRegistry", () => {
     });
 
     const registry = buildProviderRegistry(config);
+    const demoProvider = registry.providers.find((provider) => provider.id === "demo");
 
     expect(registry.platforms).toHaveLength(1);
     expect(registry.platforms[0].protocol).toBe("openai");
-    expect(registry.providers[0].trust_level).toBe("low");
-    expect(registry.providers[0].privacy_level).toBe("public_only");
+    expect(demoProvider?.trust_level).toBe("low");
+    expect(demoProvider?.privacy_level).toBe("public_only");
     expect(registry.endpoints[0].platform_id).toBe("openai");
     expect(registry.endpoints[0].provider_id).toBe("demo");
     expect(registry.accounts[0].available).toBe(true);
