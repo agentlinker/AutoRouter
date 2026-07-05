@@ -23,9 +23,7 @@ body {
   margin: 0;
   min-height: 100vh;
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background:
-    linear-gradient(180deg, #ffffff 0%, var(--bg) 42%),
-    var(--bg);
+  background: linear-gradient(180deg, #ffffff 0%, var(--bg) 42%), var(--bg);
   color: var(--text);
 }
 
@@ -36,10 +34,6 @@ input {
 
 button {
   border: 0;
-}
-
-[hidden] {
-  display: none !important;
 }
 
 .layout {
@@ -135,8 +129,7 @@ h2 {
   font-weight: 600;
 }
 
-.required-label::after {
-  content: " *";
+.required-mark {
   color: var(--danger);
 }
 
@@ -152,9 +145,18 @@ input {
   outline: none;
 }
 
+input:read-only {
+  background: #f2f4f7;
+  color: #667085;
+}
+
 input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+}
+
+.field small {
+  color: var(--danger);
 }
 
 a {
@@ -176,11 +178,6 @@ a:hover {
   white-space: nowrap;
 }
 
-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.58;
-}
-
 .primary-action {
   background: var(--accent);
   color: #ffffff;
@@ -200,6 +197,11 @@ button:disabled {
 .ghost-action:hover {
   border-color: var(--line-strong);
   background: var(--panel-subtle);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 
 .status {
@@ -345,7 +347,7 @@ button:disabled {
 
 .provider-meta {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
   padding: 10px;
   border-radius: 7px;
@@ -382,7 +384,7 @@ button:disabled {
   cursor: pointer;
 }
 
-  .provider-actions button:hover {
+.provider-actions button:hover {
   border-color: var(--line-strong);
 }
 
@@ -405,7 +407,7 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
-@media (max-width: 860px) {
+@media (max-width: 920px) {
   .layout {
     width: min(100vw - 24px, 1180px);
     padding: 18px 0;

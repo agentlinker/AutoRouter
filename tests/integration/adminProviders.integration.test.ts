@@ -157,7 +157,8 @@ describe("admin providers integration", () => {
     });
 
     expect(adminPageResponse.statusCode).toBe(200);
-    expect(adminPageResponse.body).toContain("Admin Token");
+    expect(adminPageResponse.body).toContain("AutoRouter Admin");
+    expect(adminPageResponse.body).toContain('id="root"');
 
     const unauthorizedAdminApiResponse = await server.inject({
       method: "GET",
