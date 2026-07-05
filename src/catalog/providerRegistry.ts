@@ -15,6 +15,13 @@ import type {
   ProviderRuntimeState
 } from "../state/routerState.js";
 
+export interface ProviderRegistryOptions {
+  isAccountCredentialAvailable?: (
+    accountId: string,
+    account: AccountConfig
+  ) => boolean;
+}
+
 function normalizeTrustLevel(value: TrustLevel | undefined): TrustLevel {
   return value ?? "low";
 }
@@ -97,7 +104,10 @@ function mapAccounts(
   }));
 }
 
-export function buildProviderRegistry(config: RouterConfig): {
+export function buildProviderRegistry(
+  config: RouterConfig,
+  options: ProviderRegistryOptions = {}
+): {
   platforms: PlatformRuntimeState[];
   providers: ProviderRuntimeState[];
   endpoints: EndpointRuntimeState[];
@@ -106,7 +116,16 @@ export function buildProviderRegistry(config: RouterConfig): {
   const platforms: PlatformRuntimeState[] = [];
   const providers: ProviderRuntimeState[] = [];
   const endpoints: EndpointRuntimeState[] = [];
-  const accounts = mapAccounts(config.accounts);
+  const accounts = Object.entries(config.accounts).map(([accountId, account]) => ({
+    id: accountId,
+    endpoint_id: account.endpoint,
+    account_type: account.account_type,
+    enabled: account.enabled,
+    available:
+      options.isAccountCredentialAvailable?.(accountId, account) ?? isAccountAvailable(account),
+    recent_error_count: 0,
+    quota: account.quota
+  }));
 
   for (const [platformId, platformConfig] of Object.entries(config.platforms)) {
     platforms.push(mapPlatform(platformId, platformConfig));

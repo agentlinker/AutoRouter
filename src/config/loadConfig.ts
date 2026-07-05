@@ -304,30 +304,7 @@ function normalizeConfigShape(rawConfig: ConfigSource): ConfigSource {
   };
 }
 
-export interface LoadConfigOptions {
-  cwd?: string;
-  override?: ConfigSource;
-  globalConfigPath?: string;
-  projectConfigPath?: string;
-}
-
-export function loadConfig(options: LoadConfigOptions = {}): RouterConfig {
-  const cwd = options.cwd ?? process.cwd();
-  const globalConfigPath =
-    options.globalConfigPath ?? join(cwd, "config/config.yaml");
-  const projectConfigPath =
-    options.projectConfigPath ?? join(cwd, "config/config.yaml");
-
-  const merged = mergeObjects(
-    {},
-    readConfigFile(globalConfigPath),
-    readConfigFile(projectConfigPath),
-    options.override ?? {}
-  );
-
-  const normalizedInput = normalizeConfigShape(merged);
-  const config = routerConfigSchema.parse(normalizedInput);
-
+export function validateConfig(config: RouterConfig): RouterConfig {
   for (const [endpointId, endpoint] of Object.entries(config.endpoints)) {
     if (!config.providers[endpoint.provider]) {
       throw new HttpError(
@@ -387,4 +364,33 @@ export function loadConfig(options: LoadConfigOptions = {}): RouterConfig {
   }
 
   return config;
+}
+
+export function parseConfigSource(source: ConfigSource): RouterConfig {
+  const normalizedInput = normalizeConfigShape(source);
+  const config = routerConfigSchema.parse(normalizedInput);
+  return validateConfig(config);
+}
+
+export interface LoadConfigOptions {
+  cwd?: string;
+  override?: ConfigSource;
+  globalConfigPath?: string;
+  projectConfigPath?: string;
+}
+
+export function loadConfig(options: LoadConfigOptions = {}): RouterConfig {
+  const cwd = options.cwd ?? process.cwd();
+  const globalConfigPath =
+    options.globalConfigPath ?? join(cwd, "config/config.yaml");
+  const projectConfigPath =
+    options.projectConfigPath ?? join(cwd, "config/config.yaml");
+
+  const merged = mergeObjects(
+    {},
+    readConfigFile(globalConfigPath),
+    readConfigFile(projectConfigPath),
+    options.override ?? {}
+  );
+  return parseConfigSource(merged);
 }

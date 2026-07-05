@@ -3,6 +3,10 @@ server:
   port: 8811
   request_timeout_ms: 120000
   gateway_token_env: AUTO_ROUTER_TOKEN
+  admin_token_env: AUTO_ROUTER_ADMIN_TOKEN
+
+database:
+  path: ./data/autorouter.db
 
 defaults:
   model: auto

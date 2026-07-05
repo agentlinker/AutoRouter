@@ -1,27 +1,57 @@
 import Fastify, { type FastifyInstance } from "fastify";
 
-import { ModelCatalog } from "../catalog/modelCatalog.js";
-import type { RouterState } from "../state/routerState.js";
 import { registerExplainRoute } from "./routes/explain.js";
 import { isHttpError } from "../utils/httpErrors.js";
-import { requireGatewayToken } from "./auth.js";
+import { requireAdminToken, requireGatewayToken } from "./auth.js";
 import { registerChatCompletionsRoute } from "./routes/chatCompletions.js";
 import { registerHealthRoute } from "./routes/health.js";
 import { registerModelsRoute } from "./routes/models.js";
+import type { RuntimeManagerLike } from "../runtime/runtimeTypes.js";
+import { createStaticRuntimeManager } from "../runtime/runtimeManager.js";
+import { registerAdminProvidersRoutes } from "./routes/adminProviders.js";
+import { registerAdminUiRoutes } from "./routes/adminUi.js";
+import type { ManagedProviderRepository } from "../repositories/managedProviderRepository.js";
+import type { ProviderModelDiscoveryService } from "../discovery/providerModelDiscovery.js";
+import type { SecretCipher } from "../security/secretCipher.js";
+import type { RouterState } from "../state/routerState.js";
 
-export async function createServer(state: RouterState): Promise<FastifyInstance> {
+function toRuntimeManagerLike(input: RuntimeManagerLike | RouterState): RuntimeManagerLike {
+  if ("getSnapshot" in input && typeof input.getSnapshot === "function") {
+    return input;
+  }
+
+  return createStaticRuntimeManager(input as RouterState);
+}
+
+export async function createServer(
+  runtimeInput: RuntimeManagerLike | RouterState,
+  dependencies?: {
+    managedProviderRepository?: ManagedProviderRepository;
+    discoveryService?: ProviderModelDiscoveryService;
+    secretCipher?: SecretCipher;
+  }
+): Promise<FastifyInstance> {
+  const runtimeManager = toRuntimeManagerLike(runtimeInput);
+  const initialState = runtimeManager.getSnapshot();
   const fastify = Fastify({
     logger: false,
-    requestTimeout: state.config.server.request_timeout_ms
+    requestTimeout: initialState.config.server.request_timeout_ms
   });
-  const modelCatalog = new ModelCatalog(state.config);
 
   fastify.addHook("onRequest", async (request, reply) => {
-    requireGatewayToken(
-      request,
-      reply,
-      process.env[state.config.server.gateway_token_env]
-    );
+    const snapshot = runtimeManager.getSnapshot();
+    const adminApiPath = request.url.startsWith("/admin/api");
+
+    if (adminApiPath) {
+      requireAdminToken(request, reply, process.env[snapshot.config.server.admin_token_env]);
+      return;
+    }
+
+    if (request.url.startsWith("/admin")) {
+      return;
+    }
+
+    requireGatewayToken(request, reply, process.env[snapshot.config.server.gateway_token_env]);
   });
 
   fastify.setErrorHandler((error, _request, reply) => {
@@ -43,10 +73,24 @@ export async function createServer(state: RouterState): Promise<FastifyInstance>
     });
   });
 
-  await registerHealthRoute(fastify, state);
-  await registerModelsRoute(fastify, modelCatalog);
-  await registerChatCompletionsRoute(fastify, state, modelCatalog);
-  await registerExplainRoute(fastify, state.traceStore);
+  await registerAdminUiRoutes(fastify);
+  if (
+    dependencies?.managedProviderRepository &&
+    dependencies.discoveryService &&
+    dependencies.secretCipher
+  ) {
+    await registerAdminProvidersRoutes(fastify, {
+      runtimeManager,
+      repository: dependencies.managedProviderRepository,
+      discoveryService: dependencies.discoveryService,
+      secretCipher: dependencies.secretCipher
+    });
+  }
+
+  await registerHealthRoute(fastify, runtimeManager);
+  await registerModelsRoute(fastify, runtimeManager);
+  await registerChatCompletionsRoute(fastify, runtimeManager);
+  await registerExplainRoute(fastify, runtimeManager.getSnapshot().traceStore);
 
   return fastify;
 }

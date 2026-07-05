@@ -1,20 +1,20 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 
-import type { ModelCatalog } from "../../catalog/modelCatalog.js";
 import { selectRoute } from "../../routing/routeEngine.js";
-import type { RouterState } from "../../state/routerState.js";
 import { sha256 } from "../../utils/hash.js";
 import { HttpError } from "../../utils/httpErrors.js";
 import { normalizeChatRequest } from "../../routing/normalizeRequest.js";
 import type { ChatCompletionsRequestBody } from "../../routing/types.js";
+import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
 
 export async function registerChatCompletionsRoute(
   fastify: FastifyInstance,
-  state: RouterState,
-  modelCatalog: ModelCatalog
+  runtimeManager: RuntimeManagerLike
 ) {
   fastify.post<{ Body: ChatCompletionsRequestBody }>("/v1/chat/completions", async (request, reply) => {
+    const state = runtimeManager.getSnapshot();
+    const { modelCatalog } = state;
     const normalizedRequest = normalizeChatRequest(request.body);
     const sessionId =
       typeof normalizedRequest.metadata.session_id === "string"
@@ -111,9 +111,7 @@ export async function registerChatCompletionsRoute(
         continue;
       }
 
-      const credential = accountConfig.credential_env
-        ? process.env[accountConfig.credential_env]
-        : undefined;
+      const credential = state.credentialStore.resolve(candidate.account.id, accountConfig);
       const adapter = state.adapters.get(candidate.endpoint.adapter as never);
 
       try {

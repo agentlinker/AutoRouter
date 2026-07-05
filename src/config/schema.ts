@@ -153,7 +153,14 @@ export const serverSchema = z
     host: z.string().default("127.0.0.1"),
     port: z.number().int().positive().default(8811),
     request_timeout_ms: z.number().int().positive().default(120000),
-    gateway_token_env: z.string().default("AUTO_ROUTER_TOKEN")
+    gateway_token_env: z.string().default("AUTO_ROUTER_TOKEN"),
+    admin_token_env: z.string().default("AUTO_ROUTER_ADMIN_TOKEN")
+  })
+  .strict();
+
+export const databaseSchema = z
+  .object({
+    path: z.string().default("./data/autorouter.db")
   })
   .strict();
 
@@ -168,6 +175,7 @@ export const defaultsSchema = z
 export const routerConfigSchema = z
   .object({
     server: serverSchema.default({}),
+    database: databaseSchema.default({}),
     defaults: defaultsSchema.default({}),
     trace: traceSchema.default({}),
     platforms: z.record(z.string(), platformSchema).default({}),
@@ -202,5 +210,6 @@ export type PolicyWeightsConfig = z.infer<typeof policyWeightsSchema>;
 export type PolicyConfig = z.infer<typeof policySchema>;
 export type TraceConfig = z.infer<typeof traceSchema>;
 export type ServerConfig = z.infer<typeof serverSchema>;
+export type DatabaseConfig = z.infer<typeof databaseSchema>;
 export type DefaultsConfig = z.infer<typeof defaultsSchema>;
 export type RouterConfig = z.infer<typeof routerConfigSchema>;

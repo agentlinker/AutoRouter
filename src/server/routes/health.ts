@@ -1,13 +1,14 @@
 import type { FastifyInstance } from "fastify";
 
-import type { RouterState } from "../../state/routerState.js";
 import type { HealthResult } from "../../providers/adapter.js";
+import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
 
 export async function registerHealthRoute(
   fastify: FastifyInstance,
-  state: RouterState
+  runtimeManager: RuntimeManagerLike
 ) {
   fastify.get("/v1/autorouter/health", async () => {
+    const state = runtimeManager.getSnapshot();
     const checkedEndpoints = await Promise.all(
       state.endpoints.map(async (endpointState) => {
         const endpointConfig = state.config.endpoints[endpointState.id];
@@ -20,8 +21,8 @@ export async function registerHealthRoute(
         }
 
         const accountConfig = state.config.accounts[accountState.id];
-        const apiKey = accountConfig?.credential_env
-          ? process.env[accountConfig.credential_env]
+        const apiKey = accountConfig
+          ? state.credentialStore.resolve(accountState.id, accountConfig)
           : undefined;
         const adapter = state.adapters.get(endpointConfig.adapter);
         const providerState = state.providers.find(

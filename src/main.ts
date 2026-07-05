@@ -1,36 +1,42 @@
+import "dotenv/config";
+
 import { createLogger } from "./utils/logger.js";
-import { buildProviderRegistry } from "./catalog/providerRegistry.js";
-import { PriceTable } from "./catalog/priceTable.js";
 import { loadConfig } from "./config/loadConfig.js";
+import { createDatabaseClient } from "./db/client.js";
+import { ProviderModelDiscoveryService } from "./discovery/providerModelDiscovery.js";
 import { AdapterRegistry } from "./providers/registry.js";
+import { ManagedProviderRepository } from "./repositories/managedProviderRepository.js";
 import { StickySessionStore } from "./routing/stickySession.js";
+import { RuntimeManager } from "./runtime/runtimeManager.js";
+import { SecretCipher } from "./security/secretCipher.js";
 import { createServer } from "./server/createServer.js";
-import type { RouterState } from "./state/routerState.js";
 import { TraceStore } from "./trace/traceStore.js";
 
 async function main() {
   const logger = createLogger();
   const config = loadConfig();
-  const registry = buildProviderRegistry(config);
-  const priceTable = new PriceTable(config);
+  const databaseClient = createDatabaseClient(config.database.path);
+  const managedProviderRepository = new ManagedProviderRepository(databaseClient.db);
   const adapters = new AdapterRegistry();
   const stickySessions = new StickySessionStore();
   const traceStore = new TraceStore(config.trace.directory);
-
-  const state: RouterState = {
-    config,
-    logger,
-    platforms: registry.platforms,
-    providers: registry.providers,
-    endpoints: registry.endpoints,
-    accounts: registry.accounts,
-    priceTable,
+  const secretCipher = new SecretCipher(process.env.AUTO_ROUTER_MASTER_KEY);
+  const runtimeManager = new RuntimeManager({
+    baseConfig: config,
+    managedProviderRepository,
+    secretCipher,
     adapters,
     stickySessions,
-    traceStore
-  };
+    traceStore,
+    logger
+  });
+  const discoveryService = new ProviderModelDiscoveryService();
 
-  const server = await createServer(state);
+  const server = await createServer(runtimeManager, {
+    managedProviderRepository,
+    discoveryService,
+    secretCipher
+  });
   const address = await server.listen({
     host: config.server.host,
     port: config.server.port
