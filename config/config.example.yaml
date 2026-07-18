@@ -15,7 +15,12 @@ defaults:
 
 trace:
   directory: ./data/traces
+  hot_retention_days: 7
   log_prompts: false
+  archive:
+    format: parquet
+    directory: ./data/traces
+    flush_batch_size: 100
 
 providers:
   openrouter:

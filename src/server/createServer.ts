@@ -6,6 +6,12 @@ import { requireAdminToken, requireGatewayToken } from "./auth.js";
 import { registerChatCompletionsRoute } from "./routes/chatCompletions.js";
 import { registerHealthRoute } from "./routes/health.js";
 import { registerModelsRoute } from "./routes/models.js";
+import { registerAdminApiKeysRoutes } from "./routes/adminApiKeys.js";
+import { registerAdminPoliciesRoutes } from "./routes/adminPolicies.js";
+import { registerAdminSettingsRoutes } from "./routes/adminSettings.js";
+import { registerAdminTokensRoutes } from "./routes/adminTokens.js";
+import { registerAdminTraceRoutes } from "./routes/adminTraces.js";
+import { registerAdminUsageRoutes } from "./routes/adminUsage.js";
 import type { RuntimeManagerLike } from "../runtime/runtimeTypes.js";
 import { createStaticRuntimeManager } from "../runtime/runtimeManager.js";
 import { registerAdminProvidersRoutes } from "./routes/adminProviders.js";
@@ -73,6 +79,10 @@ export async function createServer(
     });
   });
 
+  fastify.addHook("onClose", async () => {
+    await runtimeManager.getSnapshot().traceStore.close();
+  });
+
   await registerAdminUiRoutes(fastify);
   if (
     dependencies?.managedProviderRepository &&
@@ -84,6 +94,25 @@ export async function createServer(
       repository: dependencies.managedProviderRepository,
       discoveryService: dependencies.discoveryService,
       secretCipher: dependencies.secretCipher
+    });
+    await registerAdminApiKeysRoutes(fastify, {
+      runtimeManager,
+      repository: dependencies.managedProviderRepository
+    });
+    await registerAdminUsageRoutes(fastify, {
+      runtimeManager
+    });
+    await registerAdminTraceRoutes(fastify, {
+      runtimeManager
+    });
+    await registerAdminTokensRoutes(fastify, {
+      runtimeManager
+    });
+    await registerAdminPoliciesRoutes(fastify, {
+      runtimeManager
+    });
+    await registerAdminSettingsRoutes(fastify, {
+      runtimeManager,
     });
   }
 

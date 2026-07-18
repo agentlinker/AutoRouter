@@ -276,6 +276,8 @@ function normalizeConfigShape(rawConfig: ConfigSource): ConfigSource {
   const endpointsBlock = toRecord(rawConfig.endpoints);
   const accountsBlock = toRecord(rawConfig.accounts);
   const modelsBlock = toRecord(rawConfig.models);
+  const traceBlock = toRecord(rawConfig.trace);
+  const traceArchiveBlock = toRecord(traceBlock.archive);
 
   const normalizedProviderBlocks = normalizeProviders(providersBlock);
   const normalizedRoutes =
@@ -294,6 +296,15 @@ function normalizeConfigShape(rawConfig: ConfigSource): ConfigSource {
 
   return {
     ...rest,
+    trace: {
+      ...traceBlock,
+      hot_retention_days: traceBlock.hot_retention_days ?? 7,
+      archive: {
+        format: traceArchiveBlock.format ?? "parquet",
+        directory: traceArchiveBlock.directory ?? traceBlock.directory ?? "./data/traces",
+        flush_batch_size: traceArchiveBlock.flush_batch_size ?? 100
+      }
+    },
     platforms: mergeObjects({}, platformsBlock, toRecord(normalizedProviderBlocks.platforms)),
     providers: toRecord(normalizedProviderBlocks.providers),
     endpoints: mergeObjects({}, endpointsBlock, toRecord(normalizedProviderBlocks.endpoints)),

@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { rmSync } from "node:fs";
 import { MockAgent, setGlobalDispatcher } from "undici";
 
 import { buildProviderRegistry } from "../../src/catalog/providerRegistry.js";
 import { PriceTable } from "../../src/catalog/priceTable.js";
 import { loadConfig } from "../../src/config/loadConfig.js";
+import { createDatabaseClient } from "../../src/db/client.js";
 import { AdapterRegistry } from "../../src/providers/registry.js";
+import { RouteTraceRepository } from "../../src/repositories/routeTraceRepository.js";
 import { StickySessionStore } from "../../src/routing/stickySession.js";
 import { createServer } from "../../src/server/createServer.js";
 import type { RouterState } from "../../src/state/routerState.js";
@@ -13,6 +16,11 @@ import { createLogger } from "../../src/utils/logger.js";
 
 describe("local smoke", () => {
   let mockAgent: MockAgent;
+
+  function createTraceStore(databasePath: string) {
+    const databaseClient = createDatabaseClient(databasePath);
+    return new TraceStore(new RouteTraceRepository(databaseClient.db));
+  }
 
   beforeEach(() => {
     vi.stubEnv("AUTO_ROUTER_TOKEN", "smoke-token");
@@ -24,6 +32,7 @@ describe("local smoke", () => {
 
   afterEach(async () => {
     vi.unstubAllEnvs();
+    rmSync("/tmp/auto-router-smoke-traces.db", { force: true });
     await mockAgent.close();
   });
 
@@ -145,7 +154,7 @@ describe("local smoke", () => {
       priceTable: new PriceTable(config),
       adapters: new AdapterRegistry(),
       stickySessions: new StickySessionStore(),
-      traceStore: new TraceStore("/tmp/auto-router-smoke-traces")
+      traceStore: createTraceStore("/tmp/auto-router-smoke-traces.db")
     };
 
     const gateway = await createServer(state);

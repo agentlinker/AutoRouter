@@ -90,6 +90,13 @@ export async function registerChatCompletionsRoute(
           )
       )
       .sort((left, right) => right.score - left.score);
+    const selectedCandidateScore =
+      orderedCandidates.find(
+        (candidate) =>
+          candidate.routeId === routeDecision.selected.routeId &&
+          candidate.account.id === routeDecision.selected.account.id &&
+          candidate.modelId === routeDecision.selected.modelId
+      )?.score ?? 0;
 
     let providerResponse;
     let selectedRoute = routeDecision.selected;
@@ -101,6 +108,8 @@ export async function registerChatCompletionsRoute(
       account: string;
       model_id: string;
       model: string;
+      score?: number;
+      sticky?: boolean;
     }> = [];
     let lastError: unknown;
 
@@ -187,7 +196,9 @@ export async function registerChatCompletionsRoute(
             provider: candidate.provider.id,
             account: candidate.account.id,
             model_id: candidate.modelId,
-            model: candidate.modelName
+            model: candidate.modelName,
+            score: candidate.score,
+            sticky: false
           });
         }
       }
@@ -203,7 +214,8 @@ export async function registerChatCompletionsRoute(
         prompt_hash: promptHash,
         stream: normalizedRequest.stream,
         has_tools: normalizedRequest.tools.length > 0,
-        privacy_level: privacyLevel
+        privacy_level: privacyLevel,
+        context_tokens_est: normalizedRequest.context_tokens_est
       },
       candidates: routeDecision.candidates.map((candidate) => ({
         route_id: candidate.routeId,
@@ -212,7 +224,9 @@ export async function registerChatCompletionsRoute(
         provider: candidate.provider,
         account: candidate.account,
         model_id: candidate.modelId,
-        model: candidate.model
+        model: candidate.model,
+        score: candidate.score,
+        sticky: candidate.sticky
       })),
       filtered: routeDecision.filtered.map((candidate) => ({
         route_id: candidate.routeId,
@@ -222,7 +236,9 @@ export async function registerChatCompletionsRoute(
         account: candidate.account,
         model_id: candidate.modelId,
         model: candidate.model,
-        reason: candidate.filteredReason
+        reason: candidate.filteredReason,
+        score: candidate.score,
+        sticky: candidate.sticky
       })),
       selected: {
         route_id: selectedRoute.routeId,
@@ -231,9 +247,11 @@ export async function registerChatCompletionsRoute(
         provider: selectedRoute.provider.id,
         account_hash: sha256(selectedRoute.account.id),
         model_id: selectedRoute.modelId,
-        model: selectedRoute.model
+        model: selectedRoute.model,
+        score: selectedCandidateScore
       },
-      fallbacks: fallbackHistory
+      fallbacks: fallbackHistory,
+      feedback: null
     };
 
     if (!providerResponse) {

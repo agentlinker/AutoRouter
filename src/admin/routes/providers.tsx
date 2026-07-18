@@ -1,5 +1,27 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, Outlet, useNavigate, useParams, useRouterState } from "@tanstack/react-router";
+import {
+  Activity,
+  BarChart3,
+  Cpu,
+  DatabaseZap,
+  Edit3,
+  ExternalLink,
+  KeyRound,
+  Lock,
+  LogOut,
+  Network,
+  Plus,
+  Power,
+  RefreshCw,
+  Route,
+  ScrollText,
+  Settings,
+  ShieldCheck,
+  Sparkles,
+  Trash2
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
@@ -15,7 +37,7 @@ import {
   type ProviderFormValues
 } from "../api/providers.js";
 
-const tokenStorageKey = "autorouter_admin_token";
+export const providerTokenStorageKey = "autorouter_admin_token";
 
 const providerFormSchema = z.object({
   provider_key: z.string().trim().min(1, "请填写 Provider Key"),
@@ -45,19 +67,106 @@ function RequiredMark() {
   return <span className="required-mark">*</span>;
 }
 
-export function AdminApp() {
-  const [tokenInput, setTokenInput] = useState(
-    () => localStorage.getItem(tokenStorageKey) ?? ""
-  );
-  const [token, setToken] = useState(() => localStorage.getItem(tokenStorageKey) ?? "");
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [editingProvider, setEditingProvider] = useState<ProviderDetails | null>(null);
-  const queryClient = useQueryClient();
+export function getStoredToken() {
+  return localStorage.getItem(providerTokenStorageKey) ?? "";
+}
 
-  const providersQuery = useQuery({
-    queryKey: ["providers", token],
+function providersQueryKey(token: string) {
+  return ["providers", token] as const;
+}
+
+function useAdminToken() {
+  const [token, setToken] = useState(getStoredToken);
+
+  function saveToken(nextToken: string) {
+    localStorage.setItem(providerTokenStorageKey, nextToken);
+    setToken(nextToken);
+  }
+
+  function clearToken() {
+    localStorage.removeItem(providerTokenStorageKey);
+    setToken("");
+  }
+
+  return { token, saveToken, clearToken };
+}
+
+function useProviders(token: string) {
+  return useQuery({
+    queryKey: providersQueryKey(token),
     queryFn: () => listProviders(token),
     enabled: token.length > 0
+  });
+}
+
+function useProvider(token: string, providerKey: string) {
+  const providersQuery = useProviders(token);
+  const provider = providersQuery.data?.data.find((item) => item.provider_key === providerKey) ?? null;
+
+  return { ...providersQuery, provider };
+}
+
+const navItems = [
+  {
+    label: "Providers",
+    icon: Network,
+    to: "/providers",
+    title: "Provider 管理",
+    description: "配置 OpenAI-compatible provider，自动整理可用模型。"
+  },
+  {
+    label: "API Keys",
+    icon: KeyRound,
+    to: "/api-keys",
+    title: "API Key 管理",
+    description: "查看系统令牌状态和各 Provider 凭据摘要。"
+  },
+  {
+    label: "Usage",
+    icon: BarChart3,
+    to: "/usage",
+    title: "使用记录",
+    description: "查看最近请求的调用情况、成功率和 Provider 分布。"
+  },
+  {
+    label: "Trace",
+    icon: Route,
+    to: "/trace",
+    title: "Trace 追踪",
+    description: "查看为什么命中这个 Provider 和模型。"
+  },
+  {
+    label: "Tokens",
+    icon: Activity,
+    to: "/tokens",
+    title: "Token 统计",
+    description: "按 Provider 和模型查看最近 token 消耗。"
+  },
+  {
+    label: "Policies",
+    icon: ScrollText,
+    to: "/policies",
+    title: "Policies",
+    description: "检查阈值、权重和 route 绑定关系。"
+  },
+  {
+    label: "Settings",
+    icon: Settings,
+    to: "/settings",
+    title: "系统设置",
+    description: "查看当前运行配置、路径和运行态摘要。"
+  }
+] as const;
+
+export function AdminRoot() {
+  const [tokenInput, setTokenInput] = useState(getStoredToken);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const { token, saveToken, clearToken } = useAdminToken();
+  const queryClient = useQueryClient();
+  const providersQuery = useProviders(token);
+  const navigate = useNavigate();
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname
   });
 
   useEffect(() => {
@@ -66,9 +175,13 @@ export function AdminApp() {
     }
   }, [providersQuery.error, providersQuery.isError]);
 
-  const providers = providersQuery.data?.data ?? [];
-  const totalModels = providers.reduce((sum, provider) => sum + provider.models.length, 0);
   const isAuthenticated = token.length > 0 && providersQuery.isSuccess;
+  const activeNavItem = useMemo(
+    () =>
+      navItems.find((item) => pathname === item.to || pathname.startsWith(`${item.to}/`)) ??
+      navItems[0],
+    [pathname]
+  );
 
   function authenticate() {
     const nextToken = tokenInput.trim();
@@ -77,36 +190,40 @@ export function AdminApp() {
       return;
     }
 
-    localStorage.setItem(tokenStorageKey, nextToken);
     setAuthError(null);
-    setToken(nextToken);
+    saveToken(nextToken);
   }
 
   function lockConsole() {
-    localStorage.removeItem(tokenStorageKey);
-    setToken("");
+    clearToken();
     setTokenInput("");
-    setEditingProvider(null);
     setAuthError(null);
     queryClient.removeQueries({ queryKey: ["providers"] });
+    void navigate({ to: "/providers" });
   }
 
   if (!isAuthenticated) {
     return (
-      <main className="layout">
+      <main className="auth-shell">
         <section className="auth-view">
-          <div className="brand">
-            <div className="brand-mark">AR</div>
+          <div className="brand auth-brand">
+            <div className="brand-mark">
+              <Cpu size={22} />
+            </div>
             <div>
               <h1>AutoRouter Admin</h1>
-              <p>管理本地 provider、密钥与自动发现的模型。</p>
+              <p>统一管理本地模型入口、调用策略与运行轨迹。</p>
             </div>
           </div>
 
           <div className="auth-card">
             <div className="card-header">
+              <span className="eyebrow">
+                <ShieldCheck size={14} />
+                Secure Console
+              </span>
               <h2>管理员验证</h2>
-              <p>使用 .env 中的 AUTO_ROUTER_ADMIN_TOKEN 进入控制台。</p>
+              <p>输入管理 Token 后进入控制台。</p>
             </div>
 
             <label className="field">
@@ -128,6 +245,7 @@ export function AdminApp() {
             </label>
 
             <button className="primary-action" type="button" onClick={authenticate}>
+              <Lock size={16} />
               进入管理台
             </button>
             <p className={`status ${authError ? "error" : ""}`}>
@@ -139,73 +257,302 @@ export function AdminApp() {
     );
   }
 
+  const providers = providersQuery.data?.data ?? [];
+  const totalModels = providers.reduce((sum, provider) => sum + provider.models.length, 0);
+
   return (
-    <main className="layout">
-      <section className="app-view">
-        <header className="topbar">
-          <div className="brand compact">
-            <div className="brand-mark">AR</div>
-            <div>
-              <h1>Provider 管理</h1>
-              <p>配置 OpenAI-compatible provider 并同步模型。</p>
-            </div>
+    <main className="console-shell">
+      <aside className="sidebar">
+        <div className="brand sidebar-brand">
+          <div className="brand-mark">
+            <Cpu size={21} />
+          </div>
+          <div>
+            <strong>AutoRouter</strong>
+            <span>Control Plane</span>
+          </div>
+        </div>
+
+        <nav className="side-nav" aria-label="Admin navigation">
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            return (
+              <Link
+                key={item.label}
+                to={item.to}
+                className="nav-item"
+                activeProps={{ className: "nav-item active" }}
+              >
+                <Icon size={17} />
+                <span>{item.label}</span>
+              </Link>
+            );
+          })}
+        </nav>
+
+        <div className="sidebar-footer">
+          <span className="status-dot" />
+          <span>Gateway online</span>
+        </div>
+      </aside>
+
+      <section className="workspace">
+        <header className="page-header">
+          <div>
+            <span className="eyebrow">
+              <Sparkles size={14} />
+              {activeNavItem.label}
+            </span>
+            <h1>{activeNavItem.title}</h1>
+            <p>{activeNavItem.description}</p>
           </div>
           <div className="topbar-actions">
-            <span className="badge success">已验证</span>
+            <span className="badge success">
+              <ShieldCheck size={13} />
+              已验证
+            </span>
             <button className="ghost-action" type="button" onClick={lockConsole}>
+              <LogOut size={16} />
               锁定
             </button>
           </div>
         </header>
 
-        <section className="content-grid">
-          <ProviderForm
-            token={token}
-            editingProvider={editingProvider}
-            onDone={() => {
-              setEditingProvider(null);
-              void queryClient.invalidateQueries({ queryKey: ["providers", token] });
-            }}
-            onCancel={() => setEditingProvider(null)}
-          />
-
-          <section className="panel list-panel">
-            <div className="list-header">
-              <div>
-                <h2>Provider 列表</h2>
-                <p className="muted">
-                  {providers.length} providers · {totalModels} models
-                </p>
-              </div>
-              <button
-                className="ghost-action"
-                type="button"
-                onClick={() => void providersQuery.refetch()}
-              >
-                刷新
-              </button>
+        <section className="stats-grid">
+          <div className="stat-card">
+            <Network size={18} />
+            <div>
+              <span>Providers</span>
+              <strong>{providers.length}</strong>
             </div>
-
-            <ProviderList
-              token={token}
-              providers={providers}
-              onEdit={setEditingProvider}
-              onChanged={() => void queryClient.invalidateQueries({ queryKey: ["providers", token] })}
-            />
-          </section>
+          </div>
+          <div className="stat-card">
+            <DatabaseZap size={18} />
+            <div>
+              <span>Models</span>
+              <strong>{totalModels}</strong>
+            </div>
+          </div>
+          <div className="stat-card">
+            <Activity size={18} />
+            <div>
+              <span>Gateway</span>
+              <strong>Online</strong>
+            </div>
+          </div>
         </section>
+
+        <Outlet />
       </section>
     </main>
   );
 }
 
-function ProviderForm(props: {
+export function ProviderListPage() {
+  const token = getStoredToken();
+  const queryClient = useQueryClient();
+  const providersQuery = useProviders(token);
+  const providers = providersQuery.data?.data ?? [];
+  const totalModels = providers.reduce((sum, provider) => sum + provider.models.length, 0);
+
+  return (
+    <section className="page-panel">
+      <div className="list-header">
+        <div>
+          <h2>Provider 列表</h2>
+          <p className="muted">
+            {providers.length} providers · {totalModels} models
+          </p>
+        </div>
+        <div className="page-actions">
+          <button
+            className="ghost-action"
+            type="button"
+            onClick={() => void providersQuery.refetch()}
+          >
+            <RefreshCw size={16} />
+            刷新
+          </button>
+          <Link to="/providers/new" className="primary-action">
+            <Plus size={16} />
+            新增 Provider
+          </Link>
+        </div>
+      </div>
+
+      <ProviderList
+        token={token}
+        providers={providers}
+        onChanged={() => void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) })}
+      />
+    </section>
+  );
+}
+
+export function ProviderNewPage() {
+  const token = getStoredToken();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+
+  return (
+    <ProviderFormPage
+      title="新增 Provider"
+      help="填写服务信息后，系统会自动找到可用模型并保存起来。"
+      mode="create"
+      token={token}
+      onDone={() => {
+        void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
+        void navigate({ to: "/providers" });
+      }}
+    />
+  );
+}
+
+export function ProviderEditPage() {
+  const token = getStoredToken();
+  const { providerKey } = useParams({ from: "/providers/$providerKey/edit" });
+  const { provider, isLoading } = useProvider(token, providerKey);
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+
+  if (isLoading) {
+    return <PageLoading />;
+  }
+
+  if (!provider) {
+    return <NotFoundPanel title="Provider 不存在" />;
+  }
+
+  return (
+    <ProviderFormPage
+      title="编辑 Provider"
+      help="修改名称或官网会直接保存；修改 Base URL 时会重新检查可用模型。"
+      mode="edit"
+      token={token}
+      provider={provider}
+      onDone={() => {
+        void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
+        void navigate({ to: "/providers/$providerKey", params: { providerKey } });
+      }}
+    />
+  );
+}
+
+export function ProviderDetailPage() {
+  const token = getStoredToken();
+  const { providerKey } = useParams({ from: "/providers/$providerKey" });
+  const { provider, isLoading } = useProvider(token, providerKey);
+  const queryClient = useQueryClient();
+  const mutation = useMutation({
+    mutationFn: async (action: "sync" | "toggle" | "delete") => {
+      if (!provider) {
+        return null;
+      }
+
+      if (action === "sync") {
+        return syncProvider(token, provider.provider_key);
+      }
+
+      if (action === "toggle") {
+        return setProviderEnabled(token, provider.provider_key, !provider.enabled);
+      }
+
+      if (action === "delete") {
+        return deleteProvider(token, provider.provider_key);
+      }
+
+      return null;
+    },
+    onSuccess: (_result, action) => {
+      void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
+      if (action === "delete") {
+        window.location.assign("/admin/providers");
+      }
+    }
+  });
+
+  if (isLoading) {
+    return <PageLoading />;
+  }
+
+  if (!provider) {
+    return <NotFoundPanel title="Provider 不存在" />;
+  }
+
+  return (
+    <section className="page-panel detail-page">
+      <div className="detail-header">
+        <div>
+          <span className="eyebrow">
+            <Network size={14} />
+            Provider Detail
+          </span>
+          <h2>{provider.display_name}</h2>
+          <p className="muted">{provider.provider_key}</p>
+        </div>
+        <div className="page-actions">
+          <Link to="/providers/$providerKey/edit" params={{ providerKey: provider.provider_key }} className="ghost-action">
+            <Edit3 size={16} />
+            编辑
+          </Link>
+          <button className="ghost-action" type="button" onClick={() => mutation.mutate("sync")}>
+            <RefreshCw size={16} />
+            同步模型
+          </button>
+          <button className="ghost-action" type="button" onClick={() => mutation.mutate("toggle")}>
+            {provider.enabled ? <Power size={16} /> : <Activity size={16} />}
+            {provider.enabled ? "禁用" : "启用"}
+          </button>
+        </div>
+      </div>
+
+      <div className="detail-grid">
+        <MetricCard label="状态" value={provider.enabled ? "已启用" : "已停用"} />
+        <MetricCard label="模型数量" value={String(provider.models.length)} />
+        <MetricCard label="Key" value={provider.key_hint ?? "hidden"} />
+      </div>
+
+      <div className="panel detail-card">
+        <h3>连接信息</h3>
+        <dl>
+          <dt>Base URL</dt>
+          <dd><code>{provider.base_url}</code></dd>
+          <dt>官网地址</dt>
+          <dd>
+            {provider.website_url ? (
+              <a href={provider.website_url} target="_blank" rel="noreferrer">
+                {provider.website_url}
+              </a>
+            ) : (
+              "未填写"
+            )}
+          </dd>
+          <dt>最近同步</dt>
+          <dd>{provider.latest_sync?.status ?? "暂无记录"}</dd>
+        </dl>
+      </div>
+
+      <div className="panel detail-card">
+        <h3>模型列表</h3>
+        <ul className="model-list expanded">
+          {provider.models.map((model) => (
+            <li key={model.model_key}>{model.model_name}</li>
+          ))}
+        </ul>
+      </div>
+    </section>
+  );
+}
+
+function ProviderFormPage(props: {
+  title: string;
+  help: string;
+  mode: "create" | "edit";
   token: string;
-  editingProvider: ProviderDetails | null;
+  provider?: ProviderDetails;
   onDone: () => void;
-  onCancel: () => void;
 }) {
-  const isEditing = Boolean(props.editingProvider);
+  const isEditing = props.mode === "edit";
   const [message, setMessage] = useState<{ text: string; mode?: "success" | "error" } | null>(null);
 
   const form = useForm<ProviderFormValues>({
@@ -220,27 +567,15 @@ function ProviderForm(props: {
   });
 
   useEffect(() => {
-    if (!props.editingProvider) {
-      form.reset({
-        provider_key: "",
-        display_name: "",
-        base_url: "",
-        website_url: "",
-        api_key: ""
-      });
-      setMessage(null);
-      return;
-    }
-
     form.reset({
-      provider_key: props.editingProvider.provider_key,
-      display_name: props.editingProvider.display_name,
-      base_url: props.editingProvider.base_url,
-      website_url: props.editingProvider.website_url ?? "",
+      provider_key: props.provider?.provider_key ?? "",
+      display_name: props.provider?.display_name ?? "",
+      base_url: props.provider?.base_url ?? "",
+      website_url: props.provider?.website_url ?? "",
       api_key: ""
     });
     setMessage(null);
-  }, [form, props.editingProvider]);
+  }, [form, props.provider]);
 
   const mutation = useMutation({
     mutationFn: async (values: ProviderFormValues) => {
@@ -249,8 +584,8 @@ function ProviderForm(props: {
         throw new Error("请填写 API Key");
       }
 
-      if (props.editingProvider) {
-        return updateProvider(props.token, props.editingProvider.provider_key, {
+      if (isEditing && props.provider) {
+        return updateProvider(props.token, props.provider.provider_key, {
           display_name: normalized.display_name,
           base_url: normalized.base_url,
           website_url: normalized.website_url,
@@ -262,7 +597,7 @@ function ProviderForm(props: {
     },
     onSuccess: (_result, values) => {
       const baseUrlChanged =
-        props.editingProvider && values.base_url.trim() !== props.editingProvider.base_url;
+        props.provider && values.base_url.trim() !== props.provider.base_url;
       setMessage({
         text: baseUrlChanged ? "Provider 已保存，可用模型已更新" : "Provider 已保存",
         mode: "success"
@@ -280,17 +615,22 @@ function ProviderForm(props: {
   const errors = form.formState.errors;
 
   return (
-    <aside className="panel create-panel">
-      <div className="card-header">
-        <h2>{isEditing ? "编辑 Provider" : "新增 Provider"}</h2>
-        <p>
-          {isEditing
-            ? "修改名称或官网会直接保存；修改 Base URL 时会重新检查可用模型。"
-            : "填写服务信息后，系统会自动找到可用模型并保存起来。"}
-        </p>
+    <section className="page-panel form-page">
+      <div className="detail-header">
+        <div>
+          <span className="eyebrow">
+            {isEditing ? <Edit3 size={14} /> : <Plus size={14} />}
+            {isEditing ? "Edit Provider" : "New Provider"}
+          </span>
+          <h2>{props.title}</h2>
+          <p className="muted">{props.help}</p>
+        </div>
+        <Link to="/providers" className="ghost-action">
+          返回列表
+        </Link>
       </div>
 
-      <form className="form" onSubmit={form.handleSubmit((values) => mutation.mutate(values))}>
+      <form className="panel form form-card" onSubmit={form.handleSubmit((values) => mutation.mutate(values))}>
         <label className="field">
           <span>
             Provider Key <RequiredMark />
@@ -334,25 +674,20 @@ function ProviderForm(props: {
 
         <div className="form-actions">
           <button className="primary-action" type="submit" disabled={mutation.isPending}>
+            {isEditing ? <Edit3 size={16} /> : <Plus size={16} />}
             {mutation.isPending ? "保存中..." : isEditing ? "保存修改" : "保存并同步"}
           </button>
-          {isEditing ? (
-            <button className="ghost-action" type="button" onClick={props.onCancel}>
-              取消编辑
-            </button>
-          ) : null}
         </div>
       </form>
 
       {message ? <p className={`status ${message.mode ?? ""}`}>{message.text}</p> : null}
-    </aside>
+    </section>
   );
 }
 
 function ProviderList(props: {
   token: string;
   providers: ProviderDetails[];
-  onEdit: (provider: ProviderDetails) => void;
   onChanged: () => void;
 }) {
   const mutation = useMutation({
@@ -383,7 +718,7 @@ function ProviderList(props: {
       <div className="empty-state">
         <div>
           <strong>暂无 Provider</strong>
-          <p>新增一个 provider 后，系统会自动记录可用模型。</p>
+          <p>添加第一个 provider 后，这里会展示可用模型和连接状态。</p>
         </div>
       </div>
     );
@@ -396,7 +731,6 @@ function ProviderList(props: {
           key={provider.provider_key}
           provider={provider}
           disabled={mutation.isPending}
-          onEdit={() => props.onEdit(provider)}
           onAction={(action) => mutation.mutate({ action, provider })}
         />
       ))}
@@ -407,10 +741,9 @@ function ProviderList(props: {
 function ProviderCard(props: {
   provider: ProviderDetails;
   disabled: boolean;
-  onEdit: () => void;
   onAction: (action: string) => void;
 }) {
-  const visibleModels = useMemo(() => props.provider.models.slice(0, 16), [props.provider.models]);
+  const visibleModels = useMemo(() => props.provider.models.slice(0, 12), [props.provider.models]);
   const hiddenModelCount = Math.max(0, props.provider.models.length - visibleModels.length);
 
   return (
@@ -421,7 +754,7 @@ function ProviderCard(props: {
           <code>{props.provider.provider_key}</code>
         </div>
         <span className={`badge ${props.provider.enabled ? "success" : "warning"}`}>
-          {props.provider.enabled ? "Enabled" : "Disabled"}
+          {props.provider.enabled ? "已启用" : "已停用"}
         </span>
       </div>
 
@@ -451,16 +784,24 @@ function ProviderCard(props: {
       </div>
 
       <div className="provider-actions">
-        <button type="button" disabled={props.disabled} onClick={props.onEdit}>
+        <Link to="/providers/$providerKey" params={{ providerKey: props.provider.provider_key }} className="ghost-action small-action">
+          <ExternalLink size={14} />
+          详情
+        </Link>
+        <Link to="/providers/$providerKey/edit" params={{ providerKey: props.provider.provider_key }} className="ghost-action small-action">
+          <Edit3 size={14} />
           编辑
-        </button>
+        </Link>
         <button type="button" disabled={props.disabled} onClick={() => props.onAction("sync")}>
+          <RefreshCw size={14} />
           同步模型
         </button>
         <button type="button" disabled={props.disabled} onClick={() => props.onAction("toggle")}>
+          {props.provider.enabled ? <Power size={14} /> : <Activity size={14} />}
           {props.provider.enabled ? "禁用" : "启用"}
         </button>
         <button type="button" disabled={props.disabled} onClick={() => props.onAction("delete")}>
+          <Trash2 size={14} />
           删除
         </button>
       </div>
@@ -472,5 +813,38 @@ function ProviderCard(props: {
         {hiddenModelCount > 0 ? <li>+{hiddenModelCount}</li> : null}
       </ul>
     </article>
+  );
+}
+
+function MetricCard(props: { label: string; value: string }) {
+  return (
+    <div className="stat-card">
+      <DatabaseZap size={18} />
+      <div>
+        <span>{props.label}</span>
+        <strong>{props.value}</strong>
+      </div>
+    </div>
+  );
+}
+
+function PageLoading() {
+  return (
+    <section className="page-panel">
+      <p className="muted">正在加载...</p>
+    </section>
+  );
+}
+
+function NotFoundPanel(props: { title: string }) {
+  return (
+    <section className="page-panel">
+      <div className="empty-state">
+        <div>
+          <strong>{props.title}</strong>
+          <p>返回列表后重新选择。</p>
+        </div>
+      </div>
+    </section>
   );
 }

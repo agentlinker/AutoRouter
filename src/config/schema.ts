@@ -144,7 +144,16 @@ export const policySchema = z
 export const traceSchema = z
   .object({
     directory: z.string().default("./data/traces"),
-    log_prompts: z.boolean().default(false)
+    hot_retention_days: z.number().int().positive().default(7),
+    log_prompts: z.boolean().default(false),
+    archive: z
+      .object({
+        format: z.literal("parquet").default("parquet"),
+        directory: z.string().default("./data/traces"),
+        flush_batch_size: z.number().int().positive().default(100)
+      })
+      .strict()
+      .default({})
   })
   .strict();
 

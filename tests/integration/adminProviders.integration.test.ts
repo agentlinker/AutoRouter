@@ -9,6 +9,7 @@ import { createDatabaseClient } from "../../src/db/client.js";
 import { ProviderModelDiscoveryService } from "../../src/discovery/providerModelDiscovery.js";
 import { AdapterRegistry } from "../../src/providers/registry.js";
 import { ManagedProviderRepository } from "../../src/repositories/managedProviderRepository.js";
+import { RouteTraceRepository } from "../../src/repositories/routeTraceRepository.js";
 import { StickySessionStore } from "../../src/routing/stickySession.js";
 import { RuntimeManager } from "../../src/runtime/runtimeManager.js";
 import { SecretCipher } from "../../src/security/secretCipher.js";
@@ -130,9 +131,10 @@ describe("admin providers integration", () => {
 
     const databaseClient = createDatabaseClient(config.database.path);
     const repository = new ManagedProviderRepository(databaseClient.db);
+    const routeTraceRepository = new RouteTraceRepository(databaseClient.db);
     const adapters = new AdapterRegistry();
     const stickySessions = new StickySessionStore();
-    const traceStore = new TraceStore(config.trace.directory);
+    const traceStore = new TraceStore(routeTraceRepository);
     const secretCipher = new SecretCipher(process.env.AUTO_ROUTER_MASTER_KEY);
     const runtimeManager = new RuntimeManager({
       baseConfig: config,
@@ -248,6 +250,53 @@ describe("admin providers integration", () => {
     expect(editResponse.json().website_url).toBe("https://managed.example.com/docs");
     expect(editResponse.json().models).toHaveLength(1);
     expect(editResponse.json().models[0].model_name).toBe("managed-model-v2");
+
+    const apiKeysResponse = await server.inject({
+      method: "GET",
+      url: "/admin/api/api-keys",
+      headers: {
+        authorization: "Bearer admin-token"
+      }
+    });
+
+    expect(apiKeysResponse.statusCode).toBe(200);
+    expect(apiKeysResponse.json().system).toHaveLength(2);
+    expect(apiKeysResponse.json().providers[0].provider_key).toBe("managed");
+
+    const usageResponse = await server.inject({
+      method: "GET",
+      url: "/admin/api/usage",
+      headers: {
+        authorization: "Bearer admin-token"
+      }
+    });
+
+    expect(usageResponse.statusCode).toBe(200);
+    expect(usageResponse.json().totals.requests).toBe(1);
+    expect(usageResponse.json().recent_requests[0].selected_provider).toBe("managed");
+
+    const policiesResponse = await server.inject({
+      method: "GET",
+      url: "/admin/api/policies",
+      headers: {
+        authorization: "Bearer admin-token"
+      }
+    });
+
+    expect(policiesResponse.statusCode).toBe(200);
+    expect(policiesResponse.json().data[0].policy_id).toBe("balanced");
+    expect(policiesResponse.json().data[0].is_default).toBe(true);
+
+    const settingsResponse = await server.inject({
+      method: "GET",
+      url: "/admin/api/settings",
+      headers: {
+        authorization: "Bearer admin-token"
+      }
+    });
+
+    expect(settingsResponse.statusCode).toBe(200);
+    expect(settingsResponse.json().data.length).toBeGreaterThan(0);
 
     await server.close();
   });

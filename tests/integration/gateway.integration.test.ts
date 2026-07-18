@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { rmSync } from "node:fs";
 import { MockAgent, setGlobalDispatcher } from "undici";
 
 import { buildProviderRegistry } from "../../src/catalog/providerRegistry.js";
 import { PriceTable } from "../../src/catalog/priceTable.js";
 import { loadConfig } from "../../src/config/loadConfig.js";
+import { createDatabaseClient } from "../../src/db/client.js";
 import { AdapterRegistry } from "../../src/providers/registry.js";
+import { RouteTraceRepository } from "../../src/repositories/routeTraceRepository.js";
 import { StickySessionStore } from "../../src/routing/stickySession.js";
 import { createServer } from "../../src/server/createServer.js";
 import type { RouterState } from "../../src/state/routerState.js";
@@ -13,7 +16,13 @@ import { createLogger } from "../../src/utils/logger.js";
 
 describe("gateway integration", () => {
   const traceDirectory = "/tmp/auto-router-test-traces";
+  const traceDatabasePath = "/tmp/auto-router-test-traces.db";
   let mockAgent: MockAgent;
+
+  function createTraceStore(databasePath: string) {
+    const databaseClient = createDatabaseClient(databasePath);
+    return new TraceStore(new RouteTraceRepository(databaseClient.db));
+  }
 
   beforeEach(async () => {
     vi.stubEnv("AUTO_ROUTER_TOKEN", "test-token");
@@ -26,6 +35,7 @@ describe("gateway integration", () => {
 
   afterEach(async () => {
     vi.unstubAllEnvs();
+    rmSync(traceDatabasePath, { force: true });
     await mockAgent.close();
   });
 
@@ -188,7 +198,7 @@ describe("gateway integration", () => {
       priceTable: new PriceTable(config),
       adapters: new AdapterRegistry(),
       stickySessions: new StickySessionStore(),
-      traceStore: new TraceStore(traceDirectory)
+      traceStore: createTraceStore(traceDatabasePath)
     };
 
     const gateway = await createServer(state);
@@ -347,7 +357,7 @@ describe("gateway integration", () => {
       priceTable: new PriceTable(config),
       adapters: new AdapterRegistry(),
       stickySessions: new StickySessionStore(),
-      traceStore: new TraceStore(traceDirectory)
+      traceStore: createTraceStore(traceDatabasePath)
     };
 
     const gateway = await createServer(state);
@@ -487,7 +497,7 @@ describe("gateway integration", () => {
       priceTable: new PriceTable(config),
       adapters: new AdapterRegistry(),
       stickySessions: new StickySessionStore(),
-      traceStore: new TraceStore(traceDirectory)
+      traceStore: createTraceStore(traceDatabasePath)
     };
 
     const gateway = await createServer(state);
@@ -596,7 +606,7 @@ describe("gateway integration", () => {
       priceTable: new PriceTable(config),
       adapters: new AdapterRegistry(),
       stickySessions: new StickySessionStore(),
-      traceStore: new TraceStore(traceDirectory)
+      traceStore: createTraceStore(traceDatabasePath)
     };
 
     const gateway = await createServer(state);
@@ -720,7 +730,7 @@ describe("gateway integration", () => {
       priceTable: new PriceTable(config),
       adapters: new AdapterRegistry(),
       stickySessions: new StickySessionStore(),
-      traceStore: new TraceStore(traceDirectory)
+      traceStore: createTraceStore(traceDatabasePath)
     };
 
     const gateway = await createServer(state);
@@ -830,7 +840,7 @@ describe("gateway integration", () => {
       priceTable: new PriceTable(config),
       adapters: new AdapterRegistry(),
       stickySessions: new StickySessionStore(),
-      traceStore: new TraceStore(traceDirectory)
+      traceStore: createTraceStore(traceDatabasePath)
     };
 
     const gateway = await createServer(state);
@@ -934,7 +944,7 @@ describe("gateway integration", () => {
       priceTable: new PriceTable(config),
       adapters: new AdapterRegistry(),
       stickySessions: new StickySessionStore(),
-      traceStore: new TraceStore(traceDirectory)
+      traceStore: createTraceStore(traceDatabasePath)
     };
 
     const gateway = await createServer(state);
@@ -1050,7 +1060,7 @@ describe("gateway integration", () => {
       priceTable: new PriceTable(config),
       adapters: new AdapterRegistry(),
       stickySessions: new StickySessionStore(),
-      traceStore: new TraceStore(traceDirectory)
+      traceStore: createTraceStore(traceDatabasePath)
     };
 
     const gateway = await createServer(state);

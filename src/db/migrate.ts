@@ -57,6 +57,50 @@ export function runMigrations(sqlite: Database.Database) {
       discovered_count INTEGER NOT NULL DEFAULT 0,
       FOREIGN KEY (provider_id) REFERENCES managed_providers(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS route_traces (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      trace_id TEXT NOT NULL UNIQUE,
+      timestamp TEXT NOT NULL,
+      session_id TEXT,
+      requested_model TEXT NOT NULL,
+      normalized_model TEXT NOT NULL,
+      prompt_hash TEXT NOT NULL,
+      stream INTEGER NOT NULL DEFAULT 0,
+      has_tools INTEGER NOT NULL DEFAULT 0,
+      privacy_level TEXT NOT NULL,
+      context_tokens_est INTEGER NOT NULL DEFAULT 0,
+      selected_route_id TEXT,
+      selected_endpoint TEXT,
+      selected_platform TEXT,
+      selected_provider TEXT,
+      selected_account_hash TEXT,
+      selected_model_id TEXT,
+      selected_model TEXT,
+      selected_score REAL,
+      policy_hits_json TEXT NOT NULL,
+      candidates_json TEXT NOT NULL,
+      filtered_json TEXT NOT NULL,
+      fallbacks_json TEXT NOT NULL,
+      execution_status TEXT NOT NULL,
+      latency_ms INTEGER NOT NULL,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      total_tokens INTEGER NOT NULL DEFAULT 0,
+      execution_error TEXT,
+      estimated_cost_usd REAL,
+      actual_cost_usd REAL,
+      price_confidence TEXT NOT NULL,
+      feedback_label TEXT,
+      feedback_source TEXT,
+      feedback_at TEXT,
+      training_split TEXT,
+      tags_json TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS route_traces_timestamp_trace_id_unique
+      ON route_traces (timestamp, trace_id);
   `);
 
   const providerColumns = sqlite.pragma("table_info(managed_providers)") as Array<{
@@ -66,5 +110,24 @@ export function runMigrations(sqlite: Database.Database) {
 
   if (!hasWebsiteUrl) {
     sqlite.exec("ALTER TABLE managed_providers ADD COLUMN website_url TEXT;");
+  }
+
+  const routeTraceColumns = sqlite.pragma("table_info(route_traces)") as Array<{
+    name: string;
+  }>;
+  const routeTraceColumnDefinitions: Array<{ name: string; sql: string }> = [
+    { name: "context_tokens_est", sql: "ALTER TABLE route_traces ADD COLUMN context_tokens_est INTEGER NOT NULL DEFAULT 0;" },
+    { name: "selected_score", sql: "ALTER TABLE route_traces ADD COLUMN selected_score REAL;" },
+    { name: "feedback_label", sql: "ALTER TABLE route_traces ADD COLUMN feedback_label TEXT;" },
+    { name: "feedback_source", sql: "ALTER TABLE route_traces ADD COLUMN feedback_source TEXT;" },
+    { name: "feedback_at", sql: "ALTER TABLE route_traces ADD COLUMN feedback_at TEXT;" },
+    { name: "training_split", sql: "ALTER TABLE route_traces ADD COLUMN training_split TEXT;" },
+    { name: "tags_json", sql: "ALTER TABLE route_traces ADD COLUMN tags_json TEXT;" }
+  ];
+
+  for (const definition of routeTraceColumnDefinitions) {
+    if (!routeTraceColumns.some((column) => column.name === definition.name)) {
+      sqlite.exec(definition.sql);
+    }
   }
 }

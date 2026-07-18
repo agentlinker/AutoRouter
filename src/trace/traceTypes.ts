@@ -7,6 +7,16 @@ export interface TraceCandidate {
   model_id?: string;
   model: string;
   reason?: string;
+  score?: number;
+  sticky?: boolean;
+}
+
+export interface TraceFeedbackLabel {
+  feedback_label?: string | null;
+  feedback_source?: string | null;
+  feedback_at?: string | null;
+  training_split?: "train" | "eval" | "test" | null;
+  tags?: string[];
 }
 
 export interface RouteTrace {
@@ -20,6 +30,7 @@ export interface RouteTrace {
     stream: boolean;
     has_tools: boolean;
     privacy_level: string;
+    context_tokens_est: number;
   };
   candidates: TraceCandidate[];
   filtered: TraceCandidate[];
@@ -31,6 +42,7 @@ export interface RouteTrace {
     account_hash: string;
     model_id?: string;
     model: string;
+    score?: number;
   } | null;
   policy_hits: string[];
   execution: {
@@ -47,4 +59,5 @@ export interface RouteTrace {
     price_confidence: "low" | "medium" | "high" | "unknown";
   };
   fallbacks: TraceCandidate[];
+  feedback?: TraceFeedbackLabel | null;
 }
