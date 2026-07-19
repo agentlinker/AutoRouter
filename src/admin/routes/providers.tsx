@@ -33,6 +33,7 @@ import {
   setProviderEnabled,
   syncProvider,
   updateProvider,
+  updateProviderModelCapabilities,
   type ProviderDetails,
   type ProviderFormValues
 } from "../api/providers.js";
@@ -470,6 +471,23 @@ export function ProviderDetailPage() {
       }
     }
   });
+  const modelMutation = useMutation({
+    mutationFn: async (input: {
+      model_key: string;
+      supports_streaming?: boolean;
+      supports_tools?: boolean;
+      supports_json_mode?: boolean;
+    }) => {
+      if (!provider) {
+        throw new Error("Provider not loaded");
+      }
+
+      return updateProviderModelCapabilities(token, provider.provider_key, input);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
+    }
+  });
 
   if (isLoading) {
     return <PageLoading />;
@@ -534,13 +552,77 @@ export function ProviderDetailPage() {
 
       <div className="panel detail-card">
         <h3>模型列表</h3>
-        <ul className="model-list expanded">
+        <div className="model-capability-table">
+          <div className="model-capability-header">
+            <span>模型</span>
+            <span>Streaming</span>
+            <span>Tools</span>
+            <span>JSON</span>
+          </div>
           {provider.models.map((model) => (
-            <li key={model.model_key}>{model.model_name}</li>
+            <div className="model-capability-row" key={model.model_key}>
+              <div className="model-name-cell">
+                <strong>{model.model_name}</strong>
+                <code>{model.model_key}</code>
+              </div>
+              <CapabilityToggle
+                checked={model.supports_streaming}
+                disabled={modelMutation.isPending}
+                label="Streaming"
+                onChange={(checked) =>
+                  modelMutation.mutate({
+                    model_key: model.model_key,
+                    supports_streaming: checked
+                  })
+                }
+              />
+              <CapabilityToggle
+                checked={model.supports_tools}
+                disabled={modelMutation.isPending}
+                label="Tools"
+                onChange={(checked) =>
+                  modelMutation.mutate({
+                    model_key: model.model_key,
+                    supports_tools: checked
+                  })
+                }
+              />
+              <CapabilityToggle
+                checked={model.supports_json_mode}
+                disabled={modelMutation.isPending}
+                label="JSON"
+                onChange={(checked) =>
+                  modelMutation.mutate({
+                    model_key: model.model_key,
+                    supports_json_mode: checked
+                  })
+                }
+              />
+            </div>
           ))}
-        </ul>
+        </div>
       </div>
     </section>
+  );
+}
+
+function CapabilityToggle(props: {
+  checked: boolean;
+  disabled: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="capability-toggle">
+      <input
+        type="checkbox"
+        checked={props.checked}
+        disabled={props.disabled}
+        aria-label={props.label}
+        onChange={(event) => props.onChange(event.target.checked)}
+      />
+      <span>{props.checked ? "是" : "否"}</span>
+    </label>
   );
 }
 

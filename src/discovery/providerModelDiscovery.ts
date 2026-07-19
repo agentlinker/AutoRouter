@@ -24,6 +24,19 @@ function parseBooleanFlag(value: unknown): boolean {
   return value === true;
 }
 
+function isLikelyNonToolModel(modelId: string): boolean {
+  return /(?:^|[-_./:])(embedding|image|audio|tts|transcribe|whisper|moderation)(?:$|[-_./:])/i
+    .test(modelId);
+}
+
+function inferSupportsTools(raw: Record<string, unknown>, modelId: string): boolean {
+  if (typeof raw.supports_tools === "boolean") {
+    return raw.supports_tools;
+  }
+
+  return !isLikelyNonToolModel(modelId);
+}
+
 export class ProviderModelDiscoveryService {
   public async listOpenAiCompatibleModels(input: {
     providerKey: string;
@@ -87,7 +100,7 @@ export class ProviderModelDiscoveryService {
         modelName: id,
         contextWindow,
         supportsStreaming: raw.supports_streaming !== false,
-        supportsTools: parseBooleanFlag(raw.supports_tools),
+        supportsTools: inferSupportsTools(raw, id),
         supportsJsonMode:
           parseBooleanFlag(raw.supports_json_mode) ||
           parseBooleanFlag(raw.supports_response_format_json_schema),

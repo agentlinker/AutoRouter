@@ -1,5 +1,5 @@
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 
 import {
   managedModelsTable,
@@ -42,6 +42,13 @@ export interface ManagedProviderUpdateInput {
   baseUrl?: string;
   websiteUrl?: string | null;
   enabled?: boolean;
+}
+
+export interface ManagedModelCapabilitiesUpdateInput {
+  modelKey: string;
+  supportsStreaming?: boolean;
+  supportsTools?: boolean;
+  supportsJsonMode?: boolean;
 }
 
 export interface ManagedProviderDetails {
@@ -270,6 +277,37 @@ export class ManagedProviderRepository {
         updatedAt: now
       })
       .where(eq(managedProvidersTable.providerKey, providerKey))
+      .run();
+
+    return this.getProviderDetails(providerKey);
+  }
+
+  public updateModelCapabilities(
+    providerKey: string,
+    input: ManagedModelCapabilitiesUpdateInput
+  ): ManagedProviderDetails | null {
+    const existing = this.getProviderDetails(providerKey);
+    if (!existing) {
+      return null;
+    }
+
+    const model = existing.models.find((item) => item.modelKey === input.modelKey);
+    if (!model) {
+      return null;
+    }
+
+    const now = nowIso();
+    this.db.update(managedModelsTable)
+      .set({
+        supportsStreaming: input.supportsStreaming ?? model.supportsStreaming,
+        supportsTools: input.supportsTools ?? model.supportsTools,
+        supportsJsonMode: input.supportsJsonMode ?? model.supportsJsonMode,
+        updatedAt: now
+      })
+      .where(and(
+        eq(managedModelsTable.providerId, existing.provider.id),
+        eq(managedModelsTable.modelKey, input.modelKey)
+      ))
       .run();
 
     return this.getProviderDetails(providerKey);

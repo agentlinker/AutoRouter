@@ -649,11 +649,6 @@ button:disabled {
   min-width: 0;
 }
 
-.model-list.expanded li {
-  font-size: 13px;
-  padding: 6px 10px;
-}
-
 .model-list {
   display: flex;
   flex-wrap: wrap;
@@ -672,6 +667,65 @@ button:disabled {
   background: rgba(14, 165, 233, 0.08);
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+.model-capability-table {
+  display: grid;
+  gap: 8px;
+}
+
+.model-capability-header,
+.model-capability-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(86px, 110px));
+  gap: 10px;
+  align-items: center;
+}
+
+.model-capability-header {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.model-capability-row {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(2, 6, 23, 0.26);
+}
+
+.model-name-cell {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.model-name-cell strong {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.model-name-cell code {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.capability-toggle {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 28px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.capability-toggle input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
 }
 
 .record-list {
@@ -855,5 +909,17 @@ button:disabled {
 
   .detail-card dl {
     grid-template-columns: 1fr;
+  }
+
+  .model-capability-header {
+    display: none;
+  }
+
+  .model-capability-row {
+    grid-template-columns: 1fr;
+  }
+
+  .capability-toggle {
+    justify-content: space-between;
   }
 }

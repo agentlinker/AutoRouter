@@ -26,6 +26,13 @@ const patchProviderBodySchema = z.object({
   api_key: z.string().min(1).optional()
 }).strict();
 
+const patchModelCapabilitiesBodySchema = z.object({
+  model_key: z.string().min(1),
+  supports_streaming: z.boolean().optional(),
+  supports_tools: z.boolean().optional(),
+  supports_json_mode: z.boolean().optional()
+}).strict();
+
 function serializeProviderDetails(details: ReturnType<ManagedProviderRepository["getProviderDetails"]>) {
   if (!details) {
     return null;
@@ -217,6 +224,26 @@ export async function registerAdminProvidersRoutes(
       }
 
       const updated = dependencies.repository.getProviderDetails(request.params.providerKey);
+      await dependencies.runtimeManager.reload();
+      return serializeProviderDetails(updated);
+    }
+  );
+
+  fastify.patch<{ Params: { providerKey: string }; Body: unknown }>(
+    "/admin/api/providers/:providerKey/models",
+    async (request) => {
+      const body = patchModelCapabilitiesBodySchema.parse(request.body);
+      const updated = dependencies.repository.updateModelCapabilities(request.params.providerKey, {
+        modelKey: body.model_key,
+        supportsStreaming: body.supports_streaming,
+        supportsTools: body.supports_tools,
+        supportsJsonMode: body.supports_json_mode
+      });
+
+      if (!updated) {
+        throw new HttpError(404, "model_not_found", "Provider model not found");
+      }
+
       await dependencies.runtimeManager.reload();
       return serializeProviderDetails(updated);
     }

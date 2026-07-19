@@ -250,6 +250,24 @@ describe("admin providers integration", () => {
     expect(editResponse.json().website_url).toBe("https://managed.example.com/docs");
     expect(editResponse.json().models).toHaveLength(1);
     expect(editResponse.json().models[0].model_name).toBe("managed-model-v2");
+    expect(editResponse.json().models[0].supports_tools).toBe(true);
+
+    const modelCapabilityResponse = await server.inject({
+      method: "PATCH",
+      url: "/admin/api/providers/managed/models",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        model_key: "managed/managed-model-v2",
+        supports_tools: false,
+        supports_json_mode: true
+      }
+    });
+
+    expect(modelCapabilityResponse.statusCode).toBe(200);
+    expect(modelCapabilityResponse.json().models[0].supports_tools).toBe(false);
+    expect(modelCapabilityResponse.json().models[0].supports_json_mode).toBe(true);
 
     const apiKeysResponse = await server.inject({
       method: "GET",

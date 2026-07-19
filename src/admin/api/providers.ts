@@ -90,3 +90,19 @@ export function setProviderEnabled(
     body: JSON.stringify({ enabled })
   });
 }
+
+export function updateProviderModelCapabilities(
+  token: string,
+  providerKey: string,
+  payload: {
+    model_key: string;
+    supports_streaming?: boolean;
+    supports_tools?: boolean;
+    supports_json_mode?: boolean;
+  }
+): Promise<ProviderDetails> {
+  return requestJson<ProviderDetails>(`/admin/api/providers/${providerKey}/models`, token, {
+    method: "PATCH",
+    body: JSON.stringify(payload)
+  });
+}
