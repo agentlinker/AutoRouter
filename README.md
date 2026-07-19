@@ -7,6 +7,7 @@
 The current implementation includes:
 
 - Local `POST /v1/chat/completions`
+- Local `POST /v1/responses`
 - Local `GET /v1/models`
 - Local `GET /v1/autorouter/health`
 - Local `GET /v1/autorouter/explain/latest`
@@ -117,6 +118,29 @@ Notes:
 - The gateway keeps response headers minimal by default.
 - Detailed routing internals such as provider, endpoint, account, fallback chain, and filter reasons are not exposed in response headers.
 - Use `x-autorouter-trace-id` with `GET /v1/autorouter/explain/latest` or local trace files for routing diagnostics.
+
+### Responses
+
+Use this endpoint for clients that speak the OpenAI Responses API, including Codex CLI providers configured with `wire_api = "responses"`.
+
+```bash
+curl -s \
+  -H "Authorization: Bearer dev-token" \
+  -H "Content-Type: application/json" \
+  http://127.0.0.1:8811/v1/responses \
+  -d '{
+    "model": "auto",
+    "input": "Say hello in one sentence.",
+    "stream": true
+  }'
+```
+
+Expected:
+
+- Accepts `input`, `instructions`, `tools`, `tool_choice`, `temperature`, `max_output_tokens`, and `metadata`
+- Routes through the same policy, fallback, sticky-session, trace, and credential handling as chat completions
+- Returns Responses-compatible non-streaming JSON when `stream` is false
+- Emits Responses-compatible SSE events, including `response.completed`, when `stream` is true
 
 ### Explain Latest
 

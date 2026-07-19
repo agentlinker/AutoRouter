@@ -8,7 +8,7 @@
     "dev": "npm run build:admin && tsx src/main.ts",
     "dev:server": "tsx src/main.ts",
     "dev:admin": "vite --config vite.admin.config.ts --host 127.0.0.1 --port 5173",
-    "build": "npm run build:admin && tsup src/main.ts --format esm --dts --clean",
+    "build": "tsup src/main.ts --format esm --dts --clean && npm run build:admin",
     "build:admin": "vite build --config vite.admin.config.ts",
     "start": "node dist/main.js",
     "test": "vitest run",

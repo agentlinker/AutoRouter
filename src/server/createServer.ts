@@ -6,6 +6,7 @@ import { requireAdminToken, requireGatewayToken } from "./auth.js";
 import { registerChatCompletionsRoute } from "./routes/chatCompletions.js";
 import { registerHealthRoute } from "./routes/health.js";
 import { registerModelsRoute } from "./routes/models.js";
+import { registerResponsesRoute } from "./routes/responses.js";
 import { registerAdminApiKeysRoutes } from "./routes/adminApiKeys.js";
 import { registerAdminPoliciesRoutes } from "./routes/adminPolicies.js";
 import { registerAdminSettingsRoutes } from "./routes/adminSettings.js";
@@ -119,6 +120,7 @@ export async function createServer(
   await registerHealthRoute(fastify, runtimeManager);
   await registerModelsRoute(fastify, runtimeManager);
   await registerChatCompletionsRoute(fastify, runtimeManager);
+  await registerResponsesRoute(fastify);
   await registerExplainRoute(fastify, runtimeManager.getSnapshot().traceStore);
 
   return fastify;

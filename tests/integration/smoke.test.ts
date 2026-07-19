@@ -190,6 +190,95 @@ describe("local smoke", () => {
     });
     expect(chatResponse.statusCode).toBe(200);
 
+    pool
+      .intercept({
+        path: "/v1/chat/completions",
+        method: "POST"
+      })
+      .reply(200, {
+        id: "chatcmpl_responses_smoke",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: "smoke-model",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "responses ok"
+            },
+            finish_reason: "stop"
+          }
+        ],
+        usage: {
+          prompt_tokens: 8,
+          completion_tokens: 4,
+          total_tokens: 12
+        }
+      });
+
+    const responsesResponse = await gateway.inject({
+      method: "POST",
+      url: "/v1/responses",
+      headers: {
+        authorization: "Bearer smoke-token"
+      },
+      payload: {
+        model: "auto",
+        input: "hello from responses"
+      }
+    });
+    expect(responsesResponse.statusCode).toBe(200);
+    expect(responsesResponse.json()).toMatchObject({
+      object: "response",
+      status: "completed",
+      output_text: "responses ok"
+    });
+
+    pool
+      .intercept({
+        path: "/v1/chat/completions",
+        method: "POST"
+      })
+      .reply(200, {
+        id: "chatcmpl_responses_stream_smoke",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: "smoke-model",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "responses stream ok"
+            },
+            finish_reason: "stop"
+          }
+        ],
+        usage: {
+          prompt_tokens: 8,
+          completion_tokens: 4,
+          total_tokens: 12
+        }
+      });
+
+    const responsesStreamResponse = await gateway.inject({
+      method: "POST",
+      url: "/v1/responses",
+      headers: {
+        authorization: "Bearer smoke-token"
+      },
+      payload: {
+        model: "auto",
+        input: "hello from streaming responses",
+        stream: true
+      }
+    });
+    expect(responsesStreamResponse.statusCode).toBe(200);
+    expect(responsesStreamResponse.headers["content-type"]).toContain("text/event-stream");
+    expect(responsesStreamResponse.body).toContain("event: response.completed");
+    expect(responsesStreamResponse.body).toContain('"type":"response.completed"');
+
     const explainResponse = await gateway.inject({
       method: "GET",
       url: "/v1/autorouter/explain/latest",
