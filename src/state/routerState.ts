@@ -42,6 +42,7 @@ export interface AccountRuntimeState {
   enabled: boolean;
   available: boolean;
   disabled_reason?: string;
+  disabled_message?: string;
   recent_error_count: number;
   quota?: {
     monthly_usd_limit?: number;

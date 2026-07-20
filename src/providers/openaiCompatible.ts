@@ -1,11 +1,13 @@
 import { request } from "undici";
 
 import type { NormalizedChatRequest } from "../routing/types.js";
+import { PROVIDER_AUTH_FAILED_CODE } from "../utils/providerErrors.js";
 import { HttpError } from "../utils/httpErrors.js";
 import type {
   HealthResult,
   ProviderAdapter,
   ProviderResponse,
+  ProviderResponsesRequest,
   ProviderStreamChunk,
   RouteTarget
 } from "./adapter.js";
@@ -85,7 +87,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
           : `Provider request failed with status ${response.statusCode}`;
 
       if (response.statusCode === 401 || response.statusCode === 403) {
-        throw new HttpError(response.statusCode, "provider_auth_failed", message, false);
+        throw new HttpError(response.statusCode, PROVIDER_AUTH_FAILED_CODE, message, false);
       }
 
       if (response.statusCode === 404) {
@@ -149,6 +151,112 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
         "provider_error",
         `Streaming provider request failed with status ${response.statusCode}`,
         response.statusCode >= 500 || response.statusCode === 429
+      );
+    }
+
+    for await (const chunk of response.body) {
+      yield {
+        raw: Buffer.from(chunk).toString("utf8")
+      };
+    }
+  }
+
+  public async responseCompletion(
+    requestBody: ProviderResponsesRequest,
+    target: RouteTarget
+  ): Promise<ProviderResponse> {
+    const upstreamPayload = {
+      ...requestBody,
+      model: target.model.model_name,
+      stream: false
+    };
+
+    let response;
+    try {
+      response = await request(`${target.endpoint.base_url}/responses`, {
+        method: "POST",
+        headers: buildHeaders(target.credential),
+        body: JSON.stringify(upstreamPayload)
+      });
+    } catch (error) {
+      throw new HttpError(
+        503,
+        "provider_unreachable",
+        error instanceof Error ? error.message : "provider unreachable",
+        true
+      );
+    }
+
+    const body = await response.body.json();
+    if (response.statusCode >= 400) {
+      const message =
+        typeof body === "object" &&
+        body !== null &&
+        "error" in body &&
+        typeof body.error === "object" &&
+        body.error !== null &&
+        "message" in body.error &&
+        typeof body.error.message === "string"
+          ? body.error.message
+          : `Provider responses request failed with status ${response.statusCode}`;
+
+      if (response.statusCode === 401 || response.statusCode === 403) {
+        throw new HttpError(response.statusCode, PROVIDER_AUTH_FAILED_CODE, message, false);
+      }
+
+      if (response.statusCode === 429) {
+        throw new HttpError(response.statusCode, "provider_rate_limited", message, true);
+      }
+
+      if (response.statusCode >= 500 || response.statusCode === 408 || response.statusCode === 404) {
+        throw new HttpError(response.statusCode, "provider_error", message, true);
+      }
+
+      throw new HttpError(response.statusCode, "request_invalid", message, false);
+    }
+
+    return {
+      status: response.statusCode,
+      body,
+      usage:
+        typeof body === "object" && body !== null && "usage" in body
+          ? (body.usage as ProviderResponse["usage"])
+          : undefined
+    };
+  }
+
+  public async *streamResponse(
+    requestBody: ProviderResponsesRequest,
+    target: RouteTarget
+  ): AsyncIterable<ProviderStreamChunk> {
+    const upstreamPayload = {
+      ...requestBody,
+      model: target.model.model_name,
+      stream: true
+    };
+
+    let response;
+    try {
+      response = await request(`${target.endpoint.base_url}/responses`, {
+        method: "POST",
+        headers: buildHeaders(target.credential),
+        body: JSON.stringify(upstreamPayload)
+      });
+    } catch (error) {
+      throw new HttpError(
+        503,
+        "provider_unreachable",
+        error instanceof Error ? error.message : "provider unreachable",
+        true
+      );
+    }
+
+    if (response.statusCode >= 400) {
+      throw new HttpError(
+        response.statusCode,
+        response.statusCode === 429 ? "provider_rate_limited" : "provider_error",
+        `Streaming responses request failed with status ${response.statusCode}`,
+        response.statusCode >= 500 || response.statusCode === 429 || response.statusCode === 408
       );
     }
 

@@ -9,6 +9,14 @@ export interface TraceCandidate {
   model_id: string | null;
   model: string;
   reason: string | null;
+  score: number | null;
+  sticky: boolean;
+}
+
+export interface TraceAttempt extends TraceCandidate {
+  status: "success" | "failed";
+  error: string | null;
+  retryable: boolean;
 }
 
 export interface TraceRecord {
@@ -36,9 +44,11 @@ export interface TraceRecord {
   error: string | null;
   candidate_count: number;
   filtered_count: number;
+  attempt_count: number;
   fallback_count: number;
   candidates: TraceCandidate[];
   filtered: TraceCandidate[];
+  attempts: TraceAttempt[];
   fallbacks: TraceCandidate[];
 }
 

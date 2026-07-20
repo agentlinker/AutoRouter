@@ -234,6 +234,18 @@ describe("gateway integration", () => {
     expect(explain.json().request.normalized_model).toBe("auto");
     expect(explain.json().selected.platform).toBe("openai");
     expect(explain.json().selected.endpoint).toBe("fallback-openai");
+    expect(explain.json().attempts).toEqual([
+      expect.objectContaining({
+        endpoint: "primary-openai",
+        status: "failed",
+        error: "rate limited",
+        retryable: true
+      }),
+      expect.objectContaining({
+        endpoint: "fallback-openai",
+        status: "success"
+      })
+    ]);
     expect(explain.json().fallbacks).toHaveLength(1);
 
     await gateway.close();

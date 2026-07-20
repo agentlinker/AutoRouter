@@ -23,19 +23,21 @@ import {
   Trash2
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useForm } from "react-hook-form";
+import { useFieldArray, useForm } from "react-hook-form";
 import { z } from "zod";
 
 import {
   createProvider,
+  createProviderEndpoint,
   deleteProvider,
   listProviders,
   setProviderEnabled,
   syncProvider,
   updateProvider,
   updateProviderModelCapabilities,
+  type CreateProviderPayload,
   type ProviderDetails,
-  type ProviderFormValues
+  type UpdateProviderPayload
 } from "../api/providers.js";
 
 export const providerTokenStorageKey = "autorouter_admin_token";
@@ -43,7 +45,11 @@ export const providerTokenStorageKey = "autorouter_admin_token";
 const providerFormSchema = z.object({
   provider_key: z.string().trim().min(1, "请填写 Provider Key"),
   display_name: z.string().trim().min(1, "请填写 Display Name"),
-  base_url: z.string().trim().url("Base URL 必须是有效网址"),
+  endpoints: z.array(z.object({
+    endpoint_key: z.string().trim().min(1, "请填写 Endpoint Key"),
+    protocol: z.enum(["openai", "anthropic"]),
+    base_url: z.string().trim().url("Base URL 必须是有效网址")
+  }).strict()).min(1, "至少添加一个 Endpoint"),
   website_url: z
     .string()
     .trim()
@@ -52,17 +58,7 @@ const providerFormSchema = z.object({
       message: "官网地址必须是有效网址"
     }),
   api_key: z.string().optional()
-});
-
-function normalizeFormValues(values: ProviderFormValues): ProviderFormValues {
-  return {
-    provider_key: values.provider_key.trim(),
-    display_name: values.display_name.trim(),
-    base_url: values.base_url.trim(),
-    website_url: values.website_url?.trim() ?? "",
-    api_key: values.api_key?.trim() ?? ""
-  };
-}
+}).strict();
 
 function RequiredMark() {
   return <span className="required-mark">*</span>;
@@ -398,7 +394,7 @@ export function ProviderNewPage() {
   return (
     <ProviderFormPage
       title="新增 Provider"
-      help="填写服务信息后，系统会自动找到可用模型并保存起来。"
+      help="填写 Provider 信息和多个 Endpoint 后，系统会自动找到可用模型并保存起来。"
       mode="create"
       token={token}
       onDone={() => {
@@ -427,7 +423,7 @@ export function ProviderEditPage() {
   return (
     <ProviderFormPage
       title="编辑 Provider"
-      help="修改名称或官网会直接保存；修改 Base URL 时会重新检查可用模型。"
+      help="可直接增删 Endpoint；保存后会重新检查并同步可用模型。"
       mode="edit"
       token={token}
       provider={provider}
@@ -444,6 +440,13 @@ export function ProviderDetailPage() {
   const { providerKey } = useParams({ from: "/providers/$providerKey" });
   const { provider, isLoading } = useProvider(token, providerKey);
   const queryClient = useQueryClient();
+  const [endpointForm, setEndpointForm] = useState({
+    endpoint_key: "",
+    protocol: "openai" as "openai" | "anthropic",
+    base_url: "",
+    api_key: ""
+  });
+  const [endpointMessage, setEndpointMessage] = useState<{ text: string; mode?: "success" | "error" } | null>(null);
   const mutation = useMutation({
     mutationFn: async (action: "sync" | "toggle" | "delete") => {
       if (!provider) {
@@ -486,6 +489,43 @@ export function ProviderDetailPage() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
+    }
+  });
+  const endpointMutation = useMutation({
+    mutationFn: async () => {
+      if (!provider) {
+        throw new Error("Provider not loaded");
+      }
+
+      const endpointKey = endpointForm.endpoint_key.trim();
+      const baseUrl = endpointForm.base_url.trim();
+      if (!endpointKey || !baseUrl) {
+        throw new Error("请填写 Endpoint Key 和 Base URL");
+      }
+
+      return createProviderEndpoint(token, provider.provider_key, {
+        endpoint_key: endpointKey,
+        protocol: endpointForm.protocol,
+        adapter_type: endpointForm.protocol === "anthropic" ? "anthropic" : "openai_compatible",
+        base_url: baseUrl,
+        api_key: endpointForm.api_key.trim() || undefined
+      });
+    },
+    onSuccess: () => {
+      setEndpointMessage({ text: "Endpoint 已添加并同步模型", mode: "success" });
+      setEndpointForm({
+        endpoint_key: "",
+        protocol: "openai",
+        base_url: "",
+        api_key: ""
+      });
+      void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
+    },
+    onError: (error) => {
+      setEndpointMessage({
+        text: error instanceof Error ? error.message : "Endpoint 添加失败",
+        mode: "error"
+      });
     }
   });
 
@@ -533,8 +573,6 @@ export function ProviderDetailPage() {
       <div className="panel detail-card">
         <h3>连接信息</h3>
         <dl>
-          <dt>Base URL</dt>
-          <dd><code>{provider.base_url}</code></dd>
           <dt>官网地址</dt>
           <dd>
             {provider.website_url ? (
@@ -548,6 +586,84 @@ export function ProviderDetailPage() {
           <dt>最近同步</dt>
           <dd>{provider.latest_sync?.status ?? "暂无记录"}</dd>
         </dl>
+        <div className="model-capability-table">
+          <div className="model-capability-header">
+            <span>Endpoint</span>
+            <span>协议</span>
+            <span>Adapter</span>
+            <span>状态</span>
+          </div>
+          {provider.endpoints.map((endpoint) => (
+            <div className="model-capability-row" key={endpoint.endpoint_key}>
+              <div className="model-name-cell">
+                <strong>{endpoint.endpoint_key}</strong>
+                <code>{endpoint.base_url}</code>
+              </div>
+              <span>{endpoint.protocol}</span>
+              <span>{endpoint.adapter_type}</span>
+              <span>{endpoint.enabled ? "已启用" : "已停用"}</span>
+            </div>
+          ))}
+        </div>
+        <form
+          className="form endpoint-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            endpointMutation.mutate();
+          }}
+        >
+          <label className="field">
+            <span>Endpoint Key</span>
+            <input
+              value={endpointForm.endpoint_key}
+              placeholder="anthropic"
+              onChange={(event) =>
+                setEndpointForm((current) => ({ ...current, endpoint_key: event.target.value }))
+              }
+            />
+          </label>
+          <label className="field">
+            <span>协议</span>
+            <select
+              value={endpointForm.protocol}
+              onChange={(event) =>
+                setEndpointForm((current) => ({
+                  ...current,
+                  protocol: event.target.value as "openai" | "anthropic"
+                }))
+              }
+            >
+              <option value="openai">openai</option>
+              <option value="anthropic">anthropic</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>Base URL</span>
+            <input
+              value={endpointForm.base_url}
+              placeholder="https://example.com/v1"
+              onChange={(event) =>
+                setEndpointForm((current) => ({ ...current, base_url: event.target.value }))
+              }
+            />
+          </label>
+          <label className="field">
+            <span>API Key</span>
+            <input
+              value={endpointForm.api_key}
+              type="password"
+              placeholder="留空则复用 Provider Key"
+              onChange={(event) =>
+                setEndpointForm((current) => ({ ...current, api_key: event.target.value }))
+              }
+            />
+          </label>
+          <button className="primary-action" type="submit" disabled={endpointMutation.isPending}>
+            <Plus size={16} />
+            {endpointMutation.isPending ? "添加中..." : "添加 Endpoint"}
+          </button>
+        </form>
+        {endpointMessage ? <p className={`status ${endpointMessage.mode ?? ""}`}>{endpointMessage.text}</p> : null}
       </div>
 
       <div className="panel detail-card">
@@ -564,6 +680,7 @@ export function ProviderDetailPage() {
               <div className="model-name-cell">
                 <strong>{model.model_name}</strong>
                 <code>{model.model_key}</code>
+                <span className="badge">{model.endpoint_key}</span>
               </div>
               <CapabilityToggle
                 checked={model.supports_streaming}
@@ -637,22 +754,46 @@ function ProviderFormPage(props: {
   const isEditing = props.mode === "edit";
   const [message, setMessage] = useState<{ text: string; mode?: "success" | "error" } | null>(null);
 
-  const form = useForm<ProviderFormValues>({
+  const form = useForm<CreateProviderPayload>({
     resolver: zodResolver(providerFormSchema),
     defaultValues: {
       provider_key: "",
       display_name: "",
-      base_url: "",
+      endpoints: [
+        {
+          endpoint_key: "default",
+          protocol: "openai",
+          base_url: ""
+        }
+      ],
       website_url: "",
       api_key: ""
     }
   });
+  const { fields, append, remove } = useFieldArray({
+    control: form.control,
+    name: "endpoints"
+  });
 
   useEffect(() => {
+    const nextEndpoints = props.provider?.endpoints.length
+      ? props.provider.endpoints.map((endpoint, index) => ({
+          endpoint_key: endpoint.endpoint_key || `endpoint-${index + 1}`,
+          protocol: endpoint.protocol as "openai" | "anthropic",
+          base_url: endpoint.base_url
+        }))
+      : [
+          {
+            endpoint_key: "default",
+            protocol: "openai" as const,
+            base_url: ""
+          }
+        ];
+
     form.reset({
       provider_key: props.provider?.provider_key ?? "",
       display_name: props.provider?.display_name ?? "",
-      base_url: props.provider?.base_url ?? "",
+      endpoints: nextEndpoints,
       website_url: props.provider?.website_url ?? "",
       api_key: ""
     });
@@ -660,28 +801,39 @@ function ProviderFormPage(props: {
   }, [form, props.provider]);
 
   const mutation = useMutation({
-    mutationFn: async (values: ProviderFormValues) => {
-      const normalized = normalizeFormValues(values);
+    mutationFn: async (values: CreateProviderPayload) => {
+      const normalizedEndpoints = values.endpoints.map((endpoint, index) => ({
+        endpoint_key: endpoint.endpoint_key.trim() || `endpoint-${index + 1}`,
+        protocol: endpoint.protocol,
+        base_url: endpoint.base_url.trim()
+      }));
+      const normalized = {
+        provider_key: values.provider_key.trim(),
+        display_name: values.display_name.trim(),
+        endpoints: normalizedEndpoints,
+        website_url: values.website_url?.trim() ?? "",
+        api_key: values.api_key?.trim() ?? ""
+      };
       if (!isEditing && !normalized.api_key) {
         throw new Error("请填写 API Key");
       }
 
       if (isEditing && props.provider) {
-        return updateProvider(props.token, props.provider.provider_key, {
+        const payload: UpdateProviderPayload = {
           display_name: normalized.display_name,
-          base_url: normalized.base_url,
+          endpoints: normalized.endpoints,
           website_url: normalized.website_url,
           api_key: normalized.api_key || undefined
-        });
+        };
+
+        return updateProvider(props.token, props.provider.provider_key, payload);
       }
 
       return createProvider(props.token, normalized);
     },
-    onSuccess: (_result, values) => {
-      const baseUrlChanged =
-        props.provider && values.base_url.trim() !== props.provider.base_url;
+    onSuccess: () => {
       setMessage({
-        text: baseUrlChanged ? "Provider 已保存，可用模型已更新" : "Provider 已保存",
+        text: "Provider 已保存，可用模型已更新",
         mode: "success"
       });
       props.onDone();
@@ -695,6 +847,7 @@ function ProviderFormPage(props: {
   });
 
   const errors = form.formState.errors;
+  const endpointsError = form.formState.errors.endpoints;
 
   return (
     <section className="page-panel form-page">
@@ -729,13 +882,76 @@ function ProviderFormPage(props: {
           {errors.display_name ? <small>{errors.display_name.message}</small> : null}
         </label>
 
-        <label className="field">
-          <span>
-            Base URL <RequiredMark />
-          </span>
-          <input {...form.register("base_url")} placeholder="https://example.com/v1" />
-          {errors.base_url ? <small>{errors.base_url.message}</small> : null}
-        </label>
+        <div className="field endpoint-group">
+          <div className="field-group-header">
+            <span>
+              Endpoints <RequiredMark />
+            </span>
+            <button
+              type="button"
+              className="ghost-action small-action"
+              onClick={() =>
+                append({
+                  endpoint_key: `endpoint-${fields.length + 1}`,
+                  protocol: "openai",
+                  base_url: ""
+                })
+              }
+            >
+              <Plus size={14} />
+              添加 Endpoint
+            </button>
+          </div>
+
+          <div className="endpoint-editor">
+            {fields.map((field, index) => {
+              const protocol = form.watch(`endpoints.${index}.protocol`);
+              const endpointErrors = errors.endpoints?.[index];
+
+              return (
+                <div className="endpoint-editor-row" key={field.id}>
+                  <label className="field">
+                    <span>Endpoint Key</span>
+                    <input {...form.register(`endpoints.${index}.endpoint_key`)} placeholder={`endpoint-${index + 1}`} />
+                    {endpointErrors?.endpoint_key ? <small>{endpointErrors.endpoint_key.message}</small> : null}
+                  </label>
+
+                  <label className="field">
+                    <span>协议类型</span>
+                    <select {...form.register(`endpoints.${index}.protocol`)}>
+                      <option value="openai">openai</option>
+                      <option value="anthropic">anthropic</option>
+                    </select>
+                    {endpointErrors?.protocol ? <small>{endpointErrors.protocol.message}</small> : null}
+                  </label>
+
+                  <label className="field">
+                    <span>Base URL</span>
+                    <input
+                      {...form.register(`endpoints.${index}.base_url`)}
+                      placeholder={protocol === "anthropic" ? "https://api.anthropic.com/v1" : "https://example.com/v1"}
+                    />
+                    {endpointErrors?.base_url ? <small>{endpointErrors.base_url.message}</small> : null}
+                  </label>
+
+                  <div className="endpoint-row-actions">
+                    <button
+                      type="button"
+                      className="ghost-action small-action"
+                      disabled={fields.length === 1}
+                      onClick={() => remove(index)}
+                    >
+                      <Trash2 size={14} />
+                      删除
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {!Array.isArray(endpointsError) && endpointsError?.message ? <small>{endpointsError.message}</small> : null}
+        </div>
 
         <label className="field">
           <span>官网地址</span>
@@ -852,8 +1068,18 @@ function ProviderCard(props: {
           )}
         </div>
         <div className="metric">
-          <span>Base URL</span>
-          <code>{props.provider.base_url}</code>
+          <span>Endpoints</span>
+          <div className="endpoint-summary">
+            {props.provider.endpoints.length > 0 ? (
+              props.provider.endpoints.map((endpoint) => (
+                <code key={endpoint.endpoint_key}>
+                  {endpoint.endpoint_key}: {endpoint.base_url}
+                </code>
+              ))
+            ) : (
+              <code>未配置</code>
+            )}
+          </div>
         </div>
         <div className="metric">
           <span>Models</span>

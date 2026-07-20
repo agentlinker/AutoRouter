@@ -5,6 +5,7 @@ import { PriceTable } from "../../src/catalog/priceTable.js";
 import { buildProviderRegistry } from "../../src/catalog/providerRegistry.js";
 import { loadConfig } from "../../src/config/loadConfig.js";
 import { selectRoute } from "../../src/routing/routeEngine.js";
+import { PROVIDER_AUTH_FAILED_CODE, PROVIDER_AUTH_FAILED_MESSAGE } from "../../src/utils/providerErrors.js";
 import { HttpError } from "../../src/utils/httpErrors.js";
 
 function buildBaseConfig() {
@@ -190,6 +191,90 @@ describe("selectRoute", () => {
         "normal"
       )
     ).toThrow(HttpError);
+
+    vi.unstubAllEnvs();
+  });
+
+  it("reports account disabled reason when an unavailable account is filtered", () => {
+    vi.stubEnv("PRIMARY_API_KEY", "primary");
+    vi.stubEnv("FALLBACK_API_KEY", "fallback");
+
+    const config = loadConfig({
+      override: {
+        providers: {
+          primary: {
+            display_name: "Primary",
+            trust_level: "medium",
+            privacy_level: "normal",
+            usage_trust: "medium",
+            protocol: "openai",
+            adapter: "openai_compatible",
+            base_url: "https://primary.example.com/v1",
+            accounts: [{ id: "main", credential_env: "PRIMARY_API_KEY" }],
+            models: [{ id: "gpt-5-5", model_name: "gpt-5.5" }]
+          },
+          fallback: {
+            display_name: "Fallback",
+            trust_level: "medium",
+            privacy_level: "normal",
+            usage_trust: "medium",
+            protocol: "openai",
+            adapter: "openai_compatible",
+            base_url: "https://fallback.example.com/v1",
+            accounts: [{ id: "main", credential_env: "FALLBACK_API_KEY" }],
+            models: [{ id: "gpt-5-5", model_name: "gpt-5.5" }]
+          }
+        },
+        routes: {
+          auto: {
+            policy: "balanced",
+            candidates: [
+              { provider: "primary", account: "main", model: "gpt-5-5" },
+              { provider: "fallback", account: "main", model: "gpt-5-5" }
+            ]
+          }
+        },
+        policies: {
+          balanced: {
+            min_trust_level: "low",
+            fallback_enabled: true
+          }
+        }
+      }
+    });
+
+    const registry = buildProviderRegistry(config);
+    const primaryAccount = registry.accounts.find((account) => account.id === "primary/main");
+    if (!primaryAccount) {
+      throw new Error("primary account missing");
+    }
+    primaryAccount.available = false;
+    primaryAccount.disabled_reason = PROVIDER_AUTH_FAILED_CODE;
+    primaryAccount.disabled_message = PROVIDER_AUTH_FAILED_MESSAGE;
+
+    const route = selectRoute(
+      config,
+      new ModelCatalog(config),
+      new PriceTable(config),
+      registry.platforms,
+      registry.providers,
+      registry.endpoints,
+      registry.accounts,
+      "auto",
+      false,
+      false,
+      10,
+      "normal"
+    );
+
+    expect(route.selected.provider.id).toBe("fallback");
+    expect(route.filtered).toEqual([
+      expect.objectContaining({
+        provider: "primary",
+        account: "primary/main",
+        filteredReason: "Invalid API key"
+      })
+    ]);
 
     vi.unstubAllEnvs();
   });

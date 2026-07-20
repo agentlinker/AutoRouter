@@ -28,9 +28,30 @@ export const managedProviderCredentialsTable = sqliteTable("managed_provider_cre
   providerUnique: uniqueIndex("managed_provider_credentials_provider_id_unique").on(table.providerId)
 }));
 
+export const managedProviderEndpointsTable = sqliteTable("managed_provider_endpoints", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  providerId: integer("provider_id").notNull(),
+  endpointKey: text("endpoint_key").notNull(),
+  protocol: text("protocol").notNull().default("openai"),
+  adapterType: text("adapter_type").notNull(),
+  baseUrl: text("base_url").notNull(),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  supportsStreaming: integer("supports_streaming", { mode: "boolean" }).notNull().default(true),
+  supportsTools: integer("supports_tools", { mode: "boolean" }).notNull().default(false),
+  supportsJsonMode: integer("supports_json_mode", { mode: "boolean" }).notNull().default(false),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+}, (table) => ({
+  providerEndpointUnique: uniqueIndex("managed_provider_endpoints_provider_endpoint_unique").on(
+    table.providerId,
+    table.endpointKey
+  )
+}));
+
 export const managedModelsTable = sqliteTable("managed_models", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   providerId: integer("provider_id").notNull(),
+  endpointId: integer("endpoint_id"),
   modelKey: text("model_key").notNull(),
   providerModelId: text("provider_model_id").notNull(),
   modelName: text("model_name").notNull(),
@@ -86,6 +107,7 @@ export const routeTracesTable = sqliteTable("route_traces", {
   policyHitsJson: text("policy_hits_json").notNull(),
   candidatesJson: text("candidates_json").notNull(),
   filteredJson: text("filtered_json").notNull(),
+  attemptsJson: text("attempts_json").notNull().default("[]"),
   fallbacksJson: text("fallbacks_json").notNull(),
   executionStatus: text("execution_status").notNull(),
   latencyMs: integer("latency_ms").notNull(),
@@ -110,6 +132,7 @@ export const routeTracesTable = sqliteTable("route_traces", {
 export const schema = {
   managedProvidersTable,
   managedProviderCredentialsTable,
+  managedProviderEndpointsTable,
   managedModelsTable,
   modelSyncRunsTable,
   routeTracesTable
@@ -117,6 +140,7 @@ export const schema = {
 
 export type ManagedProviderRow = typeof managedProvidersTable.$inferSelect;
 export type ManagedCredentialRow = typeof managedProviderCredentialsTable.$inferSelect;
+export type ManagedProviderEndpointRow = typeof managedProviderEndpointsTable.$inferSelect;
 export type ManagedModelRow = typeof managedModelsTable.$inferSelect;
 export type ModelSyncRunRow = typeof modelSyncRunsTable.$inferSelect;
 export type RouteTraceRow = typeof routeTracesTable.$inferSelect;

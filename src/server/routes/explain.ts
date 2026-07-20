@@ -14,6 +14,7 @@ export async function registerExplainRoute(
         request: null,
         selected: null,
         filtered: [],
+        attempts: [],
         fallbacks: []
       };
     }
@@ -33,6 +34,7 @@ export async function registerExplainRoute(
         : null,
       policy_hits: latestTrace.policy_hits,
       filtered: latestTrace.filtered,
+      attempts: latestTrace.attempts ?? [],
       fallbacks: latestTrace.fallbacks
     };
   });

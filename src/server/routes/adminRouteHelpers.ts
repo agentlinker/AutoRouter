@@ -1,7 +1,7 @@
 import type { RouterConfig } from "../../config/schema.js";
 import type { ManagedProviderRepository } from "../../repositories/managedProviderRepository.js";
 import type { RuntimeSnapshot } from "../../runtime/runtimeTypes.js";
-import type { RouteTrace, TraceCandidate } from "../../trace/traceTypes.js";
+import type { RouteTrace, TraceAttempt, TraceCandidate } from "../../trace/traceTypes.js";
 
 export function formatConfigValue(value: unknown): string {
   if (typeof value === "string") {
@@ -35,10 +35,20 @@ function serializeCandidate(candidate: TraceCandidate) {
   };
 }
 
+function serializeAttempt(attempt: TraceAttempt) {
+  return {
+    ...serializeCandidate(attempt),
+    status: attempt.status,
+    error: attempt.error ?? null,
+    retryable: attempt.retryable ?? false
+  };
+}
+
 export function serializeTrace(trace: RouteTrace) {
   const inputTokens = trace.execution.input_tokens ?? 0;
   const outputTokens = trace.execution.output_tokens ?? 0;
   const totalTokens = trace.execution.total_tokens ?? inputTokens + outputTokens;
+  const attempts = trace.attempts ?? [];
 
   return {
     trace_id: trace.trace_id,
@@ -67,10 +77,12 @@ export function serializeTrace(trace: RouteTrace) {
     error: trace.execution.error ?? null,
     candidate_count: trace.candidates.length,
     filtered_count: trace.filtered.length,
+    attempt_count: attempts.length,
     fallback_count: trace.fallbacks.length,
     feedback: trace.feedback ?? null,
     candidates: trace.candidates.map(serializeCandidate),
     filtered: trace.filtered.map(serializeCandidate),
+    attempts: attempts.map(serializeAttempt),
     fallbacks: trace.fallbacks.map(serializeCandidate)
   };
 }

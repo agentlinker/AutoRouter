@@ -20,6 +20,13 @@ function buildHeaders(apiKey: string): Record<string, string> {
   };
 }
 
+function buildAnthropicHeaders(apiKey: string): Record<string, string> {
+  return {
+    "x-api-key": apiKey,
+    "anthropic-version": "2023-06-01"
+  };
+}
+
 function parseBooleanFlag(value: unknown): boolean {
   return value === true;
 }
@@ -109,5 +116,64 @@ export class ProviderModelDiscoveryService {
     }
 
     return discoveredModels;
+  }
+
+  public async listAnthropicModels(input: {
+    providerKey: string;
+    baseUrl: string;
+    apiKey: string;
+  }): Promise<DiscoveredModel[]> {
+    let response;
+
+    try {
+      response = await request(`${input.baseUrl}/models`, {
+        method: "GET",
+        headers: buildAnthropicHeaders(input.apiKey)
+      });
+    } catch (error) {
+      throw new HttpError(
+        503,
+        "provider_unreachable",
+        error instanceof Error ? error.message : "provider unreachable",
+        true
+      );
+    }
+
+    const body = await response.body.json();
+
+    if (response.statusCode >= 400) {
+      throw new HttpError(
+        response.statusCode,
+        "provider_discovery_failed",
+        `Provider model discovery failed with status ${response.statusCode}`,
+        response.statusCode >= 500 || response.statusCode === 429
+      );
+    }
+
+    const data = typeof body === "object" && body !== null && "data" in body && Array.isArray(body.data)
+      ? body.data
+      : [];
+
+    return data.flatMap((item): DiscoveredModel[] => {
+      if (typeof item !== "object" || item === null) {
+        return [];
+      }
+
+      const raw = item as Record<string, unknown>;
+      const id = typeof raw.id === "string" ? raw.id : null;
+      if (!id) {
+        return [];
+      }
+
+      return [{
+        modelKey: `${input.providerKey}/${id}`,
+        providerModelId: id,
+        modelName: id,
+        supportsStreaming: true,
+        supportsTools: true,
+        supportsJsonMode: false,
+        rawMetadataJson: JSON.stringify(raw)
+      }];
+    });
   }
 }

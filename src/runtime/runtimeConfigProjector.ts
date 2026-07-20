@@ -33,16 +33,16 @@ export class RuntimeConfigProjector {
 
     for (const bundle of managedBundles) {
       const providerId = bundle.provider.providerKey;
-      const endpointId = `${providerId}/default`;
-      const accountId = `${providerId}/default`;
+      const endpointId = `${providerId}/${bundle.endpoint.endpointKey}`;
+      const accountId = `${providerId}/${bundle.endpoint.endpointKey}`;
       const decryptedCredential = this.options.secretCipher.decrypt(
         bundle.credential.apiKeyEncrypted
       );
 
       managedCredentials.set(accountId, decryptedCredential);
 
-      mergedConfig.platforms.openai ??= {
-        protocol: "openai"
+      mergedConfig.platforms[bundle.endpoint.protocol] ??= {
+        protocol: bundle.endpoint.protocol
       };
 
       mergedConfig.providers[providerId] = {
@@ -56,25 +56,30 @@ export class RuntimeConfigProjector {
 
       mergedConfig.endpoints[endpointId] = {
         provider: providerId,
-        platform: "openai",
-        adapter: bundle.provider.adapterType as RouterConfig["endpoints"][string]["adapter"],
-        base_url: bundle.provider.baseUrl,
-        enabled: bundle.provider.enabled,
+        platform: bundle.endpoint.protocol,
+        adapter: bundle.endpoint.adapterType as RouterConfig["endpoints"][string]["adapter"],
+        base_url: bundle.endpoint.baseUrl,
+        enabled: bundle.provider.enabled && bundle.endpoint.enabled,
         capabilities: {
-          streaming: true,
-          tools: bundle.models.some((model) => model.supportsTools),
-          json_mode: bundle.models.some((model) => model.supportsJsonMode)
+          streaming: bundle.endpoint.supportsStreaming,
+          tools: bundle.endpoint.supportsTools || bundle.models.some((model) => model.supportsTools),
+          json_mode: bundle.endpoint.supportsJsonMode || bundle.models.some((model) => model.supportsJsonMode)
         }
       };
 
       mergedConfig.accounts[accountId] = {
         endpoint: endpointId,
         account_type: "api_key",
-        enabled: bundle.provider.enabled
+        enabled: bundle.provider.enabled && bundle.endpoint.enabled
       };
 
       for (const model of bundle.models) {
-        mergedConfig.models[model.modelKey] = {
+        const modelKey =
+          model.endpointId === bundle.endpoint.id || model.endpointId === null
+            ? model.modelKey
+            : `${providerId}/${bundle.endpoint.endpointKey}/${model.providerModelId}`;
+
+        mergedConfig.models[modelKey] = {
           endpoint: endpointId,
           model_name: model.modelName,
           context_window: model.contextWindow ?? undefined,

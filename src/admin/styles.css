@@ -347,7 +347,8 @@ h2 {
   color: var(--danger);
 }
 
-input {
+input,
+select {
   width: 100%;
   min-width: 0;
   height: 42px;
@@ -357,6 +358,10 @@ input {
   background: rgba(2, 6, 23, 0.46);
   color: var(--text);
   outline: none;
+}
+
+select {
+  appearance: none;
 }
 
 input::placeholder {
@@ -375,6 +380,47 @@ input:focus {
 
 .field small {
   color: var(--danger);
+}
+
+.field-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.endpoint-group {
+  gap: 10px;
+}
+
+.endpoint-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.endpoint-editor-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.9fr) minmax(140px, 0.7fr) minmax(220px, 1.2fr) auto;
+  gap: 10px;
+  align-items: end;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(2, 6, 23, 0.24);
+}
+
+.endpoint-row-actions {
+  display: flex;
+  align-items: end;
+}
+
+.endpoint-summary {
+  display: grid;
+  gap: 5px;
+}
+
+.endpoint-summary code {
+  white-space: normal;
 }
 
 a:not(.nav-item):not(.primary-action):not(.ghost-action) {
@@ -398,6 +444,12 @@ a:not(.nav-item):not(.primary-action):not(.ghost-action):hover {
   padding: 0 14px;
   cursor: pointer;
   white-space: nowrap;
+}
+
+.small-action {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
 }
 
 .primary-action {
@@ -700,6 +752,12 @@ button:disabled {
   min-width: 0;
 }
 
+.endpoint-form {
+  margin-top: 16px;
+  grid-template-columns: minmax(130px, 0.8fr) minmax(120px, 0.6fr) minmax(220px, 1.2fr) minmax(180px, 1fr) auto;
+  align-items: end;
+}
+
 .model-name-cell strong {
   font-size: 13px;
   overflow-wrap: anywhere;
@@ -900,6 +958,10 @@ button:disabled {
   }
 
   .provider-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .endpoint-editor-row {
     grid-template-columns: 1fr;
   }
 

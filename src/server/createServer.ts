@@ -120,7 +120,7 @@ export async function createServer(
   await registerHealthRoute(fastify, runtimeManager);
   await registerModelsRoute(fastify, runtimeManager);
   await registerChatCompletionsRoute(fastify, runtimeManager);
-  await registerResponsesRoute(fastify);
+  await registerResponsesRoute(fastify, runtimeManager);
   await registerExplainRoute(fastify, runtimeManager.getSnapshot().traceStore);
 
   return fastify;

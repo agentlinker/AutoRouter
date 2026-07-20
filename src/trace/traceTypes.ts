@@ -11,6 +11,12 @@ export interface TraceCandidate {
   sticky?: boolean;
 }
 
+export interface TraceAttempt extends TraceCandidate {
+  status: "success" | "failed";
+  error?: string;
+  retryable?: boolean;
+}
+
 export interface TraceFeedbackLabel {
   feedback_label?: string | null;
   feedback_source?: string | null;
@@ -58,6 +64,7 @@ export interface RouteTrace {
     actual_usd: number | null;
     price_confidence: "low" | "medium" | "high" | "unknown";
   };
+  attempts?: TraceAttempt[];
   fallbacks: TraceCandidate[];
   feedback?: TraceFeedbackLabel | null;
 }

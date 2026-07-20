@@ -112,7 +112,7 @@ function canUseCandidate(
   }
 
   if (!account.available) {
-    return "account_unavailable";
+    return account.disabled_message ?? account.disabled_reason ?? "account_unavailable";
   }
 
   if (

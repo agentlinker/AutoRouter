@@ -4,7 +4,19 @@ export interface ProviderModel {
   model_key: string;
   provider_model_id: string;
   model_name: string;
+  endpoint_key: string;
   context_window: number | null;
+  supports_streaming: boolean;
+  supports_tools: boolean;
+  supports_json_mode: boolean;
+}
+
+export interface ProviderEndpoint {
+  endpoint_key: string;
+  protocol: string;
+  adapter_type: string;
+  base_url: string;
+  enabled: boolean;
   supports_streaming: boolean;
   supports_tools: boolean;
   supports_json_mode: boolean;
@@ -21,6 +33,7 @@ export interface ProviderDetails {
   privacy_level: string;
   usage_trust: string;
   key_hint: string | null;
+  endpoints: ProviderEndpoint[];
   latest_sync: {
     status: string;
     error_message: string | null;
@@ -38,8 +51,24 @@ export interface ProviderListResponse {
 export interface ProviderFormValues {
   provider_key: string;
   display_name: string;
-  base_url: string;
+  endpoints: ProviderEndpointInput[];
   website_url?: string;
+  api_key?: string;
+}
+
+export interface ProviderEndpointInput {
+  endpoint_key: string;
+  protocol: "openai" | "anthropic";
+  base_url: string;
+  enabled?: boolean;
+}
+
+export interface CreateProviderPayload extends ProviderFormValues {
+  protocol?: "openai" | "anthropic";
+  base_url?: string;
+}
+
+export interface UpdateProviderPayload extends Omit<CreateProviderPayload, "provider_key"> {
   api_key?: string;
 }
 
@@ -49,7 +78,7 @@ export function listProviders(token: string): Promise<ProviderListResponse> {
 
 export function createProvider(
   token: string,
-  payload: ProviderFormValues
+  payload: CreateProviderPayload
 ): Promise<ProviderDetails> {
   return requestJson<ProviderDetails>("/admin/api/providers", token, {
     method: "POST",
@@ -60,7 +89,7 @@ export function createProvider(
 export function updateProvider(
   token: string,
   providerKey: string,
-  payload: Omit<ProviderFormValues, "provider_key">
+  payload: UpdateProviderPayload
 ): Promise<ProviderDetails> {
   return requestJson<ProviderDetails>(`/admin/api/providers/${providerKey}`, token, {
     method: "PATCH",
@@ -72,6 +101,36 @@ export function syncProvider(token: string, providerKey: string): Promise<Provid
   return requestJson<ProviderDetails>(`/admin/api/providers/${providerKey}/sync-models`, token, {
     method: "POST"
   });
+}
+
+export function createProviderEndpoint(
+  token: string,
+  providerKey: string,
+  payload: {
+    endpoint_key: string;
+    protocol: "openai" | "anthropic";
+    adapter_type: "openai_compatible" | "openrouter" | "anthropic";
+    base_url: string;
+    enabled?: boolean;
+    api_key?: string;
+  }
+): Promise<ProviderDetails> {
+  return requestJson<ProviderDetails>(`/admin/api/providers/${providerKey}/endpoints`, token, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function syncProviderEndpoint(
+  token: string,
+  providerKey: string,
+  endpointKey: string
+): Promise<ProviderDetails> {
+  return requestJson<ProviderDetails>(
+    `/admin/api/providers/${providerKey}/endpoints/${endpointKey}/sync-models`,
+    token,
+    { method: "POST" }
+  );
 }
 
 export function deleteProvider(token: string, providerKey: string): Promise<null> {

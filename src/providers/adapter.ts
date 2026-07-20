@@ -36,6 +36,11 @@ export interface ProviderStreamChunk {
   raw: string;
 }
 
+export type ProviderResponsesRequest = Record<string, unknown> & {
+  model: string;
+  stream?: boolean;
+};
+
 export interface ProviderAdapter {
   readonly type: string;
   healthCheck(target: RouteTarget): Promise<HealthResult>;
@@ -45,6 +50,14 @@ export interface ProviderAdapter {
   ): Promise<ProviderResponse>;
   streamChatCompletion?(
     request: NormalizedChatRequest,
+    target: RouteTarget
+  ): AsyncIterable<ProviderStreamChunk>;
+  responseCompletion?(
+    request: ProviderResponsesRequest,
+    target: RouteTarget
+  ): Promise<ProviderResponse>;
+  streamResponse?(
+    request: ProviderResponsesRequest,
     target: RouteTarget
   ): AsyncIterable<ProviderStreamChunk>;
 }

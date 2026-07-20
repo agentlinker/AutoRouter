@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { selectRoute } from "../../routing/routeEngine.js";
 import { sha256 } from "../../utils/hash.js";
 import { HttpError } from "../../utils/httpErrors.js";
+import { PROVIDER_AUTH_FAILED_CODE, PROVIDER_AUTH_FAILED_MESSAGE } from "../../utils/providerErrors.js";
 import { normalizeChatRequest } from "../../routing/normalizeRequest.js";
 import type { ChatCompletionsRequestBody } from "../../routing/types.js";
 import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
@@ -100,6 +101,20 @@ export async function registerChatCompletionsRoute(
 
     let providerResponse;
     let selectedRoute = routeDecision.selected;
+    const attemptHistory: Array<{
+      route_id: string;
+      endpoint: string;
+      platform: string;
+      provider: string;
+      account: string;
+      model_id: string;
+      model: string;
+      status: "success" | "failed";
+      error?: string;
+      retryable?: boolean;
+      score?: number;
+      sticky?: boolean;
+    }> = [];
     const fallbackHistory: Array<{
       route_id: string;
       endpoint: string;
@@ -161,6 +176,18 @@ export async function registerChatCompletionsRoute(
           });
         }
 
+        attemptHistory.push({
+          route_id: candidate.routeId,
+          endpoint: candidate.endpoint.id,
+          platform: candidate.platform.id,
+          provider: candidate.provider.id,
+          account: candidate.account.id,
+          model_id: candidate.modelId,
+          model: candidate.modelName,
+          status: "success",
+          score: candidate.score,
+          sticky: false
+        });
         selectedRoute = {
           requestedModel: routeDecision.requestedModel,
           normalizedModel: routeDecision.normalizedModel,
@@ -178,13 +205,30 @@ export async function registerChatCompletionsRoute(
         lastError = error;
         candidate.endpoint.recent_error_count += 1;
         candidate.account.recent_error_count += 1;
+        const retryable = error instanceof HttpError && error.retryable;
 
-        if (error instanceof HttpError && error.code === "provider_auth_failed") {
+        attemptHistory.push({
+          route_id: candidate.routeId,
+          endpoint: candidate.endpoint.id,
+          platform: candidate.platform.id,
+          provider: candidate.provider.id,
+          account: candidate.account.id,
+          model_id: candidate.modelId,
+          model: candidate.modelName,
+          status: "failed",
+          error: error instanceof Error ? error.message : "provider_request_failed",
+          retryable,
+          score: candidate.score,
+          sticky: false
+        });
+
+        if (error instanceof HttpError && error.code === PROVIDER_AUTH_FAILED_CODE) {
           candidate.account.available = false;
-          candidate.account.disabled_reason = "provider_auth_failed";
+          candidate.account.disabled_reason = PROVIDER_AUTH_FAILED_CODE;
+          candidate.account.disabled_message = error.message || PROVIDER_AUTH_FAILED_MESSAGE;
         }
 
-        if (!(error instanceof HttpError) || !error.retryable) {
+        if (!retryable) {
           break;
         }
 
@@ -250,6 +294,7 @@ export async function registerChatCompletionsRoute(
         model: selectedRoute.model,
         score: selectedCandidateScore
       },
+      attempts: attemptHistory,
       fallbacks: fallbackHistory,
       feedback: null
     };

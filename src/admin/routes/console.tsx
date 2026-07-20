@@ -262,6 +262,8 @@ function TraceDetailPanel(props: {
           <dd>{formatUsd(props.trace.estimated_cost_usd)}</dd>
           <dt>错误信息</dt>
           <dd>{props.trace.error ?? "无"}</dd>
+          <dt>实际尝试</dt>
+          <dd>{props.trace.attempt_count}</dd>
         </dl>
       </div>
 
@@ -284,6 +286,25 @@ function TraceDetailPanel(props: {
         </div>
 
         <div className="panel detail-card">
+          <h3>实际尝试</h3>
+          <div className="stack-list">
+            {props.trace.attempts.length > 0 ? (
+              props.trace.attempts.map((attempt, index) => (
+                <div key={`${attempt.endpoint}-attempt-${index}`} className="stack-item">
+                  <strong>{attempt.provider ?? attempt.endpoint}</strong>
+                  <span>{attempt.model}</span>
+                  <code>
+                    {attempt.status === "success" ? "success" : attempt.error ?? "failed"}
+                  </code>
+                </div>
+              ))
+            ) : (
+              <p className="muted">没有实际尝试记录。</p>
+            )}
+          </div>
+        </div>
+
+        <div className="panel detail-card">
           <h3>过滤与回退</h3>
           <div className="stack-list">
             {props.trace.filtered.length > 0 ? (
@@ -291,7 +312,7 @@ function TraceDetailPanel(props: {
                 <div key={`${candidate.endpoint}-filtered-${index}`} className="stack-item">
                   <strong>{candidate.provider ?? candidate.endpoint}</strong>
                   <span>{candidate.model}</span>
-                  <code>{candidate.reason ?? "filtered"}</code>
+                  <code>过滤原因: {candidate.reason ?? "unknown"}</code>
                 </div>
               ))
             ) : (

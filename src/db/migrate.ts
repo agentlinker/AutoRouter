@@ -28,9 +28,27 @@ export function runMigrations(sqlite: Database.Database) {
       FOREIGN KEY (provider_id) REFERENCES managed_providers(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS managed_provider_endpoints (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider_id INTEGER NOT NULL,
+      endpoint_key TEXT NOT NULL,
+      protocol TEXT NOT NULL DEFAULT 'openai',
+      adapter_type TEXT NOT NULL,
+      base_url TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      supports_streaming INTEGER NOT NULL DEFAULT 1,
+      supports_tools INTEGER NOT NULL DEFAULT 0,
+      supports_json_mode INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (provider_id) REFERENCES managed_providers(id) ON DELETE CASCADE,
+      UNIQUE (provider_id, endpoint_key)
+    );
+
     CREATE TABLE IF NOT EXISTS managed_models (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       provider_id INTEGER NOT NULL,
+      endpoint_id INTEGER,
       model_key TEXT NOT NULL,
       provider_model_id TEXT NOT NULL,
       model_name TEXT NOT NULL,
@@ -81,6 +99,7 @@ export function runMigrations(sqlite: Database.Database) {
       policy_hits_json TEXT NOT NULL,
       candidates_json TEXT NOT NULL,
       filtered_json TEXT NOT NULL,
+      attempts_json TEXT NOT NULL DEFAULT '[]',
       fallbacks_json TEXT NOT NULL,
       execution_status TEXT NOT NULL,
       latency_ms INTEGER NOT NULL,
@@ -112,6 +131,56 @@ export function runMigrations(sqlite: Database.Database) {
     sqlite.exec("ALTER TABLE managed_providers ADD COLUMN website_url TEXT;");
   }
 
+  const modelColumns = sqlite.pragma("table_info(managed_models)") as Array<{
+    name: string;
+  }>;
+  if (!modelColumns.some((column) => column.name === "endpoint_id")) {
+    sqlite.exec("ALTER TABLE managed_models ADD COLUMN endpoint_id INTEGER;");
+  }
+
+  sqlite.exec(`
+    INSERT OR IGNORE INTO managed_provider_endpoints (
+      provider_id,
+      endpoint_key,
+      protocol,
+      adapter_type,
+      base_url,
+      enabled,
+      supports_streaming,
+      supports_tools,
+      supports_json_mode,
+      created_at,
+      updated_at
+    )
+    SELECT
+      id,
+      'default',
+      CASE WHEN adapter_type = 'anthropic' THEN 'anthropic' ELSE 'openai' END,
+      adapter_type,
+      base_url,
+      enabled,
+      1,
+      0,
+      0,
+      created_at,
+      updated_at
+    FROM managed_providers
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM managed_provider_endpoints
+      WHERE managed_provider_endpoints.provider_id = managed_providers.id
+    );
+
+    UPDATE managed_models
+    SET endpoint_id = (
+      SELECT managed_provider_endpoints.id
+      FROM managed_provider_endpoints
+      WHERE managed_provider_endpoints.provider_id = managed_models.provider_id
+        AND managed_provider_endpoints.endpoint_key = 'default'
+    )
+    WHERE endpoint_id IS NULL;
+  `);
+
   const routeTraceColumns = sqlite.pragma("table_info(route_traces)") as Array<{
     name: string;
   }>;
@@ -122,7 +191,8 @@ export function runMigrations(sqlite: Database.Database) {
     { name: "feedback_source", sql: "ALTER TABLE route_traces ADD COLUMN feedback_source TEXT;" },
     { name: "feedback_at", sql: "ALTER TABLE route_traces ADD COLUMN feedback_at TEXT;" },
     { name: "training_split", sql: "ALTER TABLE route_traces ADD COLUMN training_split TEXT;" },
-    { name: "tags_json", sql: "ALTER TABLE route_traces ADD COLUMN tags_json TEXT;" }
+    { name: "tags_json", sql: "ALTER TABLE route_traces ADD COLUMN tags_json TEXT;" },
+    { name: "attempts_json", sql: "ALTER TABLE route_traces ADD COLUMN attempts_json TEXT NOT NULL DEFAULT '[]';" }
   ];
 
   for (const definition of routeTraceColumnDefinitions) {

@@ -34,6 +34,7 @@ function rowToTrace(row: RouteTraceRow): RouteTrace {
     },
     candidates: parseJson(row.candidatesJson),
     filtered: parseJson(row.filteredJson),
+    attempts: row.attemptsJson ? parseJson(row.attemptsJson) : [],
     selected: row.selectedEndpoint
       ? {
           route_id: row.selectedRouteId ?? undefined,
@@ -136,6 +137,7 @@ export class RouteTraceRepository {
       policyHitsJson: JSON.stringify(trace.policy_hits),
       candidatesJson: JSON.stringify(trace.candidates),
       filteredJson: JSON.stringify(trace.filtered),
+      attemptsJson: JSON.stringify(trace.attempts ?? []),
       fallbacksJson: JSON.stringify(trace.fallbacks),
       executionStatus: trace.execution.status,
       latencyMs: trace.execution.latency_ms,

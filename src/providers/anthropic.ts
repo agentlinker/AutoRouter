@@ -1,6 +1,7 @@
 import { request } from "undici";
 
 import type { NormalizedChatRequest } from "../routing/types.js";
+import { PROVIDER_AUTH_FAILED_CODE } from "../utils/providerErrors.js";
 import { HttpError } from "../utils/httpErrors.js";
 import type {
   HealthResult,
@@ -152,7 +153,7 @@ export class AnthropicAdapter implements ProviderAdapter {
           : `Anthropic request failed with status ${response.statusCode}`;
 
       if (response.statusCode === 401 || response.statusCode === 403) {
-        throw new HttpError(response.statusCode, "provider_auth_failed", message, false);
+        throw new HttpError(response.statusCode, PROVIDER_AUTH_FAILED_CODE, message, false);
       }
 
       if (response.statusCode === 404) {

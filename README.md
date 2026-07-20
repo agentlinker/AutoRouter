@@ -138,9 +138,37 @@ curl -s \
 Expected:
 
 - Accepts `input`, `instructions`, `tools`, `tool_choice`, `temperature`, `max_output_tokens`, and `metadata`
-- Routes through the same policy, fallback, sticky-session, trace, and credential handling as chat completions
-- Returns Responses-compatible non-streaming JSON when `stream` is false
-- Emits Responses-compatible SSE events, including `response.completed`, when `stream` is true
+- Routes through the same policy, fallback, trace, and credential handling as chat completions
+- OpenAI-compatible managed endpoints with native Responses support are forwarded directly to upstream `POST /responses`
+- Streaming Responses requests are proxied as upstream SSE rather than converted from chat completions
+- If every eligible endpoint lacks native Responses support, AutoRouter falls back to a best-effort Chat Completions conversion
+- Function calls and `function_call_output` are preserved on the native path; fallback conversion is only for compatibility
+
+### Managed Provider Endpoints
+
+Managed providers can expose more than one protocol surface. Keep one provider for the vendor, then add one endpoint per protocol/base URL.
+
+```bash
+curl -s \
+  -X POST \
+  -H "Authorization: Bearer admin-token" \
+  -H "Content-Type: application/json" \
+  http://127.0.0.1:8811/admin/api/providers/my-provider/endpoints \
+  -d '{
+    "endpoint_key": "anthropic",
+    "protocol": "anthropic",
+    "adapter_type": "anthropic",
+    "base_url": "https://example.com/anthropic/v1"
+  }'
+```
+
+Expected:
+
+- The original provider remains one logical vendor entry
+- Each endpoint carries its own `protocol`, `adapter_type`, `base_url`, enabled flag, and capabilities
+- Models discovered from non-default endpoints are keyed as `provider/endpoint/model`
+- If one endpoint cannot list models but another endpoint for the same provider can, runtime routing reuses the provider's discovered models for that endpoint
+- Runtime routing creates separate accounts/endpoints internally while preserving provider-level trust, privacy, and credential settings
 
 ### Explain Latest
 

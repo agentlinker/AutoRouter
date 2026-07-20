@@ -192,27 +192,28 @@ describe("local smoke", () => {
 
     pool
       .intercept({
-        path: "/v1/chat/completions",
+        path: "/v1/responses",
         method: "POST"
       })
       .reply(200, {
-        id: "chatcmpl_responses_smoke",
-        object: "chat.completion",
-        created: Math.floor(Date.now() / 1000),
+        id: "resp_responses_smoke",
+        object: "response",
+        created_at: Math.floor(Date.now() / 1000),
+        status: "completed",
         model: "smoke-model",
-        choices: [
+        output: [
           {
-            index: 0,
-            message: {
-              role: "assistant",
-              content: "responses ok"
-            },
-            finish_reason: "stop"
+            id: "msg_responses_smoke",
+            type: "message",
+            status: "completed",
+            role: "assistant",
+            content: [{ type: "output_text", text: "responses ok", annotations: [] }]
           }
         ],
+        output_text: "responses ok",
         usage: {
-          prompt_tokens: 8,
-          completion_tokens: 4,
+          input_tokens: 8,
+          output_tokens: 4,
           total_tokens: 12
         }
       });
@@ -237,30 +238,24 @@ describe("local smoke", () => {
 
     pool
       .intercept({
-        path: "/v1/chat/completions",
+        path: "/v1/responses",
         method: "POST"
       })
-      .reply(200, {
-        id: "chatcmpl_responses_stream_smoke",
-        object: "chat.completion",
-        created: Math.floor(Date.now() / 1000),
-        model: "smoke-model",
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: "assistant",
-              content: "responses stream ok"
-            },
-            finish_reason: "stop"
+      .reply(
+        200,
+        [
+          "event: response.completed",
+          "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_stream\",\"status\":\"completed\"}}",
+          "",
+          "data: [DONE]",
+          ""
+        ].join("\n"),
+        {
+          headers: {
+            "content-type": "text/event-stream; charset=utf-8"
           }
-        ],
-        usage: {
-          prompt_tokens: 8,
-          completion_tokens: 4,
-          total_tokens: 12
         }
-      });
+      );
 
     const responsesStreamResponse = await gateway.inject({
       method: "POST",
@@ -278,6 +273,87 @@ describe("local smoke", () => {
     expect(responsesStreamResponse.headers["content-type"]).toContain("text/event-stream");
     expect(responsesStreamResponse.body).toContain("event: response.completed");
     expect(responsesStreamResponse.body).toContain('"type":"response.completed"');
+
+    pool
+      .intercept({
+        path: "/v1/responses",
+        method: "POST"
+      })
+      .reply(200, (options) => {
+        const body = JSON.parse(String(options.body)) as {
+          input: Array<{ type: string; call_id?: string; name?: string; output?: string }>;
+        };
+        expect(body.input).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: "function_call",
+              call_id: "fc_test",
+              name: "lookup"
+            }),
+            expect.objectContaining({
+              type: "function_call_output",
+              call_id: "fc_test",
+              output: "lookup result"
+            })
+          ])
+        );
+
+        return {
+          id: "resp_responses_tool_smoke",
+          object: "response",
+          created_at: Math.floor(Date.now() / 1000),
+          status: "completed",
+          model: "smoke-model",
+          output: [
+            {
+              id: "msg_responses_tool_smoke",
+              type: "message",
+              status: "completed",
+              role: "assistant",
+              content: [{ type: "output_text", text: "tool response ok", annotations: [] }]
+            }
+          ],
+          output_text: "tool response ok",
+          usage: {
+            input_tokens: 12,
+            output_tokens: 4,
+            total_tokens: 16
+          }
+        };
+      });
+
+    const responsesToolResponse = await gateway.inject({
+      method: "POST",
+      url: "/v1/responses",
+      headers: {
+        authorization: "Bearer smoke-token"
+      },
+      payload: {
+        model: "auto",
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: "call lookup"
+          },
+          {
+            type: "function_call",
+            call_id: "fc_test",
+            name: "lookup",
+            arguments: "{\"query\":\"hello\"}"
+          },
+          {
+            type: "function_call_output",
+            call_id: "fc_test",
+            output: "lookup result"
+          }
+        ]
+      }
+    });
+    expect(responsesToolResponse.statusCode).toBe(200);
+    expect(responsesToolResponse.json()).toMatchObject({
+      output_text: "tool response ok"
+    });
 
     const explainResponse = await gateway.inject({
       method: "GET",
