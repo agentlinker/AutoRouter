@@ -1106,4 +1106,128 @@ describe("gateway integration", () => {
 
     await gateway.close();
   });
+
+
+  it("returns filtered reasons when no eligible route candidate and records trace", async () => {
+    vi.stubEnv("SMALL_API_KEY", "small-key");
+
+    const config = loadConfig({
+      override: {
+        platforms: {
+          openai: {
+            protocol: "openai"
+          }
+        },
+        providers: {
+          small: {
+            display_name: "Small",
+            trust_level: "medium",
+            privacy_level: "normal",
+            usage_trust: "medium"
+          }
+        },
+        endpoints: {
+          "small-openai": {
+            provider: "small",
+            platform: "openai",
+            adapter: "openai_compatible",
+            base_url: "https://small.example.com/v1",
+            capabilities: {
+              streaming: true,
+              tools: true,
+              json_mode: true
+            }
+          }
+        },
+        accounts: {
+          "small-account": {
+            endpoint: "small-openai",
+            account_type: "api_key",
+            credential_env: "SMALL_API_KEY"
+          }
+        },
+        models: {
+          "tiny-model": {
+            endpoint: "small-openai",
+            model_name: "tiny-model",
+            context_window: 100,
+            capabilities: {
+              streaming: true,
+              tools: true,
+              json_mode: true
+            }
+          }
+        },
+        routes: {
+          auto: {
+            policy: "balanced",
+            candidates: [
+              {
+                account: "small-account",
+                model: "tiny-model"
+              }
+            ]
+          }
+        },
+        policies: {
+          balanced: {
+            min_trust_level: "low",
+            allow_public_only_provider: false,
+            fallback_enabled: true,
+            sticky_session: false
+          }
+        }
+      }
+    });
+
+    const registry = buildProviderRegistry(config);
+    const state: RouterState = {
+      config,
+      logger: createLogger(),
+      platforms: registry.platforms,
+      providers: registry.providers,
+      endpoints: registry.endpoints,
+      accounts: registry.accounts,
+      priceTable: new PriceTable(config),
+      adapters: new AdapterRegistry(),
+      stickySessions: new StickySessionStore(),
+      traceStore: createTraceStore(traceDatabasePath)
+    };
+
+    const gateway = await createServer(state);
+    const response = await gateway.inject({
+      method: "POST",
+      url: "/v1/responses",
+      headers: {
+        authorization: "Bearer test-token"
+      },
+      payload: {
+        model: "tiny-model",
+        input: "x".repeat(2000),
+        stream: false
+      }
+    });
+
+    expect(response.statusCode).toBe(503);
+    const body = response.json();
+    expect(body.error.code).toBe("endpoint_unavailable");
+    expect(body.error.message).toBe("No eligible route candidate");
+    expect(Array.isArray(body.error.details?.filtered)).toBe(true);
+    expect(body.error.details.filtered[0].reason).toBe("context_window_exceeded");
+    expect(body.error.details.context_tokens_est).toBeGreaterThan(100);
+
+    const explain = await gateway.inject({
+      method: "GET",
+      url: "/v1/autorouter/explain/latest",
+      headers: {
+        authorization: "Bearer test-token"
+      }
+    });
+    expect(explain.statusCode).toBe(200);
+    expect(explain.json().request.model).toBe("tiny-model");
+    expect(explain.json().filtered[0].reason).toBe("context_window_exceeded");
+
+    await gateway.close();
+  });
+
 });

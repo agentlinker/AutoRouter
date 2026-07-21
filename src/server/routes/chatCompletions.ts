@@ -8,6 +8,7 @@ import { PROVIDER_AUTH_FAILED_CODE, PROVIDER_AUTH_FAILED_MESSAGE } from "../../u
 import { normalizeChatRequest } from "../../routing/normalizeRequest.js";
 import type { ChatCompletionsRequestBody } from "../../routing/types.js";
 import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
+import { recordRouteSelectionFailure } from "./routeSelectionFailure.js";
 
 export async function registerChatCompletionsRoute(
   fastify: FastifyInstance,
@@ -28,25 +29,41 @@ export async function registerChatCompletionsRoute(
         ? normalizedRequest.metadata.privacy_level
         : state.config.defaults.privacy_level;
 
-    const routeDecision = selectRoute(
-      state.config,
-      modelCatalog,
-      state.priceTable,
-      state.platforms,
-      state.providers,
-      state.endpoints,
-      state.accounts,
-      normalizedRequest.model,
-      normalizedRequest.tools.length > 0,
-      normalizedRequest.response_format !== undefined,
-      normalizedRequest.context_tokens_est,
-      privacyLevel,
-      sessionId ? state.stickySessions.get(sessionId) : null
-    );
-
     const traceId = randomUUID();
     const startedAt = Date.now();
     const promptHash = sha256(JSON.stringify(normalizedRequest.messages));
+    const hasTools = normalizedRequest.tools.length > 0;
+
+    let routeDecision;
+    try {
+      routeDecision = selectRoute(
+        state.config,
+        modelCatalog,
+        state.priceTable,
+        state.platforms,
+        state.providers,
+        state.endpoints,
+        state.accounts,
+        normalizedRequest.model,
+        hasTools,
+        normalizedRequest.response_format !== undefined,
+        normalizedRequest.context_tokens_est,
+        privacyLevel,
+        sessionId ? state.stickySessions.get(sessionId) : null
+      );
+    } catch (error) {
+      recordRouteSelectionFailure(runtimeManager, error, {
+        model: normalizedRequest.model,
+        promptHash,
+        stream: normalizedRequest.stream,
+        hasTools,
+        privacyLevel,
+        contextTokensEst: normalizedRequest.context_tokens_est,
+        sessionId,
+        policyHits: ["route_selection_failed"]
+      });
+      throw error;
+    }
 
     const orderedCandidates = routeDecision.candidates
       .map((candidate) => {

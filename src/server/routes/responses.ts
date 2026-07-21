@@ -2,6 +2,8 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { randomUUID } from "node:crypto";
 
 import { selectRoute } from "../../routing/routeEngine.js";
+import { estimateResponsesContextTokens as estimateResponsesContextTokensUtil } from "../../utils/contextTokens.js";
+import { recordRouteSelectionFailure } from "./routeSelectionFailure.js";
 import { sha256 } from "../../utils/hash.js";
 import type { ChatCompletionsRequestBody, ChatMessage, ToolDefinition } from "../../routing/types.js";
 import { HttpError } from "../../utils/httpErrors.js";
@@ -279,10 +281,12 @@ function wrapResponseEvent(
 }
 
 function estimateResponsesContextTokens(body: ResponsesRequestBody): number {
-  return JSON.stringify({
+  return estimateResponsesContextTokensUtil({
     input: body.input,
-    instructions: body.instructions
-  }).length;
+    instructions: body.instructions,
+    tools: body.tools,
+    metadata: body.metadata
+  });
 }
 
 function responsesUsageToChatUsage(usage: unknown): {
@@ -441,25 +445,42 @@ export async function registerResponsesRoute(
       typeof request.body.metadata?.privacy_level === "string"
         ? request.body.metadata.privacy_level
         : state.config.defaults.privacy_level;
-    const routeDecision = selectRoute(
-      state.config,
-      state.modelCatalog,
-      state.priceTable,
-      state.platforms,
-      state.providers,
-      state.endpoints,
-      state.accounts,
-      request.body.model,
-      Array.isArray(request.body.tools) && request.body.tools.length > 0,
-      false,
-      estimateResponsesContextTokens(request.body),
-      privacyLevel,
-      null
-    );
-
     const traceId = randomUUID();
     const startedAt = Date.now();
     const promptHash = sha256(JSON.stringify(request.body.input ?? null));
+    const hasTools = Array.isArray(request.body.tools) && request.body.tools.length > 0;
+    const contextTokensEst = estimateResponsesContextTokens(request.body);
+
+    let routeDecision;
+    try {
+      routeDecision = selectRoute(
+        state.config,
+        state.modelCatalog,
+        state.priceTable,
+        state.platforms,
+        state.providers,
+        state.endpoints,
+        state.accounts,
+        request.body.model,
+        hasTools,
+        false,
+        contextTokensEst,
+        privacyLevel,
+        null
+      );
+    } catch (error) {
+      recordRouteSelectionFailure(runtimeManager, error, {
+        model: request.body.model,
+        promptHash,
+        stream: request.body.stream ?? false,
+        hasTools,
+        privacyLevel,
+        contextTokensEst,
+        sessionId: null,
+        policyHits: ["route_selection_failed", "responses_native"]
+      });
+      throw error;
+    }
     const orderedCandidates = routeDecision.candidates
       .map((candidate) => {
         const provider = state.providers.find((item) => item.id === candidate.provider);

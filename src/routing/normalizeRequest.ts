@@ -1,4 +1,5 @@
 import { HttpError } from "../utils/httpErrors.js";
+import { estimateChatContextTokens } from "../utils/contextTokens.js";
 import type {
   ChatCompletionsRequestBody,
   NormalizedChatRequest
@@ -11,16 +12,23 @@ export function normalizeChatRequest(
     throw new HttpError(400, "invalid_request", "model and messages are required");
   }
 
+  const metadata = body.metadata ?? {};
+  const tools = body.tools ?? [];
+
   return {
     model: body.model,
     messages: body.messages,
     stream: body.stream ?? false,
-    tools: body.tools ?? [],
+    tools,
     tool_choice: body.tool_choice,
     response_format: body.response_format,
     temperature: body.temperature,
     max_tokens: body.max_tokens,
-    metadata: body.metadata ?? {},
-    context_tokens_est: JSON.stringify(body.messages).length
+    metadata,
+    context_tokens_est: estimateChatContextTokens({
+      messages: body.messages,
+      tools,
+      metadata
+    })
   };
 }

@@ -472,4 +472,61 @@ describe("selectRoute", () => {
 
     vi.unstubAllEnvs();
   });
+
+
+  it("includes filtered reasons when no eligible route candidate", () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test");
+
+    const config = loadConfig({
+      override: {
+        ...buildBaseConfig(),
+        models: {
+          "sonnet-via-openrouter": {
+            endpoint: "openrouter-openai",
+            model_name: "anthropic/claude-sonnet-4",
+            context_window: 1000,
+            capabilities: {
+              streaming: true,
+              tools: true,
+              json_mode: true
+            }
+          }
+        }
+      }
+    });
+
+    const registry = buildProviderRegistry(config);
+    const catalog = new ModelCatalog(config);
+
+    try {
+      selectRoute(
+        config,
+        catalog,
+        new PriceTable(config),
+        registry.platforms,
+        registry.providers,
+        registry.endpoints,
+        registry.accounts,
+        "auto",
+        false,
+        false,
+        5000,
+        "normal"
+      );
+      throw new Error("expected selectRoute to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(HttpError);
+      const httpError = error as HttpError;
+      expect(httpError.statusCode).toBe(503);
+      expect(httpError.code).toBe("endpoint_unavailable");
+      expect(httpError.details?.context_tokens_est).toBe(5000);
+      expect(Array.isArray(httpError.details?.filtered)).toBe(true);
+      const filtered = httpError.details?.filtered as Array<{ reason?: string }>;
+      expect(filtered.length).toBeGreaterThan(0);
+      expect(filtered[0]?.reason).toBe("context_window_exceeded");
+    }
+
+    vi.unstubAllEnvs();
+  });
+
 });

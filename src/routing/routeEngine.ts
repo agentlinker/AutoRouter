@@ -254,7 +254,13 @@ export function selectRoute(
 } {
   const resolvedTarget = modelCatalog.resolveRequestTarget(routeId);
   if (!resolvedTarget) {
-    throw new HttpError(400, "model_not_found", `Unknown route or model: ${routeId}`);
+    throw new HttpError(400, "model_not_found", `Unknown route or model: ${routeId}`, false, {
+      requested_model: routeId,
+      normalized_model: routeId,
+      context_tokens_est: requestedContextTokens,
+      filtered: [],
+      candidates: []
+    });
   }
 
   const candidates = resolvedTarget.candidates;
@@ -263,11 +269,25 @@ export function selectRoute(
       throw new HttpError(
         400,
         "provider_model_not_found",
-        `Unknown provider/model target: ${routeId}`
+        `Unknown provider/model target: ${routeId}`,
+        false,
+        {
+          requested_model: resolvedTarget.requested,
+          normalized_model: resolvedTarget.normalized,
+          context_tokens_est: requestedContextTokens,
+          filtered: [],
+          candidates: []
+        }
       );
     }
 
-    throw new HttpError(400, "model_not_found", `Unknown route or model: ${routeId}`);
+    throw new HttpError(400, "model_not_found", `Unknown route or model: ${routeId}`, false, {
+      requested_model: resolvedTarget.requested,
+      normalized_model: resolvedTarget.normalized,
+      context_tokens_est: requestedContextTokens,
+      filtered: [],
+      candidates: []
+    });
   }
 
   const evaluations: CandidateEvaluation[] = [];
@@ -376,7 +396,34 @@ export function selectRoute(
   }
 
   if (passed.length === 0) {
-    throw new HttpError(503, "endpoint_unavailable", "No eligible route candidate");
+    throw new HttpError(503, "endpoint_unavailable", "No eligible route candidate", false, {
+      requested_model: resolvedTarget.requested,
+      normalized_model: resolvedTarget.normalized,
+      context_tokens_est: requestedContextTokens,
+      filtered: filtered.map((candidate) => ({
+        route_id: candidate.routeId,
+        endpoint: candidate.endpoint,
+        platform: candidate.platform,
+        provider: candidate.provider,
+        account: candidate.account,
+        model_id: candidate.modelId,
+        model: candidate.model,
+        reason: candidate.filteredReason,
+        score: candidate.score,
+        sticky: candidate.sticky
+      })),
+      candidates: evaluations.map((candidate) => ({
+        route_id: candidate.routeId,
+        endpoint: candidate.endpoint,
+        platform: candidate.platform,
+        provider: candidate.provider,
+        account: candidate.account,
+        model_id: candidate.modelId,
+        model: candidate.model,
+        score: candidate.score,
+        sticky: candidate.sticky
+      }))
+    });
   }
 
   passed.sort((left, right) => right.score - left.score);
