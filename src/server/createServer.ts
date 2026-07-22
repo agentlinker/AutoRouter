@@ -16,7 +16,9 @@ import { registerAdminUsageRoutes } from "./routes/adminUsage.js";
 import type { RuntimeManagerLike } from "../runtime/runtimeTypes.js";
 import { createStaticRuntimeManager } from "../runtime/runtimeManager.js";
 import { registerAdminProvidersRoutes } from "./routes/adminProviders.js";
+import { registerAdminCatalogRoutes } from "./routes/adminCatalog.js";
 import { registerAdminUiRoutes } from "./routes/adminUi.js";
+import { CatalogRepository } from "../repositories/catalogRepository.js";
 import type { ManagedProviderRepository } from "../repositories/managedProviderRepository.js";
 import type { ProviderModelDiscoveryService } from "../discovery/providerModelDiscovery.js";
 import type { SecretCipher } from "../security/secretCipher.js";
@@ -28,6 +30,32 @@ function toRuntimeManagerLike(input: RuntimeManagerLike | RouterState): RuntimeM
   }
 
   return createStaticRuntimeManager(input as RouterState);
+}
+
+function getHttpStatusCode(error: unknown): number | null {
+  if (!error || typeof error !== "object") {
+    return null;
+  }
+
+  const statusCode = (error as { statusCode?: unknown }).statusCode;
+  return typeof statusCode === "number" && statusCode >= 400 && statusCode < 600
+    ? statusCode
+    : null;
+}
+
+function getErrorCode(error: unknown): string {
+  if (!error || typeof error !== "object") {
+    return "request_error";
+  }
+
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && code.length > 0
+    ? code.toLowerCase()
+    : "request_error";
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Request error";
 }
 
 export async function createServer(
@@ -61,7 +89,7 @@ export async function createServer(
     requireGatewayToken(request, reply, process.env[snapshot.config.server.gateway_token_env]);
   });
 
-  fastify.setErrorHandler((error, _request, reply) => {
+  fastify.setErrorHandler((error, request, reply) => {
     if (isHttpError(error)) {
       reply.status(error.statusCode).send({
         error: {
@@ -72,6 +100,26 @@ export async function createServer(
       });
       return;
     }
+
+    const statusCode = getHttpStatusCode(error);
+    if (statusCode && statusCode < 500) {
+      reply.status(statusCode).send({
+        error: {
+          code: getErrorCode(error),
+          message: getErrorMessage(error)
+        }
+      });
+      return;
+    }
+
+    runtimeManager.getSnapshot().logger.error(
+      {
+        error,
+        method: request.method,
+        url: request.url
+      },
+      "Unhandled request error"
+    );
 
     reply.status(500).send({
       error: {
@@ -100,6 +148,10 @@ export async function createServer(
     await registerAdminApiKeysRoutes(fastify, {
       runtimeManager,
       repository: dependencies.managedProviderRepository
+    });
+    await registerAdminCatalogRoutes(fastify, {
+      runtimeManager,
+      repository: new CatalogRepository(dependencies.managedProviderRepository.getDatabase())
     });
     await registerAdminUsageRoutes(fastify, {
       runtimeManager

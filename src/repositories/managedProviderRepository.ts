@@ -2,6 +2,7 @@ import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { and, desc, eq } from "drizzle-orm";
 
 import {
+  logicalModelsTable,
   managedModelsTable,
   managedProviderCredentialsTable,
   managedProviderEndpointsTable,
@@ -14,6 +15,7 @@ import {
   type ModelSyncRunRow,
   type schema
 } from "../db/schema.js";
+import { displayNameFromLogicalName, mergeAliases, toLogicalModelName } from "../catalog/logicalModelNames.js";
 
 export interface ManagedProviderInput {
   providerKey: string;
@@ -89,6 +91,16 @@ export interface ManagedProviderDetails {
 }
 
 type Db = BetterSQLite3Database<typeof schema>;
+type ModelPreservedFields = Pick<
+  ManagedModelRow,
+  | "enabled"
+  | "contextWindowOverride"
+  | "supportsToolsOverride"
+  | "supportsStreamingOverride"
+  | "supportsJsonModeOverride"
+  | "pricingJsonOverride"
+  | "manualOverrideJson"
+>;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -101,6 +113,118 @@ function keyHintFromApiKey(apiKey: string): string {
 
 export class ManagedProviderRepository {
   public constructor(private readonly db: Db) {}
+
+  public getDatabase(): Db {
+    return this.db;
+  }
+
+  private ensureLogicalModelForProviderModel(db: Db, input: {
+    providerModelId: string;
+    modelName: string;
+  }) {
+    const logicalName = toLogicalModelName(input.providerModelId);
+    const aliasesJson = mergeAliases(input.providerModelId, input.modelName);
+    const existing = db.select().from(logicalModelsTable)
+      .where(eq(logicalModelsTable.logicalName, logicalName))
+      .get();
+    if (existing) {
+      const mergedAliases = mergeAliases(
+        ...(existing.aliasesJson ? JSON.parse(existing.aliasesJson) as string[] : []),
+        input.providerModelId,
+        input.modelName
+      );
+      if (mergedAliases !== existing.aliasesJson) {
+        db.update(logicalModelsTable)
+          .set({
+            aliasesJson: mergedAliases,
+            updatedAt: nowIso()
+          })
+          .where(eq(logicalModelsTable.id, existing.id))
+          .run();
+      }
+      return existing;
+    }
+
+    const now = nowIso();
+    return db.insert(logicalModelsTable).values({
+      logicalName,
+      displayName: displayNameFromLogicalName(logicalName),
+      aliasesJson,
+      supportsStreaming: true,
+      supportsTools: true,
+      supportsJsonMode: false,
+      metadataSource: "provider_derived",
+      metadataConfidence: "low",
+      createdAt: now,
+      updatedAt: now
+    }).returning().get();
+  }
+
+  private buildManagedModelInsert(input: {
+    db: Db;
+    providerId: number;
+    endpointId: number | null;
+    model: ManagedDiscoveredModelInput;
+    now: string;
+    preserved?: Partial<ModelPreservedFields>;
+  }) {
+    const logical = this.ensureLogicalModelForProviderModel(input.db, {
+      providerModelId: input.model.providerModelId,
+      modelName: input.model.modelName
+    });
+    if (logical.metadataSource === "provider_derived") {
+      input.db.update(logicalModelsTable)
+        .set({
+          contextWindow: logical.contextWindow ?? input.model.contextWindow ?? null,
+          supportsStreaming: logical.supportsStreaming || input.model.supportsStreaming,
+          supportsTools: logical.supportsTools || input.model.supportsTools,
+          supportsJsonMode: logical.supportsJsonMode || input.model.supportsJsonMode,
+          pricingJson: logical.pricingJson ?? input.model.pricingJson ?? null,
+          updatedAt: input.now
+        })
+        .where(eq(logicalModelsTable.id, logical.id))
+        .run();
+    }
+
+    return {
+      providerId: input.providerId,
+      endpointId: input.endpointId,
+      logicalModelId: logical.id,
+      modelKey: input.model.modelKey,
+      providerModelId: input.model.providerModelId,
+      modelName: input.model.modelName,
+      contextWindow: input.model.contextWindow,
+      supportsStreaming: input.model.supportsStreaming,
+      supportsTools: input.model.supportsTools,
+      supportsJsonMode: input.model.supportsJsonMode,
+      pricingJson: input.model.pricingJson ?? null,
+      rawMetadataJson: input.model.rawMetadataJson ?? null,
+      enabled: input.preserved?.enabled ?? true,
+      contextWindowOverride: input.preserved?.contextWindowOverride ?? null,
+      supportsToolsOverride: input.preserved?.supportsToolsOverride ?? null,
+      supportsStreamingOverride: input.preserved?.supportsStreamingOverride ?? null,
+      supportsJsonModeOverride: input.preserved?.supportsJsonModeOverride ?? null,
+      pricingJsonOverride: input.preserved?.pricingJsonOverride ?? null,
+      manualOverrideJson: input.preserved?.manualOverrideJson ?? null,
+      discoveredAt: input.now,
+      updatedAt: input.now
+    };
+  }
+
+  private preservedFieldsByModelKey(models: ManagedModelRow[]): Map<string, ModelPreservedFields> {
+    return new Map(models.map((model) => [
+      model.modelKey,
+      {
+        enabled: model.enabled,
+        contextWindowOverride: model.contextWindowOverride,
+        supportsToolsOverride: model.supportsToolsOverride,
+        supportsStreamingOverride: model.supportsStreamingOverride,
+        supportsJsonModeOverride: model.supportsJsonModeOverride,
+        pricingJsonOverride: model.pricingJsonOverride,
+        manualOverrideJson: model.manualOverrideJson
+      }
+    ]));
+  }
 
   public listProviderSummaries(): ManagedProviderDetails[] {
     const providers = this.db.select().from(managedProvidersTable).all();
@@ -254,21 +378,16 @@ export class ManagedProviderRepository {
 
         if (bundle.models.length > 0) {
           tx.insert(managedModelsTable).values(
-            bundle.models.map((model) => ({
-              providerId: existing.provider.id,
-              endpointId: endpointInsert.id,
-              modelKey: model.modelKey,
-              providerModelId: model.providerModelId,
-              modelName: model.modelName,
-              contextWindow: model.contextWindow,
-              supportsStreaming: model.supportsStreaming,
-              supportsTools: model.supportsTools,
-              supportsJsonMode: model.supportsJsonMode,
-              pricingJson: model.pricingJson ?? null,
-              rawMetadataJson: model.rawMetadataJson ?? null,
-              discoveredAt: now,
-              updatedAt: now
-            }))
+            bundle.models.map((model) =>
+              this.buildManagedModelInsert({
+                db: tx as unknown as Db,
+                providerId: existing.provider.id,
+                endpointId: endpointInsert.id,
+                model,
+                now,
+                preserved: this.preservedFieldsByModelKey(existing.models).get(model.modelKey)
+              })
+            )
           ).run();
         }
       }
@@ -344,21 +463,15 @@ export class ManagedProviderRepository {
 
         if (bundle.models.length > 0) {
           tx.insert(managedModelsTable).values(
-            bundle.models.map((model) => ({
-              providerId: providerInsert.id,
-              endpointId: endpointInsert.id,
-              modelKey: model.modelKey,
-              providerModelId: model.providerModelId,
-              modelName: model.modelName,
-              contextWindow: model.contextWindow,
-              supportsStreaming: model.supportsStreaming,
-              supportsTools: model.supportsTools,
-              supportsJsonMode: model.supportsJsonMode,
-              pricingJson: model.pricingJson ?? null,
-              rawMetadataJson: model.rawMetadataJson ?? null,
-              discoveredAt: now,
-              updatedAt: now
-            }))
+            bundle.models.map((model) =>
+              this.buildManagedModelInsert({
+                db: tx as unknown as Db,
+                providerId: providerInsert.id,
+                endpointId: endpointInsert.id,
+                model,
+                now
+              })
+            )
           ).run();
         }
       }
@@ -411,6 +524,14 @@ export class ManagedProviderRepository {
         return;
       }
 
+      const existingEndpointModels = tx.select().from(managedModelsTable)
+        .where(and(
+          eq(managedModelsTable.providerId, provider.id),
+          eq(managedModelsTable.endpointId, endpoint.id)
+        ))
+        .all();
+      const preservedByModelKey = this.preservedFieldsByModelKey(existingEndpointModels);
+
       tx.delete(managedModelsTable)
         .where(and(
           eq(managedModelsTable.providerId, provider.id),
@@ -420,21 +541,16 @@ export class ManagedProviderRepository {
 
       if (input.models.length > 0) {
         tx.insert(managedModelsTable).values(
-          input.models.map((model) => ({
-            providerId: provider.id,
-            endpointId: endpoint.id,
-            modelKey: model.modelKey,
-            providerModelId: model.providerModelId,
-            modelName: model.modelName,
-            contextWindow: model.contextWindow,
-            supportsStreaming: model.supportsStreaming,
-            supportsTools: model.supportsTools,
-            supportsJsonMode: model.supportsJsonMode,
-            pricingJson: model.pricingJson ?? null,
-            rawMetadataJson: model.rawMetadataJson ?? null,
-            discoveredAt: now,
-            updatedAt: now
-          }))
+          input.models.map((model) =>
+            this.buildManagedModelInsert({
+              db: tx as unknown as Db,
+              providerId: provider.id,
+              endpointId: endpoint.id,
+              model,
+              now,
+              preserved: preservedByModelKey.get(model.modelKey)
+            })
+          )
         ).run();
       }
     });
@@ -468,7 +584,10 @@ export class ManagedProviderRepository {
         ))
         .all();
       const providerModels = this.db.select().from(managedModelsTable)
-        .where(eq(managedModelsTable.providerId, provider.id))
+        .where(and(
+          eq(managedModelsTable.providerId, provider.id),
+          eq(managedModelsTable.enabled, true)
+        ))
         .all();
 
       return endpoints.map((endpoint) => {
@@ -483,6 +602,17 @@ export class ManagedProviderRepository {
         };
       });
     });
+  }
+
+  public listLogicalModelsByIds(ids: number[]): Map<number, import("../db/schema.js").LogicalModelRow> {
+    if (ids.length === 0) {
+      return new Map();
+    }
+
+    const idSet = new Set(ids);
+    const rows = this.db.select().from(logicalModelsTable).all()
+      .filter((row) => idSet.has(row.id));
+    return new Map(rows.map((row) => [row.id, row]));
   }
 
   public updateProviderEnabled(providerKey: string, enabled: boolean): ManagedProviderDetails | null {
@@ -657,6 +787,15 @@ export class ManagedProviderRepository {
         supportsStreaming: input.supportsStreaming ?? model.supportsStreaming,
         supportsTools: input.supportsTools ?? model.supportsTools,
         supportsJsonMode: input.supportsJsonMode ?? model.supportsJsonMode,
+        supportsStreamingOverride: input.supportsStreaming ?? model.supportsStreamingOverride,
+        supportsToolsOverride: input.supportsTools ?? model.supportsToolsOverride,
+        supportsJsonModeOverride: input.supportsJsonMode ?? model.supportsJsonModeOverride,
+        manualOverrideJson: JSON.stringify({
+          ...(model.manualOverrideJson ? JSON.parse(model.manualOverrideJson) as Record<string, unknown> : {}),
+          ...(input.supportsStreaming !== undefined ? { supports_streaming: true } : {}),
+          ...(input.supportsTools !== undefined ? { supports_tools: true } : {}),
+          ...(input.supportsJsonMode !== undefined ? { supports_json_mode: true } : {})
+        }),
         updatedAt: now
       })
       .where(and(

@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import { ProviderModelDiscoveryService } from "../../discovery/providerModelDiscovery.js";
-import { ManagedProviderRepository } from "../../repositories/managedProviderRepository.js";
+import { ManagedProviderRepository, type ManagedDiscoveredModelInput } from "../../repositories/managedProviderRepository.js";
 import { SecretCipher } from "../../security/secretCipher.js";
 import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
 import { HttpError } from "../../utils/httpErrors.js";
@@ -217,7 +217,7 @@ async function discoverEndpointBundles(
 ) {
   return Promise.all(
     input.endpoints.map(async (endpoint) => {
-      let models;
+      let models: ManagedDiscoveredModelInput[];
       try {
         models = await discoverModelsForEndpoint(discoveryService, {
           providerKey: input.providerKey,

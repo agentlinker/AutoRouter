@@ -129,7 +129,7 @@ function responsesInputToMessages(input: unknown, instructions?: string): ChatMe
       messages.push({
         role: "tool",
         content: contentToText(record.output),
-        tool_call_id: record.call_id
+        tool_call_id: typeof record.call_id === "string" ? record.call_id : undefined
       });
       continue;
     }

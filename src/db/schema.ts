@@ -48,10 +48,34 @@ export const managedProviderEndpointsTable = sqliteTable("managed_provider_endpo
   )
 }));
 
+export const logicalModelsTable = sqliteTable("logical_models", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  logicalName: text("logical_name").notNull(),
+  displayName: text("display_name"),
+  openrouterSlug: text("openrouter_slug"),
+  aliasesJson: text("aliases_json"),
+  contextWindow: integer("context_window"),
+  supportsStreaming: integer("supports_streaming", { mode: "boolean" }).notNull().default(true),
+  supportsTools: integer("supports_tools", { mode: "boolean" }).notNull().default(true),
+  supportsJsonMode: integer("supports_json_mode", { mode: "boolean" }).notNull().default(false),
+  inputModalitiesJson: text("input_modalities_json"),
+  pricingJson: text("pricing_json"),
+  rawMetadataJson: text("raw_metadata_json"),
+  metadataSource: text("metadata_source").notNull().default("manual"),
+  metadataConfidence: text("metadata_confidence").notNull().default("low"),
+  notes: text("notes"),
+  fetchedAt: text("fetched_at"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+}, (table) => ({
+  logicalNameUnique: uniqueIndex("logical_models_logical_name_unique").on(table.logicalName)
+}));
+
 export const managedModelsTable = sqliteTable("managed_models", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   providerId: integer("provider_id").notNull(),
   endpointId: integer("endpoint_id"),
+  logicalModelId: integer("logical_model_id"),
   modelKey: text("model_key").notNull(),
   providerModelId: text("provider_model_id").notNull(),
   modelName: text("model_name").notNull(),
@@ -61,6 +85,13 @@ export const managedModelsTable = sqliteTable("managed_models", {
   supportsJsonMode: integer("supports_json_mode", { mode: "boolean" }).notNull().default(false),
   pricingJson: text("pricing_json"),
   rawMetadataJson: text("raw_metadata_json"),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  contextWindowOverride: integer("context_window_override"),
+  supportsToolsOverride: integer("supports_tools_override", { mode: "boolean" }),
+  supportsStreamingOverride: integer("supports_streaming_override", { mode: "boolean" }),
+  supportsJsonModeOverride: integer("supports_json_mode_override", { mode: "boolean" }),
+  pricingJsonOverride: text("pricing_json_override"),
+  manualOverrideJson: text("manual_override_json"),
   discoveredAt: text("discovered_at").notNull(),
   updatedAt: text("updated_at").notNull()
 }, (table) => ({
@@ -133,6 +164,7 @@ export const schema = {
   managedProvidersTable,
   managedProviderCredentialsTable,
   managedProviderEndpointsTable,
+  logicalModelsTable,
   managedModelsTable,
   modelSyncRunsTable,
   routeTracesTable
@@ -141,6 +173,7 @@ export const schema = {
 export type ManagedProviderRow = typeof managedProvidersTable.$inferSelect;
 export type ManagedCredentialRow = typeof managedProviderCredentialsTable.$inferSelect;
 export type ManagedProviderEndpointRow = typeof managedProviderEndpointsTable.$inferSelect;
+export type LogicalModelRow = typeof logicalModelsTable.$inferSelect;
 export type ManagedModelRow = typeof managedModelsTable.$inferSelect;
 export type ModelSyncRunRow = typeof modelSyncRunsTable.$inferSelect;
 export type RouteTraceRow = typeof routeTracesTable.$inferSelect;

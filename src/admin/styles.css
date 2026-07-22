@@ -475,6 +475,24 @@ a:not(.nav-item):not(.primary-action):not(.ghost-action):hover {
   text-decoration: none;
 }
 
+.icon-action {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.7);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.icon-action:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: 0.58;
@@ -769,6 +787,36 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.catalog-instance-table {
+  display: grid;
+  gap: 8px;
+}
+
+.catalog-instance-header,
+.catalog-instance-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.3fr) minmax(110px, 0.6fr) repeat(3, minmax(96px, 0.55fr)) minmax(96px, 0.5fr);
+  gap: 10px;
+  align-items: center;
+}
+
+.catalog-instance-header {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.catalog-instance-row {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(2, 6, 23, 0.26);
+}
+
+.catalog-instance-row input,
+.catalog-instance-row select {
+  min-width: 0;
+}
+
 .capability-toggle {
   display: inline-flex;
   gap: 8px;
@@ -879,6 +927,161 @@ button:disabled {
 
 .data-table td {
   color: #e2e8f0;
+}
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(2, 6, 23, 0.68);
+  backdrop-filter: blur(10px);
+}
+
+.app-dialog {
+  width: min(460px, 100%);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.98);
+  box-shadow: var(--shadow);
+  padding: 18px;
+}
+
+.app-dialog.success {
+  border-color: rgba(52, 211, 153, 0.34);
+}
+
+.app-dialog.error {
+  border-color: rgba(251, 113, 133, 0.38);
+}
+
+.dialog-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.dialog-icon {
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.12);
+  color: var(--accent);
+}
+
+.app-dialog.success .dialog-icon {
+  background: rgba(52, 211, 153, 0.12);
+  color: var(--success);
+}
+
+.app-dialog.error .dialog-icon {
+  background: rgba(251, 113, 133, 0.12);
+  color: var(--danger);
+}
+
+.dialog-header h2 {
+  font-size: 16px;
+}
+
+.dialog-body {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 18px;
+}
+
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.catalog-table {
+  min-width: 940px;
+}
+
+.catalog-table code {
+  color: #bae6fd;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.table-subtext {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.table-toolbar,
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 14px 0;
+  flex-wrap: wrap;
+}
+
+.pagination-bar {
+  justify-content: flex-end;
+}
+
+.table-toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.search-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.search-field input {
+  width: min(280px, 58vw);
+  height: 34px;
+  padding: 0 10px;
+}
+
+.inline-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.inline-select select {
+  height: 34px;
+  min-width: 76px;
+  padding: 0 28px 0 10px;
+}
+
+.model-tags.compact {
+  gap: 5px;
+}
+
+.model-tags.compact .badge {
+  padding: 3px 6px;
+  font-size: 11px;
 }
 
 .code-block {

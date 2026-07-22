@@ -4,6 +4,7 @@ import { Link, Outlet, useNavigate, useParams, useRouterState } from "@tanstack/
 import {
   Activity,
   BarChart3,
+  BookOpen,
   Cpu,
   DatabaseZap,
   Edit3,
@@ -110,6 +111,13 @@ const navItems = [
     to: "/providers",
     title: "Provider 管理",
     description: "配置 OpenAI-compatible provider，自动整理可用模型。"
+  },
+  {
+    label: "Catalog",
+    icon: BookOpen,
+    to: "/catalog",
+    title: "Catalog 模型",
+    description: "按逻辑模型管理共享元数据和 Provider 实例覆盖。"
   },
   {
     label: "API Keys",

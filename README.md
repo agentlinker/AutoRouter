@@ -170,6 +170,47 @@ Expected:
 - If one endpoint cannot list models but another endpoint for the same provider can, runtime routing reuses the provider's discovered models for that endpoint
 - Runtime routing creates separate accounts/endpoints internally while preserving provider-level trust, privacy, and credential settings
 
+### Catalog And Logical Models
+
+Managed provider discovery records the upstream model id as `provider_model_id`.
+AutoRouter derives a normalized logical model name from that upstream id, then groups
+equivalent provider variants under one Catalog entry.
+
+Examples:
+
+| Upstream `provider_model_id` | Logical model |
+| --- | --- |
+| `grok4.5` | `grok-4.5` |
+| `Grok 4.5` | `grok-4.5` |
+| `openai:grok4.5` | `grok-4.5` |
+| `openai:xai/grok-4.5` | `grok-4.5` |
+| `anthropic/claude-opus-4.7` | `claude-opus-4.7` |
+
+Callers can request the normalized logical model directly:
+
+```bash
+curl -s \
+  -H "Authorization: Bearer dev-token" \
+  -H "Content-Type: application/json" \
+  http://127.0.0.1:8811/v1/responses \
+  -d '{
+    "model": "grok-4.5",
+    "input": "Say hello in one sentence."
+  }'
+```
+
+Expected:
+
+- The caller does not need provider-specific model names.
+- AutoRouter expands `grok-4.5` to all enabled provider candidates for that logical model.
+- Upstream calls still use each candidate's original `provider_model_id`.
+- Original provider variants are preserved as Catalog aliases.
+
+The Catalog admin page can enrich a logical model from OpenRouter. OpenRouter is used
+as a metadata reference for fields such as context window, pricing, tools support,
+input modalities, and `openrouter_slug`. OpenRouter does not decide or rewrite the
+local `logical_name`.
+
 ### Explain Latest
 
 ```bash

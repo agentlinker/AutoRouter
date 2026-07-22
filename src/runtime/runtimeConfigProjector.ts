@@ -1,8 +1,9 @@
 import { buildProviderRegistry } from "../catalog/providerRegistry.js";
+import { resolveEffectiveModelMetadata } from "../catalog/effectiveModelMetadata.js";
 import { ModelCatalog } from "../catalog/modelCatalog.js";
 import { PriceTable } from "../catalog/priceTable.js";
 import { parseConfigSource } from "../config/loadConfig.js";
-import type { RouterConfig } from "../config/schema.js";
+import type { PriceEntryConfig, RouterConfig } from "../config/schema.js";
 import type { AdapterRegistry } from "../providers/registry.js";
 import type { StickySessionStore } from "../routing/stickySession.js";
 import type { TraceStore } from "../trace/traceStore.js";
@@ -23,6 +24,51 @@ export interface RuntimeProjectorOptions {
   logger: pino.Logger;
 }
 
+function numberFromRecord(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function parsePricingJson(pricingJson: string | null | undefined): PriceEntryConfig | undefined {
+  if (!pricingJson) {
+    return undefined;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(pricingJson) as unknown;
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return undefined;
+  }
+
+  const record = parsed as Record<string, unknown>;
+  const source: PriceEntryConfig["source"] =
+    record.source === "official" ||
+    record.source === "openrouter" ||
+    record.source === "manual" ||
+    record.source === "estimated"
+      ? record.source
+      : "manual";
+  const confidence: PriceEntryConfig["confidence"] =
+    record.confidence === "low" ||
+    record.confidence === "medium" ||
+    record.confidence === "high"
+      ? record.confidence
+      : "low";
+
+  return {
+    input_per_1m: numberFromRecord(record, "input_per_1m") ?? numberFromRecord(record, "input"),
+    output_per_1m: numberFromRecord(record, "output_per_1m") ?? numberFromRecord(record, "output"),
+    cached_input_per_1m:
+      numberFromRecord(record, "cached_input_per_1m") ?? numberFromRecord(record, "cacheRead"),
+    source,
+    confidence
+  };
+}
+
 export class RuntimeConfigProjector {
   public constructor(private readonly options: RuntimeProjectorOptions) {}
 
@@ -30,6 +76,13 @@ export class RuntimeConfigProjector {
     const mergedConfig = structuredClone(this.options.baseConfig) as RouterConfig;
     const managedBundles = this.options.managedProviderRepository.listEnabledProviderBundles();
     const managedCredentials = new Map<string, string>();
+    const logicalIds = Array.from(new Set(
+      managedBundles.flatMap((bundle) =>
+        bundle.models.flatMap((model) => model.logicalModelId ? [model.logicalModelId] : [])
+      )
+    ));
+    const logicalModels =
+      this.options.managedProviderRepository.listLogicalModelsByIds(logicalIds);
 
     for (const bundle of managedBundles) {
       const providerId = bundle.provider.providerKey;
@@ -74,6 +127,14 @@ export class RuntimeConfigProjector {
       };
 
       for (const model of bundle.models) {
+        if (!model.enabled) {
+          continue;
+        }
+
+        const effective = resolveEffectiveModelMetadata(
+          model,
+          model.logicalModelId ? logicalModels.get(model.logicalModelId) ?? null : null
+        );
         const modelKey =
           model.endpointId === bundle.endpoint.id || model.endpointId === null
             ? model.modelKey
@@ -82,15 +143,13 @@ export class RuntimeConfigProjector {
         mergedConfig.models[modelKey] = {
           endpoint: endpointId,
           model_name: model.modelName,
-          context_window: model.contextWindow ?? undefined,
+          context_window: effective.contextWindow,
           capabilities: {
-            streaming: model.supportsStreaming,
-            tools: model.supportsTools,
-            json_mode: model.supportsJsonMode
+            streaming: effective.supportsStreaming,
+            tools: effective.supportsTools,
+            json_mode: effective.supportsJsonMode
           },
-          pricing: model.pricingJson
-            ? JSON.parse(model.pricingJson)
-            : undefined
+          pricing: parsePricingJson(effective.pricingJson)
         };
       }
     }

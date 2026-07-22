@@ -22,6 +22,7 @@ import {
   UsageDetailPage,
   UsagePage
 } from "./routes/console.js";
+import { CatalogDetailPage, CatalogListPage } from "./routes/catalog.js";
 import {
   AdminRoot,
   ProviderDetailPage,
@@ -75,6 +76,18 @@ const providerEditRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/providers/$providerKey/edit",
   component: ProviderEditPage
+});
+
+const catalogRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/catalog",
+  component: CatalogListPage
+});
+
+const catalogDetailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/catalog/$logicalName",
+  component: CatalogDetailPage
 });
 
 const apiKeysRoute = createRoute({
@@ -150,6 +163,8 @@ const router = createRouter({
     providerNewRoute,
     providerDetailRoute,
     providerEditRoute,
+    catalogRoute,
+    catalogDetailRoute,
     apiKeysRoute,
     apiKeyDetailRoute,
     usageRoute,

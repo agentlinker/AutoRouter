@@ -13,13 +13,17 @@ export async function requestJson<T>(
   token: string,
   options: RequestInit = {}
 ): Promise<T> {
+  const headers: Record<string, string> = {
+    authorization: `Bearer ${token}`,
+    ...Object.fromEntries(new Headers(options.headers).entries())
+  };
+  if (options.body !== undefined && !("content-type" in headers)) {
+    headers["content-type"] = "application/json";
+  }
+
   const response = await fetch(url, {
     ...options,
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${token}`,
-      ...(options.headers ?? {})
-    }
+    headers
   });
 
   if (!response.ok) {
