@@ -559,6 +559,11 @@ export async function registerResponsesRoute(
     let sawNativeResponsesAdapter = false;
 
     for (const [index, candidate] of orderedCandidates.entries()) {
+      // Auth failures disable the account mid-request; skip remaining aliases on the same account.
+      if (!candidate.account.available) {
+        continue;
+      }
+
       const accountConfig = state.config.accounts[candidate.account.id];
       if (!accountConfig) {
         lastError = new HttpError(500, "account_not_found", "Configured account missing");
@@ -649,7 +654,12 @@ export async function registerResponsesRoute(
           candidate.account.disabled_message = error.message || PROVIDER_AUTH_FAILED_MESSAGE;
         }
 
-        if (!retryable) {
+        // Auth is non-retryable for the same credential, but other candidates must still be tried.
+        const canFallback =
+          retryable ||
+          (error instanceof HttpError && error.code === PROVIDER_AUTH_FAILED_CODE);
+
+        if (!canFallback) {
           break;
         }
 
