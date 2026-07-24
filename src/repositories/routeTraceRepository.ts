@@ -107,6 +107,7 @@ export interface TokenModelSummary {
   total_tokens: number;
 }
 
+
 export class RouteTraceRepository {
   public constructor(private readonly db: Db) {}
 
@@ -181,6 +182,8 @@ export class RouteTraceRepository {
       .all()
       .map(rowToTrace);
   }
+
+
 
   public deleteOlderThan(cutoffIso: string): number {
     const result = this.db.delete(routeTracesTable)

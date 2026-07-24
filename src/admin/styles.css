@@ -702,6 +702,12 @@ button:disabled {
   gap: 14px;
 }
 
+.trace-route-stack {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+}
+
 .detail-card dl {
   display: grid;
   grid-template-columns: 140px minmax(0, 1fr);
@@ -1187,4 +1193,13 @@ button:disabled {
   .capability-toggle {
     justify-content: space-between;
   }
+}
+
+.route-outcome-table {
+  min-width: 980px;
+}
+
+.route-outcome-reason {
+  max-width: 280px;
+  overflow-wrap: anywhere;
 }

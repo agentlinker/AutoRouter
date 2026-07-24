@@ -17,6 +17,27 @@ export interface TraceAttempt extends TraceCandidate {
   status: "success" | "failed";
   error: string | null;
   retryable: boolean;
+  latency_ms: number | null;
+  first_token_ms: number | null;
+}
+
+export type RouteOutcomeStatus = "not_requested" | "filtered" | "success" | "failed";
+
+export interface RouteOutcomeItem {
+  route_id: string | null;
+  endpoint: string;
+  platform: string;
+  provider: string | null;
+  account: string;
+  model_id: string | null;
+  model: string;
+  score: number | null;
+  sticky: boolean;
+  status: RouteOutcomeStatus;
+  reason: string | null;
+  retryable: boolean | null;
+  latency_ms: number | null;
+  first_token_ms: number | null;
 }
 
 export interface TraceRecord {
@@ -50,6 +71,7 @@ export interface TraceRecord {
   filtered: TraceCandidate[];
   attempts: TraceAttempt[];
   fallbacks: TraceCandidate[];
+  route_items: RouteOutcomeItem[];
 }
 
 export interface TraceListResponse {

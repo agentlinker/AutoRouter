@@ -538,6 +538,8 @@ export async function registerResponsesRoute(
       status: "success" | "failed";
       error?: string;
       retryable?: boolean;
+      latency_ms?: number;
+      first_token_ms?: number;
       score?: number;
       sticky?: boolean;
     }> = [];
@@ -587,6 +589,8 @@ export async function registerResponsesRoute(
         model: candidate.model,
         credential
       };
+      const attemptStartedAt = Date.now();
+      let firstTokenMs: number | undefined;
 
       try {
         if (request.body.stream) {
@@ -601,6 +605,9 @@ export async function registerResponsesRoute(
             model: request.body.model,
             stream: true
           }, target)) {
+            if (firstTokenMs === undefined) {
+              firstTokenMs = Date.now() - attemptStartedAt;
+            }
             reply.raw.write(chunk.raw);
           }
           reply.raw.end();
@@ -611,8 +618,10 @@ export async function registerResponsesRoute(
             model: request.body.model,
             stream: false
           }, target);
+          firstTokenMs = Date.now() - attemptStartedAt;
         }
 
+        const latencyMs = Date.now() - attemptStartedAt;
         attempts.push({
           route_id: candidate.routeId,
           endpoint: candidate.endpoint.id,
@@ -622,6 +631,8 @@ export async function registerResponsesRoute(
           model_id: candidate.modelId,
           model: candidate.modelName,
           status: "success",
+          latency_ms: latencyMs,
+          first_token_ms: firstTokenMs ?? latencyMs,
           score: candidate.score,
           sticky: candidate.sticky
         });
@@ -644,6 +655,8 @@ export async function registerResponsesRoute(
           status: "failed",
           error: error instanceof Error ? error.message : "provider_responses_failed",
           retryable,
+          latency_ms: Date.now() - attemptStartedAt,
+          first_token_ms: firstTokenMs,
           score: candidate.score,
           sticky: candidate.sticky
         });
@@ -654,15 +667,8 @@ export async function registerResponsesRoute(
           candidate.account.disabled_message = error.message || PROVIDER_AUTH_FAILED_MESSAGE;
         }
 
-        // Auth is non-retryable for the same credential, but other candidates must still be tried.
-        const canFallback =
-          retryable ||
-          (error instanceof HttpError && error.code === PROVIDER_AUTH_FAILED_CODE);
-
-        if (!canFallback) {
-          break;
-        }
-
+        // Any upstream failure should fall through to remaining candidates.
+        // retryable only describes same-candidate retry semantics, not cross-candidate fallback.
         if (index < orderedCandidates.length - 1) {
           fallbacks.push({
             route_id: candidate.routeId,

@@ -40,8 +40,108 @@ function serializeAttempt(attempt: TraceAttempt) {
     ...serializeCandidate(attempt),
     status: attempt.status,
     error: attempt.error ?? null,
-    retryable: attempt.retryable ?? false
+    retryable: attempt.retryable ?? false,
+    latency_ms: attempt.latency_ms ?? null,
+    first_token_ms: attempt.first_token_ms ?? null
   };
+}
+
+export type RouteOutcomeStatus = "not_requested" | "filtered" | "success" | "failed";
+
+export interface RouteOutcomeItem {
+  route_id: string | null;
+  endpoint: string;
+  platform: string;
+  provider: string | null;
+  account: string;
+  model_id: string | null;
+  model: string;
+  score: number | null;
+  sticky: boolean;
+  status: RouteOutcomeStatus;
+  reason: string | null;
+  retryable: boolean | null;
+  latency_ms: number | null;
+  first_token_ms: number | null;
+}
+
+function candidateKey(item: {
+  endpoint?: string | null;
+  model_id?: string | null;
+  model?: string | null;
+  provider?: string | null;
+  account?: string | null;
+}): string {
+  return [
+    item.provider ?? "",
+    item.endpoint ?? "",
+    item.model_id ?? item.model ?? "",
+    item.account ?? ""
+  ].join("|");
+}
+
+export function buildRouteOutcomeItems(trace: RouteTrace): RouteOutcomeItem[] {
+  const items: RouteOutcomeItem[] = [];
+  const seen = new Set<string>();
+  const attempts = trace.attempts ?? [];
+
+  for (const attempt of attempts) {
+    const base = serializeAttempt(attempt);
+    const key = candidateKey(base);
+    seen.add(key);
+    items.push({
+      route_id: base.route_id,
+      endpoint: base.endpoint,
+      platform: base.platform,
+      provider: base.provider,
+      account: base.account,
+      model_id: base.model_id,
+      model: base.model,
+      score: base.score,
+      sticky: base.sticky,
+      status: attempt.status,
+      reason: attempt.status === "failed" ? (attempt.error ?? "failed") : null,
+      retryable: attempt.retryable ?? null,
+      latency_ms: attempt.latency_ms ?? null,
+      first_token_ms: attempt.first_token_ms ?? null
+    });
+  }
+
+  for (const candidate of trace.candidates) {
+    const base = serializeCandidate(candidate);
+    const key = candidateKey(base);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    items.push({
+      ...base,
+      status: "not_requested",
+      reason: null,
+      retryable: null,
+      latency_ms: null,
+      first_token_ms: null
+    });
+  }
+
+  for (const filtered of trace.filtered) {
+    const base = serializeCandidate(filtered);
+    const key = candidateKey(base);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    items.push({
+      ...base,
+      status: "filtered",
+      reason: filtered.reason ?? "filtered",
+      retryable: null,
+      latency_ms: null,
+      first_token_ms: null
+    });
+  }
+
+  return items;
 }
 
 export function serializeTrace(trace: RouteTrace) {
@@ -49,6 +149,7 @@ export function serializeTrace(trace: RouteTrace) {
   const outputTokens = trace.execution.output_tokens ?? 0;
   const totalTokens = trace.execution.total_tokens ?? inputTokens + outputTokens;
   const attempts = trace.attempts ?? [];
+  const routeItems = buildRouteOutcomeItems(trace);
 
   return {
     trace_id: trace.trace_id,
@@ -83,7 +184,8 @@ export function serializeTrace(trace: RouteTrace) {
     candidates: trace.candidates.map(serializeCandidate),
     filtered: trace.filtered.map(serializeCandidate),
     attempts: attempts.map(serializeAttempt),
-    fallbacks: trace.fallbacks.map(serializeCandidate)
+    fallbacks: trace.fallbacks.map(serializeCandidate),
+    route_items: routeItems
   };
 }
 

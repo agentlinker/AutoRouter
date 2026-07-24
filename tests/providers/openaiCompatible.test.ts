@@ -133,6 +133,41 @@ describe("OpenAiCompatibleAdapter", () => {
     await mockAgent.close();
   });
 
+  it("maps streaming responses auth failures to provider_auth_failed", async () => {
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+
+    const pool = mockAgent.get("https://adapter-stream-auth.example.com");
+    pool
+      .intercept({
+        path: "/v1/responses",
+        method: "POST"
+      })
+      .reply(401, {
+        error: {
+          message: "unauthorized"
+        }
+      });
+
+    const adapter = new OpenAiCompatibleAdapter();
+    const iterator = adapter.streamResponse!(
+      {
+        model: "auto",
+        input: "hello",
+        stream: true
+      },
+      createRouteTarget("https://adapter-stream-auth.example.com/v1")
+    );
+
+    await expect(iterator.next()).rejects.toMatchObject({
+      code: "provider_auth_failed",
+      retryable: false
+    });
+
+    await mockAgent.close();
+  });
+
   it("marks network failures as retryable provider_unreachable", async () => {
     const adapter = new OpenAiCompatibleAdapter();
 

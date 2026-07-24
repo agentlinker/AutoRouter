@@ -146,11 +146,20 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     }
 
     if (response.statusCode >= 400) {
+      if (response.statusCode === 401 || response.statusCode === 403) {
+        throw new HttpError(
+          response.statusCode,
+          PROVIDER_AUTH_FAILED_CODE,
+          `Streaming provider request failed with status ${response.statusCode}`,
+          false
+        );
+      }
+
       throw new HttpError(
         response.statusCode,
-        "provider_error",
+        response.statusCode === 429 ? "provider_rate_limited" : "provider_error",
         `Streaming provider request failed with status ${response.statusCode}`,
-        response.statusCode >= 500 || response.statusCode === 429
+        response.statusCode >= 500 || response.statusCode === 429 || response.statusCode === 408
       );
     }
 
@@ -252,6 +261,15 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     }
 
     if (response.statusCode >= 400) {
+      if (response.statusCode === 401 || response.statusCode === 403) {
+        throw new HttpError(
+          response.statusCode,
+          PROVIDER_AUTH_FAILED_CODE,
+          `Streaming responses request failed with status ${response.statusCode}`,
+          false
+        );
+      }
+
       throw new HttpError(
         response.statusCode,
         response.statusCode === 429 ? "provider_rate_limited" : "provider_error",

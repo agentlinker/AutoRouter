@@ -251,6 +251,222 @@ describe("gateway integration", () => {
     await gateway.close();
   });
 
+  it("falls back after non-retryable 400 provider errors", async () => {
+    const badPool = mockAgent.get("https://bad-400.example.com");
+    badPool
+      .intercept({
+        path: "/v1/chat/completions",
+        method: "POST"
+      })
+      .reply(400, {
+        error: {
+          message: "bad request from upstream"
+        }
+      });
+
+    const goodPool = mockAgent.get("https://good-400-fallback.example.com");
+    goodPool
+      .intercept({
+        path: "/v1/chat/completions",
+        method: "POST"
+      })
+      .reply(200, {
+        id: "chatcmpl_400_fallback",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: "good-model",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "400 fallback ok"
+            },
+            finish_reason: "stop"
+          }
+        ],
+        usage: {
+          prompt_tokens: 8,
+          completion_tokens: 3,
+          total_tokens: 11
+        }
+      });
+
+    const config = loadConfig({
+      override: {
+        trace: {
+          directory: traceDirectory,
+          log_prompts: false
+        },
+        platforms: {
+          openai: {
+            protocol: "openai"
+          }
+        },
+        providers: {
+          bad: {
+            display_name: "Bad 400",
+            trust_level: "medium",
+            privacy_level: "normal",
+            usage_trust: "medium"
+          },
+          good: {
+            display_name: "Good 400",
+            trust_level: "medium",
+            privacy_level: "normal",
+            usage_trust: "medium"
+          }
+        },
+        endpoints: {
+          "bad-openai": {
+            provider: "bad",
+            platform: "openai",
+            adapter: "openai_compatible",
+            base_url: "https://bad-400.example.com/v1",
+            capabilities: {
+              streaming: true,
+              tools: true,
+              json_mode: true
+            }
+          },
+          "good-openai": {
+            provider: "good",
+            platform: "openai",
+            adapter: "openai_compatible",
+            base_url: "https://good-400-fallback.example.com/v1",
+            capabilities: {
+              streaming: true,
+              tools: true,
+              json_mode: true
+            }
+          }
+        },
+        accounts: {
+          "bad-account": {
+            endpoint: "bad-openai",
+            account_type: "api_key",
+            credential_env: "PRIMARY_API_KEY"
+          },
+          "good-account": {
+            endpoint: "good-openai",
+            account_type: "api_key",
+            credential_env: "FALLBACK_API_KEY"
+          }
+        },
+        models: {
+          "bad-model": {
+            endpoint: "bad-openai",
+            model_name: "bad-model",
+            capabilities: {
+              streaming: true,
+              tools: true,
+              json_mode: true
+            },
+            pricing: {
+              input_per_1m: 1,
+              output_per_1m: 2,
+              source: "manual",
+              confidence: "medium"
+            }
+          },
+          "good-model": {
+            endpoint: "good-openai",
+            model_name: "good-model",
+            capabilities: {
+              streaming: true,
+              tools: true,
+              json_mode: true
+            },
+            pricing: {
+              input_per_1m: 1,
+              output_per_1m: 2,
+              source: "manual",
+              confidence: "medium"
+            }
+          }
+        },
+        routes: {
+          auto: {
+            policy: "balanced",
+            candidates: [
+              {
+                account: "bad-account",
+                model: "bad-model"
+              },
+              {
+                account: "good-account",
+                model: "good-model"
+              }
+            ]
+          }
+        },
+        policies: {
+          balanced: {
+            min_trust_level: "medium",
+            allow_public_only_provider: false,
+            fallback_enabled: true,
+            sticky_session: true
+          }
+        }
+      }
+    });
+
+    const registry = buildProviderRegistry(config);
+    const state: RouterState = {
+      config,
+      logger: createLogger(),
+      platforms: registry.platforms,
+      providers: registry.providers,
+      endpoints: registry.endpoints,
+      accounts: registry.accounts,
+      priceTable: new PriceTable(config),
+      adapters: new AdapterRegistry(),
+      stickySessions: new StickySessionStore(),
+      traceStore: createTraceStore(traceDatabasePath)
+    };
+
+    const gateway = await createServer(state);
+    const response = await gateway.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: {
+        authorization: "Bearer test-token"
+      },
+      payload: {
+        model: "auto",
+        messages: [{ role: "user", content: "hello" }]
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().choices[0].message.content).toBe("400 fallback ok");
+
+    const explain = await gateway.inject({
+      method: "GET",
+      url: "/v1/autorouter/explain/latest",
+      headers: {
+        authorization: "Bearer test-token"
+      }
+    });
+
+    expect(explain.statusCode).toBe(200);
+    expect(explain.json().selected.endpoint).toBe("good-openai");
+    expect(explain.json().attempts).toEqual([
+      expect.objectContaining({
+        endpoint: "bad-openai",
+        status: "failed",
+        error: "bad request from upstream",
+        retryable: false
+      }),
+      expect.objectContaining({
+        endpoint: "good-openai",
+        status: "success"
+      })
+    ]);
+
+    await gateway.close();
+  });
+
   it("falls back across providers after auth failures", async () => {
     const badPool = mockAgent.get("https://bad-auth.example.com");
     badPool

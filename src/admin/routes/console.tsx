@@ -125,6 +125,41 @@ function useSettingsDetail(token: string, sectionId: string) {
   });
 }
 
+function routeOutcomeStatusLabel(status: string) {
+  switch (status) {
+    case "success":
+      return "请求成功";
+    case "failed":
+      return "请求失败";
+    case "filtered":
+      return "被过滤";
+    case "not_requested":
+      return "未请求";
+    default:
+      return status;
+  }
+}
+
+function routeOutcomeBadgeClass(status: string) {
+  switch (status) {
+    case "success":
+      return "badge success";
+    case "failed":
+      return "badge warning";
+    case "filtered":
+      return "badge";
+    default:
+      return "badge";
+  }
+}
+
+function formatLatency(value: number | null | undefined) {
+  if (value === null || value === undefined) {
+    return "—";
+  }
+  return `${formatNumber(value)} ms`;
+}
+
 function formatDateTime(value: string | null) {
   if (!value) {
     return "暂无";
@@ -267,67 +302,58 @@ function TraceDetailPanel(props: {
         </dl>
       </div>
 
-      <div className="split-grid">
-        <div className="panel detail-card">
-          <h3>候选列表</h3>
-          <div className="stack-list">
-            {props.trace.candidates.length > 0 ? (
-              props.trace.candidates.map((candidate, index) => (
-                <div key={`${candidate.endpoint}-${index}`} className="stack-item">
-                  <strong>{candidate.provider ?? candidate.endpoint}</strong>
-                  <span>{candidate.model}</span>
-                  <code>{candidate.route_id ?? "route:auto"}</code>
-                </div>
-              ))
-            ) : (
-              <p className="muted">没有候选记录。</p>
-            )}
-          </div>
-        </div>
-
-        <div className="panel detail-card">
-          <h3>实际尝试</h3>
-          <div className="stack-list">
-            {props.trace.attempts.length > 0 ? (
-              props.trace.attempts.map((attempt, index) => (
-                <div key={`${attempt.endpoint}-attempt-${index}`} className="stack-item">
-                  <strong>{attempt.provider ?? attempt.endpoint}</strong>
-                  <span>{attempt.model}</span>
-                  <code>
-                    {attempt.status === "success" ? "success" : attempt.error ?? "failed"}
-                  </code>
-                </div>
-              ))
-            ) : (
-              <p className="muted">没有实际尝试记录。</p>
-            )}
-          </div>
-        </div>
-
-        <div className="panel detail-card">
-          <h3>过滤与回退</h3>
-          <div className="stack-list">
-            {props.trace.filtered.length > 0 ? (
-              props.trace.filtered.map((candidate, index) => (
-                <div key={`${candidate.endpoint}-filtered-${index}`} className="stack-item">
-                  <strong>{candidate.provider ?? candidate.endpoint}</strong>
-                  <span>{candidate.model}</span>
-                  <code>过滤原因: {candidate.reason ?? "unknown"}</code>
-                </div>
-              ))
-            ) : (
-              <p className="muted">没有被过滤的候选。</p>
-            )}
-            {props.trace.fallbacks.length > 0 ? (
-              props.trace.fallbacks.map((candidate, index) => (
-                <div key={`${candidate.endpoint}-fallback-${index}`} className="stack-item">
-                  <strong>{candidate.provider ?? candidate.endpoint}</strong>
-                  <span>{candidate.model}</span>
-                  <code>fallback</code>
-                </div>
-              ))
-            ) : null}
-          </div>
+      <div className="panel detail-card">
+        <h3>路由候选明细</h3>
+        <p className="muted">合并展示候选、过滤与实际尝试。状态含未请求 / 被过滤 / 请求成功 / 请求失败。</p>
+        <div className="table-scroll">
+          <table className="data-table route-outcome-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Provider</th>
+                <th>模型</th>
+                <th>Endpoint</th>
+                <th>状态</th>
+                <th>原因</th>
+                <th>首字耗时</th>
+                <th>当次耗时</th>
+                <th>Score</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(props.trace.route_items ?? []).length > 0 ? (
+                props.trace.route_items.map((item, index) => (
+                  <tr key={`${item.endpoint}-${item.model_id ?? item.model}-${item.status}-${index}`}>
+                    <td>{index + 1}</td>
+                    <td>{item.provider ?? "—"}</td>
+                    <td>
+                      <strong>{item.model}</strong>
+                      {item.model_id ? <span className="table-subtext"><code>{item.model_id}</code></span> : null}
+                    </td>
+                    <td><code>{item.endpoint}</code></td>
+                    <td>
+                      <span className={routeOutcomeBadgeClass(item.status)}>
+                        {routeOutcomeStatusLabel(item.status)}
+                      </span>
+                    </td>
+                    <td className="route-outcome-reason">
+                      {item.reason ? item.reason : "—"}
+                      {item.status === "failed" && item.retryable !== null ? (
+                        <span className="table-subtext">{item.retryable ? "可回退" : "不可回退"}</span>
+                      ) : null}
+                    </td>
+                    <td>{item.status === "success" || item.status === "failed" ? formatLatency(item.first_token_ms) : "—"}</td>
+                    <td>{item.status === "success" || item.status === "failed" ? formatLatency(item.latency_ms) : "—"}</td>
+                    <td>{item.score === null || item.score === undefined ? "—" : item.score.toFixed(2)}</td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={9} className="muted">没有路由候选记录。</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </section>

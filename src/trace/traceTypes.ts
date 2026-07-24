@@ -15,6 +15,10 @@ export interface TraceAttempt extends TraceCandidate {
   status: "success" | "failed";
   error?: string;
   retryable?: boolean;
+  /** Total attempt duration in ms. */
+  latency_ms?: number;
+  /** Time to first token/response body in ms. */
+  first_token_ms?: number;
 }
 
 export interface TraceFeedbackLabel {

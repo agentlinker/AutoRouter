@@ -75,6 +75,7 @@ export class TraceStore {
     return this.repository.listTokensByModel(limit);
   }
 
+
   public pruneExpired(): number {
     const cutoffDate = new Date();
     cutoffDate.setUTCDate(cutoffDate.getUTCDate() - this.hotRetentionDays);
