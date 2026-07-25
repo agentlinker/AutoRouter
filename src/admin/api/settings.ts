@@ -11,6 +11,8 @@ export interface SettingsSection {
   label: string;
   description: string;
   items: SettingsItem[];
+  editable?: boolean;
+  values?: Record<string, unknown>;
 }
 
 export interface SettingsListResponse {
@@ -23,4 +25,15 @@ export function listSettings(token: string): Promise<SettingsListResponse> {
 
 export function getSettingsSectionDetail(token: string, sectionId: string): Promise<SettingsSection> {
   return requestJson<SettingsSection>(`/admin/api/settings/${sectionId}`, token);
+}
+
+export function updateSettingsSection(
+  token: string,
+  sectionId: string,
+  payload: Record<string, unknown>
+): Promise<SettingsSection> {
+  return requestJson<SettingsSection>(`/admin/api/settings/${sectionId}`, token, {
+    method: "PUT",
+    body: JSON.stringify(payload)
+  });
 }

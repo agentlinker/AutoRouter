@@ -2,6 +2,8 @@ server:
   host: 127.0.0.1
   port: 8811
   request_timeout_ms: 120000
+  # ~2M tokens * ~4 bytes/token ≈ 8 MiB; raises Fastify 413 when exceeded
+  body_limit_bytes: 8388608
   gateway_token_env: AUTO_ROUTER_TOKEN
   admin_token_env: AUTO_ROUTER_ADMIN_TOKEN
 

@@ -5,6 +5,15 @@ export interface ProviderModel {
   provider_model_id: string;
   model_name: string;
   endpoint_key: string;
+  enabled?: boolean;
+  runtime_status?: string;
+  status_reason?: string | null;
+  status_message?: string | null;
+  status_source?: string | null;
+  status_updated_at?: string | null;
+  status_cooldown_until?: string | null;
+  rate_limit_strike?: number;
+  recent_error_count?: number;
   context_window: number | null;
   supports_streaming: boolean;
   supports_tools: boolean;
@@ -29,6 +38,12 @@ export interface ProviderDetails {
   base_url: string;
   website_url: string | null;
   enabled: boolean;
+  runtime_status?: string;
+  status_reason?: string | null;
+  status_message?: string | null;
+  status_source?: string | null;
+  status_updated_at?: string | null;
+  status_cooldown_until?: string | null;
   trust_level: string;
   privacy_level: string;
   usage_trust: string;
@@ -155,6 +170,7 @@ export function updateProviderModelCapabilities(
   providerKey: string,
   payload: {
     model_key: string;
+    enabled?: boolean;
     supports_streaming?: boolean;
     supports_tools?: boolean;
     supports_json_mode?: boolean;

@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
 import {
   Activity,
@@ -9,9 +9,10 @@ import {
   Route,
   ScrollText,
   Settings,
+  Save,
   ShieldCheck
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import {
   getApiKeyDetail,
@@ -22,8 +23,10 @@ import {
 import { getPolicyDetail, listPolicies } from "../api/policies.js";
 import {
   getSettingsSectionDetail,
-  listSettings
+  listSettings,
+  updateSettingsSection
 } from "../api/settings.js";
+import { AppDialog, type AppDialogTone } from "../components/Dialog.js";
 import { getTokensOverview } from "../api/tokens.js";
 import {
   getTraceDetail,
@@ -923,7 +926,73 @@ export function SettingsPage() {
 export function SettingsDetailPage() {
   const token = getStoredToken();
   const { sectionId } = useParams({ from: "/settings/$sectionId" });
+  const queryClient = useQueryClient();
   const query = useSettingsDetail(token, sectionId);
+  const [runtimeForm, setRuntimeForm] = useState({
+    error_threshold: "10",
+    rate_limit_backoff_seconds: "30, 60, 120, 300, 600, 3600, 86400",
+    permanent_after_final_backoff: true,
+    clear_counters_on_success: true,
+    auth_disables_provider: true
+  });
+  const [dialog, setDialog] = useState<{
+    title: string;
+    description?: string;
+    tone: AppDialogTone;
+  } | null>(null);
+
+  useEffect(() => {
+    const values = query.data?.values;
+    if (sectionId !== "runtime_status" || !values) {
+      return;
+    }
+
+    setRuntimeForm({
+      error_threshold: String(values.error_threshold ?? 10),
+      rate_limit_backoff_seconds: Array.isArray(values.rate_limit_backoff_seconds)
+        ? values.rate_limit_backoff_seconds.join(", ")
+        : "30, 60, 120, 300, 600, 3600, 86400",
+      permanent_after_final_backoff: values.permanent_after_final_backoff !== false,
+      clear_counters_on_success: values.clear_counters_on_success !== false,
+      auth_disables_provider: values.auth_disables_provider !== false
+    });
+  }, [query.data, sectionId]);
+
+  const saveMutation = useMutation({
+    mutationFn: () => {
+      const backoff = runtimeForm.rate_limit_backoff_seconds
+        .split(",")
+        .map((value) => Number(value.trim()))
+        .filter((value) => Number.isFinite(value) && value > 0);
+      if (backoff.length === 0) {
+        throw new Error("429 退避阶梯至少需要一个正数秒数");
+      }
+
+      return updateSettingsSection(token, sectionId, {
+        error_threshold: Number(runtimeForm.error_threshold),
+        rate_limit_backoff_seconds: backoff,
+        permanent_after_final_backoff: runtimeForm.permanent_after_final_backoff,
+        clear_counters_on_success: runtimeForm.clear_counters_on_success,
+        auth_disables_provider: runtimeForm.auth_disables_provider
+      });
+    },
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["admin-settings", token, sectionId], updated);
+      void queryClient.invalidateQueries({ queryKey: ["admin-settings", token] });
+      setDialog({
+        title: "保存成功",
+        description: "运行态与熔断设置已保存并重新加载。",
+        tone: "success"
+      });
+    },
+    onError: (error) => {
+      setDialog({
+        title: "保存失败",
+        description: error instanceof Error ? error.message : "请稍后重试。",
+        tone: "error"
+      });
+    }
+  });
 
   if (query.isLoading) {
     return <ConsolePageLoading />;
@@ -936,6 +1005,15 @@ export function SettingsDetailPage() {
 
   return (
     <section className="page-panel detail-page">
+      <AppDialog
+        open={dialog !== null}
+        title={dialog?.title ?? ""}
+        tone={dialog?.tone ?? "info"}
+        onClose={() => setDialog(null)}
+      >
+        {dialog?.description}
+      </AppDialog>
+
       <div className="detail-header">
         <div>
           <span className="eyebrow">
@@ -945,20 +1023,105 @@ export function SettingsDetailPage() {
           <h2>{section.label}</h2>
           <p className="muted">{section.description}</p>
         </div>
-        <PageBackLink to="/settings">返回 Settings</PageBackLink>
+        <div className="page-actions">
+          <PageBackLink to="/settings">返回 Settings</PageBackLink>
+          {section.section_id === "runtime_status" ? (
+            <button
+              className="primary-action"
+              type="button"
+              disabled={saveMutation.isPending}
+              onClick={() => saveMutation.mutate()}
+            >
+              <Save size={16} />
+              保存
+            </button>
+          ) : null}
+        </div>
       </div>
 
-      <div className="panel detail-card">
-        <h3>配置项</h3>
-        <dl>
-          {section.items.map((item) => (
-            <div key={item.key} className="settings-row">
-              <dt>{item.label}</dt>
-              <dd><code>{item.value}</code></dd>
-            </div>
-          ))}
-        </dl>
-      </div>
+      {section.section_id === "runtime_status" ? (
+        <div className="panel form form-card">
+          <label className="field">
+            <span>连续其它错误阈值 N</span>
+            <input
+              value={runtimeForm.error_threshold}
+              type="number"
+              min={1}
+              onChange={(event) =>
+                setRuntimeForm((current) => ({
+                  ...current,
+                  error_threshold: event.target.value
+                }))
+              }
+            />
+          </label>
+          <label className="field">
+            <span>429 退避阶梯(秒)</span>
+            <input
+              value={runtimeForm.rate_limit_backoff_seconds}
+              onChange={(event) =>
+                setRuntimeForm((current) => ({
+                  ...current,
+                  rate_limit_backoff_seconds: event.target.value
+                }))
+              }
+            />
+          </label>
+          <div className="model-tags">
+            <label className="capability-toggle">
+              <input
+                type="checkbox"
+                checked={runtimeForm.permanent_after_final_backoff}
+                onChange={(event) =>
+                  setRuntimeForm((current) => ({
+                    ...current,
+                    permanent_after_final_backoff: event.target.checked
+                  }))
+                }
+              />
+              <span>顶阶后再 429 永久限流</span>
+            </label>
+            <label className="capability-toggle">
+              <input
+                type="checkbox"
+                checked={runtimeForm.clear_counters_on_success}
+                onChange={(event) =>
+                  setRuntimeForm((current) => ({
+                    ...current,
+                    clear_counters_on_success: event.target.checked
+                  }))
+                }
+              />
+              <span>成功后清零计数</span>
+            </label>
+            <label className="capability-toggle">
+              <input
+                type="checkbox"
+                checked={runtimeForm.auth_disables_provider}
+                onChange={(event) =>
+                  setRuntimeForm((current) => ({
+                    ...current,
+                    auth_disables_provider: event.target.checked
+                  }))
+                }
+              />
+              <span>401/403 禁用整个 Provider</span>
+            </label>
+          </div>
+        </div>
+      ) : (
+        <div className="panel detail-card">
+          <h3>配置项</h3>
+          <dl>
+            {section.items.map((item) => (
+              <div key={item.key} className="settings-row">
+                <dt>{item.label}</dt>
+                <dd><code>{item.value}</code></dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
     </section>
   );
 }

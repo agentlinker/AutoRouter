@@ -6,9 +6,11 @@ import type { StickySessionStore } from "../routing/stickySession.js";
 import type {
   AccountRuntimeState,
   EndpointRuntimeState,
+  ModelRuntimeStatusState,
   PlatformRuntimeState,
   ProviderRuntimeState
 } from "../state/routerState.js";
+import type { RuntimeStatusSettings } from "./runtimeStatus.js";
 import type { TraceStore } from "../trace/traceStore.js";
 import type pino from "pino";
 
@@ -21,6 +23,8 @@ export interface RuntimeSnapshot {
   providers: ProviderRuntimeState[];
   endpoints: EndpointRuntimeState[];
   accounts: AccountRuntimeState[];
+  modelStatuses: Record<string, ModelRuntimeStatusState>;
+  runtimeStatusSettings: RuntimeStatusSettings;
   priceTable: PriceTable;
   adapters: AdapterRegistry;
   stickySessions: StickySessionStore;

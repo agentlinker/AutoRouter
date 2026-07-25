@@ -20,6 +20,8 @@ import { registerAdminCatalogRoutes } from "./routes/adminCatalog.js";
 import { registerAdminUiRoutes } from "./routes/adminUi.js";
 import { CatalogRepository } from "../repositories/catalogRepository.js";
 import type { ManagedProviderRepository } from "../repositories/managedProviderRepository.js";
+import type { AppSettingsRepository } from "../repositories/appSettingsRepository.js";
+import type { RuntimeStatusService } from "../runtime/runtimeStatusService.js";
 import type { ProviderModelDiscoveryService } from "../discovery/providerModelDiscovery.js";
 import type { SecretCipher } from "../security/secretCipher.js";
 import type { RouterState } from "../state/routerState.js";
@@ -64,12 +66,15 @@ export async function createServer(
     managedProviderRepository?: ManagedProviderRepository;
     discoveryService?: ProviderModelDiscoveryService;
     secretCipher?: SecretCipher;
+    appSettingsRepository?: AppSettingsRepository;
+    runtimeStatusService?: RuntimeStatusService;
   }
 ): Promise<FastifyInstance> {
   const runtimeManager = toRuntimeManagerLike(runtimeInput);
   const initialState = runtimeManager.getSnapshot();
   const fastify = Fastify({
     logger: false,
+    bodyLimit: initialState.config.server.body_limit_bytes,
     requestTimeout: initialState.config.server.request_timeout_ms
   });
 
@@ -167,13 +172,14 @@ export async function createServer(
     });
     await registerAdminSettingsRoutes(fastify, {
       runtimeManager,
+      appSettingsRepository: dependencies.appSettingsRepository
     });
   }
 
   await registerHealthRoute(fastify, runtimeManager);
   await registerModelsRoute(fastify, runtimeManager);
-  await registerChatCompletionsRoute(fastify, runtimeManager);
-  await registerResponsesRoute(fastify, runtimeManager);
+  await registerChatCompletionsRoute(fastify, runtimeManager, dependencies?.runtimeStatusService);
+  await registerResponsesRoute(fastify, runtimeManager, dependencies?.runtimeStatusService);
   await registerExplainRoute(fastify, runtimeManager.getSnapshot().traceStore);
 
   return fastify;

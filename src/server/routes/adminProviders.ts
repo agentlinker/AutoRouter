@@ -62,6 +62,7 @@ const patchEndpointBodySchema = z.object({
 
 const patchModelCapabilitiesBodySchema = z.object({
   model_key: z.string().min(1),
+  enabled: z.boolean().optional(),
   supports_streaming: z.boolean().optional(),
   supports_tools: z.boolean().optional(),
   supports_json_mode: z.boolean().optional()
@@ -257,6 +258,12 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
     base_url: details.provider.baseUrl,
     website_url: details.provider.websiteUrl,
     enabled: details.provider.enabled,
+    runtime_status: details.provider.runtimeStatus ?? "normal",
+    status_reason: details.provider.statusReason ?? null,
+    status_message: details.provider.statusMessage ?? null,
+    status_source: details.provider.statusSource ?? "system",
+    status_updated_at: details.provider.statusUpdatedAt ?? null,
+    status_cooldown_until: details.provider.statusCooldownUntil ?? null,
     trust_level: details.provider.trustLevel,
     privacy_level: details.provider.privacyLevel,
     usage_trust: details.provider.usageTrust,
@@ -288,6 +295,15 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
       supports_streaming: model.supportsStreaming,
       supports_tools: model.supportsTools,
       supports_json_mode: model.supportsJsonMode,
+      enabled: model.enabled,
+      runtime_status: model.runtimeStatus ?? "normal",
+      status_reason: model.statusReason ?? null,
+      status_message: model.statusMessage ?? null,
+      status_source: model.statusSource ?? "system",
+      status_updated_at: model.statusUpdatedAt ?? null,
+      status_cooldown_until: model.statusCooldownUntil ?? null,
+      rate_limit_strike: model.rateLimitStrike ?? 0,
+      recent_error_count: model.recentErrorCount ?? 0,
       endpoint_key:
         details.endpoints.find((endpoint) => endpoint.id === model.endpointId)?.endpointKey ?? "default"
     }))
@@ -585,6 +601,7 @@ export async function registerAdminProvidersRoutes(
       const body = patchModelCapabilitiesBodySchema.parse(request.body);
       const updated = dependencies.repository.updateModelCapabilities(request.params.providerKey, {
         modelKey: body.model_key,
+        enabled: body.enabled,
         supportsStreaming: body.supports_streaming,
         supportsTools: body.supports_tools,
         supportsJsonMode: body.supports_json_mode

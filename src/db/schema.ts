@@ -8,6 +8,13 @@ export const managedProvidersTable = sqliteTable("managed_providers", {
   baseUrl: text("base_url").notNull(),
   websiteUrl: text("website_url"),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  runtimeStatus: text("runtime_status").notNull().default("normal"),
+  statusReason: text("status_reason"),
+  statusMessage: text("status_message"),
+  statusSource: text("status_source").notNull().default("system"),
+  statusUpdatedAt: text("status_updated_at"),
+  statusCooldownUntil: text("status_cooldown_until"),
+  recentErrorCount: integer("recent_error_count").notNull().default(0),
   trustLevel: text("trust_level").notNull().default("low"),
   privacyLevel: text("privacy_level").notNull().default("public_only"),
   usageTrust: text("usage_trust").notNull().default("low"),
@@ -86,6 +93,17 @@ export const managedModelsTable = sqliteTable("managed_models", {
   pricingJson: text("pricing_json"),
   rawMetadataJson: text("raw_metadata_json"),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  runtimeStatus: text("runtime_status").notNull().default("normal"),
+  statusReason: text("status_reason"),
+  statusMessage: text("status_message"),
+  statusSource: text("status_source").notNull().default("system"),
+  statusUpdatedAt: text("status_updated_at"),
+  statusCooldownUntil: text("status_cooldown_until"),
+  rateLimitStrike: integer("rate_limit_strike").notNull().default(0),
+  recentErrorCount: integer("recent_error_count").notNull().default(0),
+  lastErrorAt: text("last_error_at"),
+  lastErrorCode: text("last_error_code"),
+  lastErrorMessage: text("last_error_message"),
   contextWindowOverride: integer("context_window_override"),
   supportsToolsOverride: integer("supports_tools_override", { mode: "boolean" }),
   supportsStreamingOverride: integer("supports_streaming_override", { mode: "boolean" }),
@@ -113,6 +131,13 @@ export const modelSyncRunsTable = sqliteTable("model_sync_runs", {
   startedAt: text("started_at").notNull(),
   finishedAt: text("finished_at"),
   discoveredCount: integer("discovered_count").notNull().default(0)
+});
+
+
+export const appSettingsTable = sqliteTable("app_settings", {
+  key: text("key").primaryKey(),
+  valueJson: text("value_json").notNull(),
+  updatedAt: text("updated_at").notNull()
 });
 
 export const routeTracesTable = sqliteTable("route_traces", {
@@ -167,6 +192,7 @@ export const schema = {
   logicalModelsTable,
   managedModelsTable,
   modelSyncRunsTable,
+  appSettingsTable,
   routeTracesTable
 };
 
@@ -177,3 +203,5 @@ export type LogicalModelRow = typeof logicalModelsTable.$inferSelect;
 export type ManagedModelRow = typeof managedModelsTable.$inferSelect;
 export type ModelSyncRunRow = typeof modelSyncRunsTable.$inferSelect;
 export type RouteTraceRow = typeof routeTracesTable.$inferSelect;
+
+export type AppSettingsRow = typeof appSettingsTable.$inferSelect;

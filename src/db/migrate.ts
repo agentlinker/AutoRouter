@@ -315,6 +315,55 @@ export function runMigrations(sqlite: Database.Database) {
     }
   }
 
+
+  const managedProviderColumns = sqlite.pragma("table_info(managed_providers)") as Array<{
+    name: string;
+  }>;
+  const managedProviderColumnDefinitions: Array<{ name: string; sql: string }> = [
+    { name: "runtime_status", sql: "ALTER TABLE managed_providers ADD COLUMN runtime_status TEXT NOT NULL DEFAULT 'normal';" },
+    { name: "status_reason", sql: "ALTER TABLE managed_providers ADD COLUMN status_reason TEXT;" },
+    { name: "status_message", sql: "ALTER TABLE managed_providers ADD COLUMN status_message TEXT;" },
+    { name: "status_source", sql: "ALTER TABLE managed_providers ADD COLUMN status_source TEXT NOT NULL DEFAULT 'system';" },
+    { name: "status_updated_at", sql: "ALTER TABLE managed_providers ADD COLUMN status_updated_at TEXT;" },
+    { name: "status_cooldown_until", sql: "ALTER TABLE managed_providers ADD COLUMN status_cooldown_until TEXT;" },
+    { name: "recent_error_count", sql: "ALTER TABLE managed_providers ADD COLUMN recent_error_count INTEGER NOT NULL DEFAULT 0;" }
+  ];
+  for (const definition of managedProviderColumnDefinitions) {
+    if (!managedProviderColumns.some((column) => column.name === definition.name)) {
+      sqlite.exec(definition.sql);
+    }
+  }
+
+  const managedModelRuntimeColumns = sqlite.pragma("table_info(managed_models)") as Array<{
+    name: string;
+  }>;
+  const managedModelRuntimeDefinitions: Array<{ name: string; sql: string }> = [
+    { name: "runtime_status", sql: "ALTER TABLE managed_models ADD COLUMN runtime_status TEXT NOT NULL DEFAULT 'normal';" },
+    { name: "status_reason", sql: "ALTER TABLE managed_models ADD COLUMN status_reason TEXT;" },
+    { name: "status_message", sql: "ALTER TABLE managed_models ADD COLUMN status_message TEXT;" },
+    { name: "status_source", sql: "ALTER TABLE managed_models ADD COLUMN status_source TEXT NOT NULL DEFAULT 'system';" },
+    { name: "status_updated_at", sql: "ALTER TABLE managed_models ADD COLUMN status_updated_at TEXT;" },
+    { name: "status_cooldown_until", sql: "ALTER TABLE managed_models ADD COLUMN status_cooldown_until TEXT;" },
+    { name: "rate_limit_strike", sql: "ALTER TABLE managed_models ADD COLUMN rate_limit_strike INTEGER NOT NULL DEFAULT 0;" },
+    { name: "recent_error_count", sql: "ALTER TABLE managed_models ADD COLUMN recent_error_count INTEGER NOT NULL DEFAULT 0;" },
+    { name: "last_error_at", sql: "ALTER TABLE managed_models ADD COLUMN last_error_at TEXT;" },
+    { name: "last_error_code", sql: "ALTER TABLE managed_models ADD COLUMN last_error_code TEXT;" },
+    { name: "last_error_message", sql: "ALTER TABLE managed_models ADD COLUMN last_error_message TEXT;" }
+  ];
+  for (const definition of managedModelRuntimeDefinitions) {
+    if (!managedModelRuntimeColumns.some((column) => column.name === definition.name)) {
+      sqlite.exec(definition.sql);
+    }
+  }
+
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY NOT NULL,
+      value_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+
   // Backfill logical models from provider model ids and bind all managed rows to canonical logical rows.
   const now = new Date().toISOString();
   const managedRows = sqlite

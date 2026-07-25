@@ -9,10 +9,12 @@ import type {
 import type {
   AccountRuntimeState,
   EndpointRuntimeState,
+  ModelRuntimeStatusState,
   PlatformRuntimeState,
   ProviderRuntimeState
 } from "../state/routerState.js";
 import { HttpError } from "../utils/httpErrors.js";
+import { modelFilterReason, providerFilterReason } from "../runtime/runtimeStatus.js";
 import type { StickyRoute } from "./stickySession.js";
 
 export interface SelectedRoute {
@@ -97,8 +99,35 @@ function canUseCandidate(
   hasTools: boolean,
   requiresJson: boolean,
   requestedContextTokens: number,
-  privacyLevel: string
+  privacyLevel: string,
+  modelStatus?: ModelRuntimeStatusState | null
 ): string | null {
+  const providerReason = providerFilterReason({
+    enabled: true,
+    runtimeStatus: provider.runtime_status ?? "normal",
+    statusReason: provider.status_reason,
+    statusMessage: provider.status_message
+  });
+  // provider.enabled is reflected via endpoint/account projection; runtime_status gates here
+  if (provider.runtime_status && provider.runtime_status !== "normal") {
+    if (provider.runtime_status === "disabled" || provider.runtime_status === "abnormal") {
+      return providerReason;
+    }
+  }
+
+  if (modelStatus) {
+    const modelReason = modelFilterReason({
+      enabled: true,
+      runtimeStatus: modelStatus.runtime_status,
+      statusReason: modelStatus.status_reason,
+      statusMessage: modelStatus.status_message,
+      statusCooldownUntil: modelStatus.status_cooldown_until
+    });
+    if (modelReason) {
+      return modelReason;
+    }
+  }
+
   if (!endpoint.enabled) {
     return "endpoint_disabled";
   }
@@ -244,7 +273,8 @@ export function selectRoute(
   requiresJson: boolean,
   requestedContextTokens: number,
   privacyLevel: string,
-  stickyRoute?: StickyRoute | null
+  stickyRoute?: StickyRoute | null,
+  modelStatuses: Record<string, ModelRuntimeStatusState> = {}
 ): {
   selected: SelectedRoute;
   requestedModel: string;
@@ -324,6 +354,12 @@ export function selectRoute(
       continue;
     }
 
+    const modelStatus =
+      modelStatuses[candidate.modelId] ??
+      modelStatuses[`${provider.id}|${candidate.modelId}`] ??
+      modelStatuses[`${provider.id}|${candidate.model}`] ??
+      null;
+
     const filteredReason = canUseCandidate(
       thresholds,
       provider,
@@ -333,7 +369,8 @@ export function selectRoute(
       hasTools,
       requiresJson,
       requestedContextTokens,
-      privacyLevel
+      privacyLevel,
+      modelStatus
     );
     if (filteredReason) {
       filtered.push({

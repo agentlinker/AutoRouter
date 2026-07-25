@@ -17,6 +17,21 @@ export interface ProviderRuntimeState {
   trust_level: string;
   privacy_level: string;
   usage_trust: string;
+  runtime_status?: "normal" | "disabled" | "rate_limited" | "abnormal";
+  status_reason?: string;
+  status_message?: string;
+  status_cooldown_until?: string | null;
+}
+
+export interface ModelRuntimeStatusState {
+  provider_key: string;
+  model_key: string;
+  runtime_status: "normal" | "disabled" | "rate_limited" | "abnormal";
+  status_reason?: string | null;
+  status_message?: string | null;
+  status_cooldown_until?: string | null;
+  rate_limit_strike: number;
+  recent_error_count: number;
 }
 
 export interface EndpointRuntimeState {
@@ -58,6 +73,8 @@ export interface RouterState {
   providers: ProviderRuntimeState[];
   endpoints: EndpointRuntimeState[];
   accounts: AccountRuntimeState[];
+  modelStatuses?: Record<string, ModelRuntimeStatusState>;
+  runtimeStatusSettings?: import("../runtime/runtimeStatus.js").RuntimeStatusSettings;
   priceTable: PriceTable;
   adapters: AdapterRegistry;
   stickySessions: StickySessionStore;

@@ -27,6 +27,14 @@ export class RuntimeManager implements RuntimeManagerLike {
 export function createStaticRuntimeManager(state: RouterState): RuntimeManagerLike {
   const snapshot: RuntimeSnapshot = {
     ...state,
+    modelStatuses: state.modelStatuses ?? {},
+    runtimeStatusSettings: state.runtimeStatusSettings ?? {
+      error_threshold: 10,
+      rate_limit_backoff_seconds: [30, 60, 120, 300, 600, 3600, 86400],
+      permanent_after_final_backoff: true,
+      clear_counters_on_success: true,
+      auth_disables_provider: true
+    },
     modelCatalog: new ModelCatalog(state.config),
     credentialStore: new CredentialStore(new Map())
   };

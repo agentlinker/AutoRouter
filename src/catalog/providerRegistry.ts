@@ -69,7 +69,11 @@ function mapProvider(
     display_name: provider.display_name,
     trust_level: normalizeTrustLevel(provider.trust_level),
     privacy_level: normalizePrivacyLevel(provider.privacy_level),
-    usage_trust: normalizeUsageTrust(provider.usage_trust)
+    usage_trust: normalizeUsageTrust(provider.usage_trust),
+    runtime_status: "normal",
+    status_reason: undefined,
+    status_message: undefined,
+    status_cooldown_until: null
   };
 }
 

@@ -13,7 +13,7 @@ import {
   type CatalogModelInstance
 } from "../api/catalog.js";
 import { AppDialog, type AppDialogTone } from "../components/Dialog.js";
-import { getStoredToken } from "./providers.js";
+import { getStoredToken, SwitchControl } from "./providers.js";
 
 function catalogQueryKey(token: string) {
   return ["catalog", token] as const;
@@ -21,6 +21,45 @@ function catalogQueryKey(token: string) {
 
 function catalogDetailQueryKey(token: string, logicalName: string) {
   return ["catalog", token, logicalName] as const;
+}
+
+function runtimeStatusLabel(status?: string | null) {
+  switch (status) {
+    case "disabled":
+      return "鉴权异常";
+    case "rate_limited":
+      return "限流中";
+    case "abnormal":
+      return "失败过多";
+    case "normal":
+    case undefined:
+    case null:
+      return "正常";
+    default:
+      return status;
+  }
+}
+
+function runtimeStatusBadgeClass(status?: string | null) {
+  return status === "normal" || !status ? "badge success" : "badge warning";
+}
+
+function runtimeStatusDetail(input: {
+  status_reason?: string | null;
+  status_message?: string | null;
+  status_cooldown_until?: string | null;
+}) {
+  const code = input.status_reason ? `异常码: ${input.status_reason}` : null;
+  const message = input.status_message ? `错误信息: ${input.status_message}` : null;
+  const cooldown = input.status_cooldown_until
+    ? `冷却至: ${new Date(input.status_cooldown_until).toLocaleString()}`
+    : null;
+  const parts = [
+    code,
+    message,
+    cooldown
+  ].filter(Boolean);
+  return parts.join("\n");
 }
 
 function useCatalogModels(token: string) {
@@ -412,11 +451,13 @@ export function CatalogDetailPage() {
         <div className="catalog-instance-table">
           <div className="catalog-instance-header">
             <span>Provider 实例</span>
+            <span>启用</span>
+            <span>模型状态</span>
+            <span>Provider 状态</span>
             <span>Context</span>
             <span>Stream</span>
             <span>Tools</span>
             <span>JSON</span>
-            <span>Enabled</span>
           </div>
           {instances.map((instance) => (
             <CatalogInstanceRow
@@ -486,6 +527,27 @@ function CatalogInstanceRow(props: {
         <code>{props.instance.model_key}</code>
         <span className="badge">{props.instance.endpoint_key}</span>
       </div>
+      <SwitchControl
+        checked={props.instance.enabled}
+        disabled={toggleMutation.isPending}
+        label={`${props.instance.provider_display_name} ${props.instance.model_key} 启用开关`}
+        onChange={(checked) => toggleMutation.mutate(checked)}
+      />
+      <span
+        className={runtimeStatusBadgeClass(props.instance.runtime_status)}
+        title={runtimeStatusDetail(props.instance)}
+      >
+        {runtimeStatusLabel(props.instance.runtime_status)}
+      </span>
+      <span
+        className={runtimeStatusBadgeClass(props.instance.provider_runtime_status)}
+        title={runtimeStatusDetail({
+          status_reason: props.instance.provider_status_reason,
+          status_message: props.instance.provider_status_message
+        })}
+      >
+        {runtimeStatusLabel(props.instance.provider_runtime_status)}
+      </span>
       <input
         value={contextOverride}
         type="number"
@@ -496,15 +558,6 @@ function CatalogInstanceRow(props: {
       <CapabilitySelect value={streamOverride} onChange={(value) => { setStreamOverride(value); mutation.mutate({ streamOverride: value }); }} />
       <CapabilitySelect value={toolsOverride} onChange={(value) => { setToolsOverride(value); mutation.mutate({ toolsOverride: value }); }} />
       <CapabilitySelect value={jsonOverride} onChange={(value) => { setJsonOverride(value); mutation.mutate({ jsonOverride: value }); }} />
-      <label className="capability-toggle">
-        <input
-          type="checkbox"
-          checked={props.instance.enabled}
-          disabled={toggleMutation.isPending}
-          onChange={(event) => toggleMutation.mutate(event.target.checked)}
-        />
-        <span>{props.instance.enabled ? "启用" : "禁用"}</span>
-      </label>
     </div>
   );
 }

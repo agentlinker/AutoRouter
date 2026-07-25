@@ -6,6 +6,8 @@ import { createDatabaseClient } from "./db/client.js";
 import { ProviderModelDiscoveryService } from "./discovery/providerModelDiscovery.js";
 import { AdapterRegistry } from "./providers/registry.js";
 import { ManagedProviderRepository } from "./repositories/managedProviderRepository.js";
+import { AppSettingsRepository } from "./repositories/appSettingsRepository.js";
+import { RuntimeStatusService } from "./runtime/runtimeStatusService.js";
 import { RouteTraceRepository } from "./repositories/routeTraceRepository.js";
 import { StickySessionStore } from "./routing/stickySession.js";
 import { RuntimeManager } from "./runtime/runtimeManager.js";
@@ -19,6 +21,8 @@ async function main() {
   const config = loadConfig();
   const databaseClient = createDatabaseClient(config.database.path);
   const managedProviderRepository = new ManagedProviderRepository(databaseClient.db);
+  const appSettingsRepository = new AppSettingsRepository(databaseClient.db);
+  const runtimeStatusService = new RuntimeStatusService(managedProviderRepository, appSettingsRepository);
   const routeTraceRepository = new RouteTraceRepository(databaseClient.db);
   const adapters = new AdapterRegistry();
   const stickySessions = new StickySessionStore();
@@ -36,6 +40,7 @@ async function main() {
   const runtimeManager = new RuntimeManager({
     baseConfig: config,
     managedProviderRepository,
+    appSettingsRepository,
     secretCipher,
     adapters,
     stickySessions,
@@ -47,7 +52,9 @@ async function main() {
   const server = await createServer(runtimeManager, {
     managedProviderRepository,
     discoveryService,
-    secretCipher
+    secretCipher,
+    appSettingsRepository,
+    runtimeStatusService
   });
   const address = await server.listen({
     host: config.server.host,

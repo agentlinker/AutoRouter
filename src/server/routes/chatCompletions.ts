@@ -8,11 +8,13 @@ import { PROVIDER_AUTH_FAILED_CODE, PROVIDER_AUTH_FAILED_MESSAGE } from "../../u
 import { normalizeChatRequest } from "../../routing/normalizeRequest.js";
 import type { ChatCompletionsRequestBody } from "../../routing/types.js";
 import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
+import type { RuntimeStatusService } from "../../runtime/runtimeStatusService.js";
 import { recordRouteSelectionFailure } from "./routeSelectionFailure.js";
 
 export async function registerChatCompletionsRoute(
   fastify: FastifyInstance,
-  runtimeManager: RuntimeManagerLike
+  runtimeManager: RuntimeManagerLike,
+  runtimeStatusService?: RuntimeStatusService
 ) {
   fastify.post<{ Body: ChatCompletionsRequestBody }>("/v1/chat/completions", async (request, reply) => {
     const state = runtimeManager.getSnapshot();
@@ -49,7 +51,8 @@ export async function registerChatCompletionsRoute(
         normalizedRequest.response_format !== undefined,
         normalizedRequest.context_tokens_est,
         privacyLevel,
-        sessionId ? state.stickySessions.get(sessionId) : null
+        sessionId ? state.stickySessions.get(sessionId) : null,
+        state.modelStatuses ?? {}
       );
     } catch (error) {
       recordRouteSelectionFailure(runtimeManager, error, {
@@ -233,12 +236,28 @@ export async function registerChatCompletionsRoute(
           model: candidate.modelName,
           candidateIndex: index
         };
+        runtimeStatusService?.recordSuccess({
+          snapshot: state,
+          providerKey: candidate.provider.id,
+          modelKey:
+            state.modelStatuses?.[candidate.modelId]?.model_key ??
+            candidate.modelId
+        });
         break;
       } catch (error) {
         lastError = error;
         candidate.endpoint.recent_error_count += 1;
         candidate.account.recent_error_count += 1;
         const retryable = error instanceof HttpError && error.retryable;
+
+        runtimeStatusService?.recordFailure({
+          snapshot: state,
+          providerKey: candidate.provider.id,
+          modelKey:
+            state.modelStatuses?.[candidate.modelId]?.model_key ??
+            candidate.modelId,
+          error
+        });
 
         attemptHistory.push({
           route_id: candidate.routeId,

@@ -207,9 +207,28 @@ export class CatalogRepository {
       ...(input.enabled !== undefined ? { enabled: true } : {})
     };
 
+    const now = nowIso();
+    const enableRecover =
+      input.enabled === true
+        ? {
+            enabled: true,
+            runtimeStatus: "normal" as const,
+            statusReason: null,
+            statusMessage: null,
+            statusSource: "manual",
+            statusUpdatedAt: now,
+            statusCooldownUntil: null,
+            rateLimitStrike: 0,
+            recentErrorCount: 0
+          }
+        : input.enabled === false
+          ? { enabled: false }
+          : {};
+
     this.db.update(managedModelsTable)
       .set({
         enabled: input.enabled !== undefined ? input.enabled : model.enabled,
+        ...enableRecover,
         contextWindowOverride:
           input.contextWindowOverride !== undefined
             ? input.contextWindowOverride

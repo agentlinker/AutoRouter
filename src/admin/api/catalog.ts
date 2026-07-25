@@ -9,6 +9,17 @@ export interface CatalogModelInstance {
   provider_model_id: string;
   model_name: string;
   enabled: boolean;
+  runtime_status?: string;
+  status_reason?: string | null;
+  status_message?: string | null;
+  status_source?: string | null;
+  status_updated_at?: string | null;
+  status_cooldown_until?: string | null;
+  rate_limit_strike?: number;
+  recent_error_count?: number;
+  provider_runtime_status?: string;
+  provider_status_reason?: string | null;
+  provider_status_message?: string | null;
   context_window: number | null;
   supports_streaming: boolean;
   supports_tools: boolean;

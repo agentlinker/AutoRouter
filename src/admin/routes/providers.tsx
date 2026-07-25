@@ -14,7 +14,6 @@ import {
   LogOut,
   Network,
   Plus,
-  Power,
   RefreshCw,
   Route,
   ScrollText,
@@ -65,6 +64,68 @@ function RequiredMark() {
   return <span className="required-mark">*</span>;
 }
 
+function runtimeStatusLabel(status?: string | null) {
+  switch (status) {
+    case "disabled":
+      return "鉴权异常";
+    case "rate_limited":
+      return "限流中";
+    case "abnormal":
+      return "失败过多";
+    case "normal":
+    case undefined:
+    case null:
+      return "正常";
+    default:
+      return status;
+  }
+}
+
+function runtimeStatusBadgeClass(status?: string | null) {
+  return status === "normal" || !status ? "badge success" : "badge warning";
+}
+
+function runtimeStatusDetail(input: {
+  status_reason?: string | null;
+  status_message?: string | null;
+  status_cooldown_until?: string | null;
+}) {
+  const code = input.status_reason ? `异常码: ${input.status_reason}` : null;
+  const message = input.status_message ? `错误信息: ${input.status_message}` : null;
+  const cooldown = input.status_cooldown_until
+    ? `冷却至: ${new Date(input.status_cooldown_until).toLocaleString()}`
+    : null;
+  const parts = [
+    code,
+    message,
+    cooldown
+  ].filter(Boolean);
+  return parts.join("\n");
+}
+
+export function SwitchControl(props: {
+  checked: boolean;
+  disabled?: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className={`switch-control ${props.disabled ? "disabled" : ""}`}>
+      <input
+        type="checkbox"
+        checked={props.checked}
+        disabled={props.disabled}
+        aria-label={props.label}
+        onChange={(event) => props.onChange(event.target.checked)}
+      />
+      <span className="switch-track" aria-hidden="true">
+        <span className="switch-thumb" />
+      </span>
+      <span className="switch-label">{props.checked ? "已启用" : "已停用"}</span>
+    </label>
+  );
+}
+
 export function getStoredToken() {
   return localStorage.getItem(providerTokenStorageKey) ?? "";
 }
@@ -110,7 +171,7 @@ const navItems = [
     icon: Network,
     to: "/providers",
     title: "Provider 管理",
-    description: "配置 OpenAI-compatible provider，自动整理可用模型。"
+    description: "配置不同协议的 Provider，自动整理可用模型。"
   },
   {
     label: "Catalog",
@@ -485,6 +546,7 @@ export function ProviderDetailPage() {
   const modelMutation = useMutation({
     mutationFn: async (input: {
       model_key: string;
+      enabled?: boolean;
       supports_streaming?: boolean;
       supports_tools?: boolean;
       supports_json_mode?: boolean;
@@ -565,15 +627,10 @@ export function ProviderDetailPage() {
             <RefreshCw size={16} />
             同步模型
           </button>
-          <button className="ghost-action" type="button" onClick={() => mutation.mutate("toggle")}>
-            {provider.enabled ? <Power size={16} /> : <Activity size={16} />}
-            {provider.enabled ? "禁用" : "启用"}
-          </button>
         </div>
       </div>
 
       <div className="detail-grid">
-        <MetricCard label="状态" value={provider.enabled ? "已启用" : "已停用"} />
         <MetricCard label="模型数量" value={String(provider.models.length)} />
         <MetricCard label="Key" value={provider.key_hint ?? "hidden"} />
       </div>
@@ -581,6 +638,24 @@ export function ProviderDetailPage() {
       <div className="panel detail-card">
         <h3>连接信息</h3>
         <dl>
+          <dt>启用</dt>
+          <dd>
+            <SwitchControl
+              checked={provider.enabled}
+              disabled={mutation.isPending}
+              label={`${provider.display_name} 启用开关`}
+              onChange={() => mutation.mutate("toggle")}
+            />
+          </dd>
+          <dt>调度状态</dt>
+          <dd>
+            <span
+              className={runtimeStatusBadgeClass(provider.runtime_status)}
+              title={runtimeStatusDetail(provider)}
+            >
+              {runtimeStatusLabel(provider.runtime_status)}
+            </span>
+          </dd>
           <dt>官网地址</dt>
           <dd>
             {provider.website_url ? (
@@ -676,9 +751,11 @@ export function ProviderDetailPage() {
 
       <div className="panel detail-card">
         <h3>模型列表</h3>
-        <div className="model-capability-table">
+        <div className="model-capability-table provider-model-table">
           <div className="model-capability-header">
             <span>模型</span>
+            <span>启用</span>
+            <span>调度状态</span>
             <span>Streaming</span>
             <span>Tools</span>
             <span>JSON</span>
@@ -690,6 +767,20 @@ export function ProviderDetailPage() {
                 <code>{model.model_key}</code>
                 <span className="badge">{model.endpoint_key}</span>
               </div>
+              <SwitchControl
+                checked={model.enabled !== false}
+                disabled={modelMutation.isPending}
+                label={`${model.model_name} 启用开关`}
+                onChange={(checked) =>
+                  modelMutation.mutate({
+                    model_key: model.model_key,
+                    enabled: checked
+                  })
+                }
+              />
+              <span className={runtimeStatusBadgeClass(model.runtime_status)} title={runtimeStatusDetail(model)}>
+                {runtimeStatusLabel(model.runtime_status)}
+              </span>
               <CapabilityToggle
                 checked={model.supports_streaming}
                 disabled={modelMutation.isPending}
@@ -1059,12 +1150,27 @@ function ProviderCard(props: {
           <strong>{props.provider.display_name}</strong>
           <code>{props.provider.provider_key}</code>
         </div>
-        <span className={`badge ${props.provider.enabled ? "success" : "warning"}`}>
-          {props.provider.enabled ? "已启用" : "已停用"}
-        </span>
       </div>
 
       <div className="provider-meta">
+        <div className="metric">
+          <span>启用</span>
+          <SwitchControl
+            checked={props.provider.enabled}
+            disabled={props.disabled}
+            label={`${props.provider.display_name} 启用开关`}
+            onChange={() => props.onAction("toggle")}
+          />
+        </div>
+        <div className="metric">
+          <span>调度状态</span>
+          <strong
+            className={runtimeStatusBadgeClass(props.provider.runtime_status)}
+            title={runtimeStatusDetail(props.provider)}
+          >
+            {runtimeStatusLabel(props.provider.runtime_status)}
+          </strong>
+        </div>
         <div className="metric">
           <span>官网</span>
           {props.provider.website_url ? (
@@ -1111,10 +1217,6 @@ function ProviderCard(props: {
         <button type="button" disabled={props.disabled} onClick={() => props.onAction("sync")}>
           <RefreshCw size={14} />
           同步模型
-        </button>
-        <button type="button" disabled={props.disabled} onClick={() => props.onAction("toggle")}>
-          {props.provider.enabled ? <Power size={14} /> : <Activity size={14} />}
-          {props.provider.enabled ? "禁用" : "启用"}
         </button>
         <button type="button" disabled={props.disabled} onClick={() => props.onAction("delete")}>
           <Trash2 size={14} />

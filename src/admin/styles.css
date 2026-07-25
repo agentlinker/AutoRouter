@@ -538,6 +538,73 @@ button:disabled {
   color: var(--warning);
 }
 
+.switch-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.switch-control input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.switch-track {
+  position: relative;
+  width: 30px;
+  height: 16px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: rgba(71, 85, 105, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.18);
+  transition: background 0.16s ease, box-shadow 0.16s ease;
+}
+
+.switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: #f8fafc;
+  box-shadow: 0 1px 4px rgba(2, 6, 23, 0.3);
+  transition: transform 0.16s ease;
+}
+
+.switch-control input:checked + .switch-track {
+  background: #14c8b8;
+  box-shadow: inset 0 0 0 1px rgba(45, 212, 191, 0.32);
+}
+
+.switch-control input:checked + .switch-track .switch-thumb {
+  transform: translateX(14px);
+}
+
+.switch-control input:focus-visible + .switch-track {
+  outline: 2px solid rgba(125, 211, 252, 0.78);
+  outline-offset: 2px;
+}
+
+.switch-control.disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.switch-label {
+  color: var(--muted);
+  white-space: nowrap;
+  line-height: 1;
+}
+
 .primary-action:hover {
   text-decoration: none;
 }
@@ -758,6 +825,15 @@ button:disabled {
   align-items: center;
 }
 
+.provider-model-table .model-capability-header,
+.provider-model-table .model-capability-row {
+  grid-template-columns:
+    minmax(220px, 1.3fr)
+    minmax(92px, 0.55fr)
+    minmax(112px, 0.65fr)
+    repeat(3, minmax(86px, 0.5fr));
+}
+
 .model-capability-header {
   color: var(--muted);
   font-size: 12px;
@@ -801,7 +877,13 @@ button:disabled {
 .catalog-instance-header,
 .catalog-instance-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1.3fr) minmax(110px, 0.6fr) repeat(3, minmax(96px, 0.55fr)) minmax(96px, 0.5fr);
+  grid-template-columns:
+    minmax(220px, 1.4fr)
+    minmax(96px, 0.55fr)
+    minmax(112px, 0.6fr)
+    minmax(112px, 0.6fr)
+    minmax(110px, 0.6fr)
+    repeat(3, minmax(96px, 0.55fr));
   gap: 10px;
   align-items: center;
 }

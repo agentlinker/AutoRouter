@@ -13,10 +13,17 @@ import type { ManagedProviderRepository } from "../repositories/managedProviderR
 import { SecretCipher } from "../security/secretCipher.js";
 import { CredentialStore } from "./credentialStore.js";
 import type { RuntimeSnapshot } from "./runtimeTypes.js";
+import {
+  DEFAULT_RUNTIME_STATUS_SETTINGS,
+  isRuntimeStatusValue,
+  type RuntimeStatus
+} from "./runtimeStatus.js";
+import type { AppSettingsRepository } from "../repositories/appSettingsRepository.js";
 
 export interface RuntimeProjectorOptions {
   baseConfig: RouterConfig;
   managedProviderRepository: ManagedProviderRepository;
+  appSettingsRepository?: AppSettingsRepository;
   secretCipher: SecretCipher;
   adapters: AdapterRegistry;
   stickySessions: StickySessionStore;
@@ -163,6 +170,66 @@ export class RuntimeConfigProjector {
         account.account_type === "local_model"
     });
 
+    const modelStatuses: RuntimeSnapshot["modelStatuses"] = {};
+    const providerStatusByKey = new Map(
+      managedBundles.map((bundle) => [bundle.provider.providerKey, bundle.provider] as const)
+    );
+
+    for (const provider of registry.providers) {
+      const managed = providerStatusByKey.get(provider.id);
+      if (!managed) {
+        continue;
+      }
+      const status = isRuntimeStatusValue(managed.runtimeStatus)
+        ? managed.runtimeStatus
+        : "normal";
+      provider.runtime_status = status as RuntimeStatus;
+      provider.status_reason = managed.statusReason ?? undefined;
+      provider.status_message = managed.statusMessage ?? undefined;
+      provider.status_cooldown_until = managed.statusCooldownUntil ?? null;
+
+      if (status === "disabled") {
+        for (const account of registry.accounts) {
+          if (account.id.startsWith(`${provider.id}/`)) {
+            account.available = false;
+            account.disabled_reason = managed.statusReason ?? "provider_auth_failed";
+            account.disabled_message = managed.statusMessage ?? "Invalid API key";
+          }
+        }
+      }
+    }
+
+    for (const bundle of managedBundles) {
+      for (const model of bundle.models) {
+        if (!model.enabled) {
+          continue;
+        }
+        const status = isRuntimeStatusValue(model.runtimeStatus) ? model.runtimeStatus : "normal";
+        const statusEntry = {
+          provider_key: bundle.provider.providerKey,
+          model_key: model.modelKey,
+          runtime_status: status as RuntimeStatus,
+          status_reason: model.statusReason,
+          status_message: model.statusMessage,
+          status_cooldown_until: model.statusCooldownUntil,
+          rate_limit_strike: model.rateLimitStrike ?? 0,
+          recent_error_count: model.recentErrorCount ?? 0
+        };
+        modelStatuses[`${bundle.provider.providerKey}|${model.modelKey}`] = statusEntry;
+        // Also index by projected config model id for routeEngine lookups.
+        const configModelId =
+          model.endpointId === bundle.endpoint.id || model.endpointId === null
+            ? model.modelKey
+            : `${bundle.provider.providerKey}/${bundle.endpoint.endpointKey}/${model.providerModelId}`;
+        modelStatuses[configModelId] = statusEntry;
+        modelStatuses[`${bundle.provider.providerKey}|${configModelId}`] = statusEntry;
+      }
+    }
+
+    const runtimeStatusSettings =
+      this.options.appSettingsRepository?.getRuntimeStatusSettings() ??
+      DEFAULT_RUNTIME_STATUS_SETTINGS;
+
     return {
       config,
       logger: this.options.logger,
@@ -170,6 +237,8 @@ export class RuntimeConfigProjector {
       providers: registry.providers,
       endpoints: registry.endpoints,
       accounts: registry.accounts,
+      modelStatuses,
+      runtimeStatusSettings,
       priceTable: new PriceTable(config),
       adapters: this.options.adapters,
       stickySessions: this.options.stickySessions,

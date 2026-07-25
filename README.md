@@ -44,6 +44,12 @@ cp config/config.example.yaml config/config.yaml
 
 `config/config.yaml` is ignored by Git.
 
+`server.body_limit_bytes` controls the maximum HTTP request body size accepted
+by the local gateway before routing. The default is `8388608` bytes (8 MiB).
+This is a byte-size guard for the JSON payload, not a model context-window
+percentage. Large tool payloads, metadata, images, or long serialized messages
+can hit this limit even when the client UI reports remaining model context.
+
 ## Run
 
 Set a local gateway token and any provider API keys referenced by your config:
@@ -210,6 +216,29 @@ The Catalog admin page can enrich a logical model from OpenRouter. OpenRouter is
 as a metadata reference for fields such as context window, pricing, tools support,
 input modalities, and `openrouter_slug`. OpenRouter does not decide or rewrite the
 local `logical_name`.
+
+### Runtime Status
+
+Managed providers and Catalog provider instances have an independent runtime
+status in addition to the manual enabled flag:
+
+- `normal`: eligible for routing
+- `disabled`: not eligible, commonly set when upstream returns `401` or `403`
+- `rate_limited`: temporarily or permanently not eligible for that provider model after `429`
+- `abnormal`: not eligible after repeated non-auth, non-rate-limit errors
+
+Runtime status is persisted in SQLite, so restarting AutoRouter does not clear
+auth failures, rate limits, or abnormal model state. Manual disable only changes
+the enabled flag. Manual enable also recovers the runtime status to `normal` and
+clears runtime counters for that provider or provider model.
+
+The Admin `Settings` page exposes the runtime policy under `运行态与熔断`:
+
+- consecutive other-error threshold, default `10`
+- `429` backoff ladder, default `30, 60, 120, 300, 600, 3600, 86400`
+- whether another `429` after the final ladder step becomes permanent
+- whether success clears counters
+- whether `401` or `403` disables the whole provider
 
 ### Explain Latest
 

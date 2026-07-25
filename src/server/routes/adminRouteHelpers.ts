@@ -286,6 +286,11 @@ export function buildSettingsSections(config: RouterConfig, snapshot: RuntimeSna
           value: formatConfigValue(config.server.request_timeout_ms)
         },
         {
+          key: "body_limit_bytes",
+          label: "Body Limit Bytes",
+          value: formatConfigValue(config.server.body_limit_bytes)
+        },
+        {
           key: "gateway_token_env",
           label: "Gateway Token Env",
           value: formatConfigValue(config.server.gateway_token_env)

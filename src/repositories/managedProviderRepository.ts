@@ -77,6 +77,7 @@ export interface ManagedEndpointUpdateInput {
 
 export interface ManagedModelCapabilitiesUpdateInput {
   modelKey: string;
+  enabled?: boolean;
   supportsStreaming?: boolean;
   supportsTools?: boolean;
   supportsJsonMode?: boolean;
@@ -94,6 +95,17 @@ type Db = BetterSQLite3Database<typeof schema>;
 type ModelPreservedFields = Pick<
   ManagedModelRow,
   | "enabled"
+  | "runtimeStatus"
+  | "statusReason"
+  | "statusMessage"
+  | "statusSource"
+  | "statusUpdatedAt"
+  | "statusCooldownUntil"
+  | "rateLimitStrike"
+  | "recentErrorCount"
+  | "lastErrorAt"
+  | "lastErrorCode"
+  | "lastErrorMessage"
   | "contextWindowOverride"
   | "supportsToolsOverride"
   | "supportsStreamingOverride"
@@ -200,6 +212,17 @@ export class ManagedProviderRepository {
       pricingJson: input.model.pricingJson ?? null,
       rawMetadataJson: input.model.rawMetadataJson ?? null,
       enabled: input.preserved?.enabled ?? true,
+      runtimeStatus: input.preserved?.runtimeStatus ?? "normal",
+      statusReason: input.preserved?.statusReason ?? null,
+      statusMessage: input.preserved?.statusMessage ?? null,
+      statusSource: input.preserved?.statusSource ?? "system",
+      statusUpdatedAt: input.preserved?.statusUpdatedAt ?? null,
+      statusCooldownUntil: input.preserved?.statusCooldownUntil ?? null,
+      rateLimitStrike: input.preserved?.rateLimitStrike ?? 0,
+      recentErrorCount: input.preserved?.recentErrorCount ?? 0,
+      lastErrorAt: input.preserved?.lastErrorAt ?? null,
+      lastErrorCode: input.preserved?.lastErrorCode ?? null,
+      lastErrorMessage: input.preserved?.lastErrorMessage ?? null,
       contextWindowOverride: input.preserved?.contextWindowOverride ?? null,
       supportsToolsOverride: input.preserved?.supportsToolsOverride ?? null,
       supportsStreamingOverride: input.preserved?.supportsStreamingOverride ?? null,
@@ -216,6 +239,17 @@ export class ManagedProviderRepository {
       model.modelKey,
       {
         enabled: model.enabled,
+        runtimeStatus: model.runtimeStatus,
+        statusReason: model.statusReason,
+        statusMessage: model.statusMessage,
+        statusSource: model.statusSource,
+        statusUpdatedAt: model.statusUpdatedAt,
+        statusCooldownUntil: model.statusCooldownUntil,
+        rateLimitStrike: model.rateLimitStrike,
+        recentErrorCount: model.recentErrorCount,
+        lastErrorAt: model.lastErrorAt,
+        lastErrorCode: model.lastErrorCode,
+        lastErrorMessage: model.lastErrorMessage,
         contextWindowOverride: model.contextWindowOverride,
         supportsToolsOverride: model.supportsToolsOverride,
         supportsStreamingOverride: model.supportsStreamingOverride,
@@ -616,7 +650,36 @@ export class ManagedProviderRepository {
   }
 
   public updateProviderEnabled(providerKey: string, enabled: boolean): ManagedProviderDetails | null {
-    return this.updateProvider(providerKey, { enabled });
+    const existing = this.getProviderDetails(providerKey);
+    if (!existing) {
+      return null;
+    }
+    const now = nowIso();
+    if (enabled) {
+      this.db.update(managedProvidersTable)
+        .set({
+          enabled: true,
+          runtimeStatus: "normal",
+          statusReason: null,
+          statusMessage: null,
+          statusSource: "manual",
+          statusUpdatedAt: now,
+          statusCooldownUntil: null,
+          recentErrorCount: 0,
+          updatedAt: now
+        })
+        .where(eq(managedProvidersTable.id, existing.provider.id))
+        .run();
+      return this.getProviderDetails(providerKey);
+    }
+    this.db.update(managedProvidersTable)
+      .set({
+        enabled: false,
+        updatedAt: now
+      })
+      .where(eq(managedProvidersTable.id, existing.provider.id))
+      .run();
+    return this.getProviderDetails(providerKey);
   }
 
   public clearProviderEndpoints(providerKey: string): boolean {
@@ -656,6 +719,17 @@ export class ManagedProviderRepository {
         websiteUrl:
           input.websiteUrl !== undefined ? input.websiteUrl : existing.provider.websiteUrl,
         enabled: input.enabled ?? existing.provider.enabled,
+        ...(input.enabled === true
+          ? {
+              runtimeStatus: "normal",
+              statusReason: null,
+              statusMessage: null,
+              statusSource: "manual",
+              statusUpdatedAt: now,
+              statusCooldownUntil: null,
+              recentErrorCount: 0
+            }
+          : {}),
         updatedAt: now
       })
       .where(eq(managedProvidersTable.providerKey, providerKey))
@@ -782,8 +856,25 @@ export class ManagedProviderRepository {
     }
 
     const now = nowIso();
+    const enableRecover =
+      input.enabled === true
+        ? {
+            enabled: true,
+            runtimeStatus: "normal" as const,
+            statusReason: null,
+            statusMessage: null,
+            statusSource: "manual",
+            statusUpdatedAt: now,
+            statusCooldownUntil: null,
+            rateLimitStrike: 0,
+            recentErrorCount: 0
+          }
+        : input.enabled === false
+          ? { enabled: false }
+          : {};
     this.db.update(managedModelsTable)
       .set({
+        ...enableRecover,
         supportsStreaming: input.supportsStreaming ?? model.supportsStreaming,
         supportsTools: input.supportsTools ?? model.supportsTools,
         supportsJsonMode: input.supportsJsonMode ?? model.supportsJsonMode,
@@ -792,6 +883,7 @@ export class ManagedProviderRepository {
         supportsJsonModeOverride: input.supportsJsonMode ?? model.supportsJsonModeOverride,
         manualOverrideJson: JSON.stringify({
           ...(model.manualOverrideJson ? JSON.parse(model.manualOverrideJson) as Record<string, unknown> : {}),
+          ...(input.enabled !== undefined ? { enabled: true } : {}),
           ...(input.supportsStreaming !== undefined ? { supports_streaming: true } : {}),
           ...(input.supportsTools !== undefined ? { supports_tools: true } : {}),
           ...(input.supportsJsonMode !== undefined ? { supports_json_mode: true } : {})
@@ -850,6 +942,183 @@ export class ManagedProviderRepository {
     }).run();
 
     return true;
+  }
+
+
+  public markProviderAuthFailed(providerKey: string, message: string): ManagedProviderRow | null {
+    const provider = this.db.select().from(managedProvidersTable)
+      .where(eq(managedProvidersTable.providerKey, providerKey))
+      .get();
+    if (!provider) {
+      return null;
+    }
+    const now = nowIso();
+    this.db.update(managedProvidersTable)
+      .set({
+        runtimeStatus: "disabled",
+        statusReason: "auth_failed",
+        statusMessage: message || "Invalid API key",
+        statusSource: "system",
+        statusUpdatedAt: now,
+        statusCooldownUntil: null,
+        updatedAt: now
+      })
+      .where(eq(managedProvidersTable.id, provider.id))
+      .run();
+    return this.db.select().from(managedProvidersTable)
+      .where(eq(managedProvidersTable.id, provider.id))
+      .get() ?? null;
+  }
+
+  public getModelByProviderAndKey(providerKey: string, modelKey: string): ManagedModelRow | null {
+    const provider = this.db.select().from(managedProvidersTable)
+      .where(eq(managedProvidersTable.providerKey, providerKey))
+      .get();
+    if (!provider) {
+      return null;
+    }
+    return this.db.select().from(managedModelsTable)
+      .where(and(
+        eq(managedModelsTable.providerId, provider.id),
+        eq(managedModelsTable.modelKey, modelKey)
+      ))
+      .get() ?? null;
+  }
+
+  public applyModelRateLimit(
+    providerKey: string,
+    modelKey: string,
+    input: {
+      strike: number;
+      permanent: boolean;
+      cooldownUntil: string | null;
+      message: string;
+    }
+  ): ManagedModelRow | null {
+    const model = this.getModelByProviderAndKey(providerKey, modelKey);
+    if (!model) {
+      return null;
+    }
+    const now = nowIso();
+    this.db.update(managedModelsTable)
+      .set({
+        runtimeStatus: "rate_limited",
+        statusReason: input.permanent ? "rate_limited_permanent" : "rate_limited",
+        statusMessage: input.message,
+        statusSource: "system",
+        statusUpdatedAt: now,
+        statusCooldownUntil: input.permanent ? null : input.cooldownUntil,
+        rateLimitStrike: input.strike,
+        lastErrorAt: now,
+        lastErrorCode: "provider_rate_limited",
+        lastErrorMessage: input.message,
+        updatedAt: now
+      })
+      .where(eq(managedModelsTable.id, model.id))
+      .run();
+    return this.db.select().from(managedModelsTable).where(eq(managedModelsTable.id, model.id)).get() ?? null;
+  }
+
+  public applyModelOtherError(
+    providerKey: string,
+    modelKey: string,
+    input: {
+      recentErrorCount: number;
+      abnormal: boolean;
+      code?: string;
+      message: string;
+    }
+  ): ManagedModelRow | null {
+    const model = this.getModelByProviderAndKey(providerKey, modelKey);
+    if (!model) {
+      return null;
+    }
+    const now = nowIso();
+    this.db.update(managedModelsTable)
+      .set({
+        runtimeStatus: input.abnormal ? "abnormal" : model.runtimeStatus === "abnormal" ? "abnormal" : "normal",
+        statusReason: input.abnormal ? "error_threshold" : model.statusReason,
+        statusMessage: input.abnormal ? input.message : model.statusMessage,
+        statusSource: input.abnormal ? "system" : model.statusSource,
+        statusUpdatedAt: input.abnormal ? now : model.statusUpdatedAt,
+        recentErrorCount: input.recentErrorCount,
+        lastErrorAt: now,
+        lastErrorCode: input.code ?? "provider_error",
+        lastErrorMessage: input.message,
+        updatedAt: now
+      })
+      .where(eq(managedModelsTable.id, model.id))
+      .run();
+    return this.db.select().from(managedModelsTable).where(eq(managedModelsTable.id, model.id)).get() ?? null;
+  }
+
+  public markModelSuccess(providerKey: string, modelKey: string, clearCounters: boolean): ManagedModelRow | null {
+    const model = this.getModelByProviderAndKey(providerKey, modelKey);
+    if (!model) {
+      return null;
+    }
+    // permanent / abnormal / disabled require manual enable path; do not auto-clear those
+    if (
+      model.runtimeStatus === "abnormal" ||
+      model.runtimeStatus === "disabled" ||
+      model.statusReason === "rate_limited_permanent"
+    ) {
+      return model;
+    }
+    const now = nowIso();
+    this.db.update(managedModelsTable)
+      .set({
+        runtimeStatus: "normal",
+        statusReason: null,
+        statusMessage: null,
+        statusSource: "system",
+        statusUpdatedAt: now,
+        statusCooldownUntil: null,
+        rateLimitStrike: clearCounters ? 0 : model.rateLimitStrike,
+        recentErrorCount: clearCounters ? 0 : model.recentErrorCount,
+        updatedAt: now
+      })
+      .where(eq(managedModelsTable.id, model.id))
+      .run();
+    return this.db.select().from(managedModelsTable).where(eq(managedModelsTable.id, model.id)).get() ?? null;
+  }
+
+  public setModelEnabled(
+    providerKey: string,
+    modelKey: string,
+    enabled: boolean
+  ): ManagedModelRow | null {
+    const model = this.getModelByProviderAndKey(providerKey, modelKey);
+    if (!model) {
+      return null;
+    }
+    const now = nowIso();
+    if (enabled) {
+      this.db.update(managedModelsTable)
+        .set({
+          enabled: true,
+          runtimeStatus: "normal",
+          statusReason: null,
+          statusMessage: null,
+          statusSource: "manual",
+          statusUpdatedAt: now,
+          statusCooldownUntil: null,
+          rateLimitStrike: 0,
+          recentErrorCount: 0,
+          updatedAt: now
+        })
+        .where(eq(managedModelsTable.id, model.id))
+        .run();
+    } else {
+      this.db.update(managedModelsTable)
+        .set({
+          enabled: false,
+          updatedAt: now
+        })
+        .where(eq(managedModelsTable.id, model.id))
+        .run();
+    }
+    return this.db.select().from(managedModelsTable).where(eq(managedModelsTable.id, model.id)).get() ?? null;
   }
 
   public static toApiKeyHint(apiKey: string): string {

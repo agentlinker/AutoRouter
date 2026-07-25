@@ -64,7 +64,20 @@ export const accountSchema = z
   })
   .strict();
 
-export const priceEntrySchema = z
+export const priceEntrySchema = z.preprocess((value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+
+  const record = value as Record<string, unknown>;
+  return {
+    input_per_1m: record.input_per_1m ?? record.input,
+    output_per_1m: record.output_per_1m ?? record.output,
+    cached_input_per_1m: record.cached_input_per_1m ?? record.cacheRead,
+    source: record.source,
+    confidence: record.confidence
+  };
+}, z
   .object({
     input_per_1m: z.number().nonnegative().optional(),
     output_per_1m: z.number().nonnegative().optional(),
@@ -72,7 +85,7 @@ export const priceEntrySchema = z
     source: z.enum(["official", "openrouter", "manual", "estimated"]).default("manual"),
     confidence: z.enum(["low", "medium", "high"]).default("low")
   })
-  .strict();
+  .strict());
 
 export const modelCapabilitiesSchema = z
   .object({
@@ -157,11 +170,15 @@ export const traceSchema = z
   })
   .strict();
 
+// body_limit_bytes default: ~2M tokens * ~4 bytes/token ≈ 8 MiB
+export const DEFAULT_SERVER_BODY_LIMIT_BYTES = 8 * 1024 * 1024;
+
 export const serverSchema = z
   .object({
     host: z.string().default("127.0.0.1"),
     port: z.number().int().positive().default(8811),
     request_timeout_ms: z.number().int().positive().default(120000),
+    body_limit_bytes: z.number().int().positive().default(DEFAULT_SERVER_BODY_LIMIT_BYTES),
     gateway_token_env: z.string().default("AUTO_ROUTER_TOKEN"),
     admin_token_env: z.string().default("AUTO_ROUTER_ADMIN_TOKEN")
   })
