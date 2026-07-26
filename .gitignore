@@ -4,6 +4,7 @@ dist/
 *.swp
 plan/
 AGENTS.md
+CLAUDE.md
 openspec/
 config/config.yaml
 data/

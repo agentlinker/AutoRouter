@@ -20,6 +20,10 @@ export interface CatalogModelInstance {
   provider_runtime_status?: string;
   provider_status_reason?: string | null;
   provider_status_message?: string | null;
+  provider_kind?: string;
+  model_availability_scope?: string;
+  available_accounts?: string[];
+  available_account_count?: number;
   context_window: number | null;
   supports_streaming: boolean;
   supports_tools: boolean;

@@ -115,25 +115,32 @@ describe("RuntimeStatusService", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("persists provider auth failures and recovers when provider is enabled", () => {
+  it("persists account auth failures without disabling the whole provider", () => {
     const harness = createHarness(tempDir);
 
     harness.service.recordFailure({
       snapshot: harness.runtimeManager.getSnapshot(),
       providerKey: "demo",
       modelKey: "demo-model",
+      accountId: "demo/openai/default",
       error: new HttpError(401, "provider_auth_failed", "Invalid API key")
     });
 
     let details = harness.managedProviders.getProviderDetails("demo");
-    expect(details?.provider.runtimeStatus).toBe("disabled");
-    expect(details?.provider.statusMessage).toBe("Invalid API key");
-    expect(harness.runtimeManager.getSnapshot().providers[0].runtime_status).toBe("disabled");
-
-    harness.managedProviders.updateProvider("demo", { enabled: true });
-    details = harness.managedProviders.getProviderDetails("demo");
     expect(details?.provider.runtimeStatus).toBe("normal");
-    expect(details?.provider.statusMessage).toBeNull();
+    const account = details?.accounts.find((item) => item.accountKey === "default");
+    expect(account?.runtimeStatus).toBe("disabled");
+    expect(account?.statusMessage).toBe("Invalid API key");
+
+    const runtimeAccount = harness.runtimeManager
+      .getSnapshot()
+      .accounts.find((item) => item.id.endsWith("/default"));
+    expect(runtimeAccount?.available).toBe(false);
+
+    harness.managedProviders.setAccountEnabled("demo", "default", true);
+    details = harness.managedProviders.getProviderDetails("demo");
+    expect(details?.accounts[0]?.runtimeStatus).toBe("normal");
+    expect(details?.accounts[0]?.statusMessage).toBeNull();
   });
 
   it("persists model rate limits with backoff and recovers when model is enabled", () => {

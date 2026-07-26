@@ -218,6 +218,14 @@ export class ModelCatalog {
           continue;
         }
 
+        if (
+          account.allowed_models &&
+          account.allowed_models.length > 0 &&
+          !account.allowed_models.includes(model.id)
+        ) {
+          continue;
+        }
+
         candidates.push({
           routeId,
           account: accountId,

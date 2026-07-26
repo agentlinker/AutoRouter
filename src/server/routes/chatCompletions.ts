@@ -241,7 +241,8 @@ export async function registerChatCompletionsRoute(
           providerKey: candidate.provider.id,
           modelKey:
             state.modelStatuses?.[candidate.modelId]?.model_key ??
-            candidate.modelId
+            candidate.modelId,
+          accountId: candidate.account.id
         });
         break;
       } catch (error) {
@@ -256,6 +257,7 @@ export async function registerChatCompletionsRoute(
           modelKey:
             state.modelStatuses?.[candidate.modelId]?.model_key ??
             candidate.modelId,
+          accountId: candidate.account.id,
           error
         });
 

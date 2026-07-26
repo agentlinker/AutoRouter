@@ -8,6 +8,18 @@ import {
 } from "./runtimeStatus.js";
 import { PROVIDER_AUTH_FAILED_CODE } from "../utils/providerErrors.js";
 
+export function parseAccountKeyFromAccountId(accountId: string | undefined | null): string {
+  if (!accountId) {
+    return "default";
+  }
+  const parts = accountId.split("/").filter(Boolean);
+  if (parts.length >= 3) {
+    return parts[parts.length - 1] ?? "default";
+  }
+  // legacy: provider/endpoint
+  return "default";
+}
+
 export class RuntimeStatusService {
   public constructor(
     private readonly managedProviders: ManagedProviderRepository,
@@ -22,8 +34,18 @@ export class RuntimeStatusService {
     snapshot: RuntimeSnapshot;
     providerKey: string;
     modelKey: string;
+    accountKey?: string;
+    accountId?: string;
   }): void {
     const settings = this.getSettings();
+    const accountKey =
+      input.accountKey ?? parseAccountKeyFromAccountId(input.accountId);
+    this.managedProviders.markAccountSuccess(
+      input.providerKey,
+      accountKey,
+      settings.clear_counters_on_success
+    );
+
     const row = this.managedProviders.markModelSuccess(
       input.providerKey,
       input.modelKey,
@@ -46,9 +68,13 @@ export class RuntimeStatusService {
     snapshot: RuntimeSnapshot;
     providerKey: string;
     modelKey: string;
+    accountKey?: string;
+    accountId?: string;
     error: unknown;
   }): void {
     const settings = this.getSettings();
+    const accountKey =
+      input.accountKey ?? parseAccountKeyFromAccountId(input.accountId);
     const failureClass = classifyProviderFailure(input.error);
     const message =
       input.error instanceof Error ? input.error.message : "provider_request_failed";
@@ -60,22 +86,19 @@ export class RuntimeStatusService {
         ? input.error.code
         : undefined;
 
+    // 401/403 默认只打 account，不再默认禁用整个 provider。
     if (failureClass === "auth" && settings.auth_disables_provider) {
-      const provider = this.managedProviders.markProviderAuthFailed(input.providerKey, message);
-      if (provider) {
-        this.patchProviderStatus(input.snapshot, input.providerKey, {
-          runtime_status: "disabled",
-          status_reason: provider.statusReason,
-          status_message: provider.statusMessage,
-          status_cooldown_until: provider.statusCooldownUntil
+      const account = this.managedProviders.markAccountAuthFailed(
+        input.providerKey,
+        accountKey,
+        message
+      );
+      if (account) {
+        this.patchAccountStatus(input.snapshot, input.providerKey, accountKey, {
+          available: false,
+          disabled_reason: PROVIDER_AUTH_FAILED_CODE,
+          disabled_message: message || "Invalid API key"
         });
-        for (const account of input.snapshot.accounts) {
-          if (account.id.startsWith(`${input.providerKey}/`)) {
-            account.available = false;
-            account.disabled_reason = PROVIDER_AUTH_FAILED_CODE;
-            account.disabled_message = message || "Invalid API key";
-          }
-        }
       }
       return;
     }
@@ -136,24 +159,24 @@ export class RuntimeStatusService {
     }
   }
 
-  private patchProviderStatus(
+  private patchAccountStatus(
     snapshot: RuntimeSnapshot,
     providerKey: string,
+    accountKey: string,
     status: {
-      runtime_status: "normal" | "disabled" | "rate_limited" | "abnormal";
-      status_reason?: string | null;
-      status_message?: string | null;
-      status_cooldown_until?: string | null;
+      available: boolean;
+      disabled_reason?: string;
+      disabled_message?: string;
     }
   ) {
-    const provider = snapshot.providers.find((item) => item.id === providerKey);
-    if (!provider) {
-      return;
+    const suffix = `/${accountKey}`;
+    for (const account of snapshot.accounts) {
+      if (account.id.startsWith(`${providerKey}/`) && account.id.endsWith(suffix)) {
+        account.available = status.available;
+        account.disabled_reason = status.disabled_reason;
+        account.disabled_message = status.disabled_message;
+      }
     }
-    provider.runtime_status = status.runtime_status;
-    provider.status_reason = status.status_reason ?? undefined;
-    provider.status_message = status.status_message ?? undefined;
-    provider.status_cooldown_until = status.status_cooldown_until ?? null;
   }
 
   private patchModelStatus(

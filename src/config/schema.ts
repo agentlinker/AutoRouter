@@ -60,7 +60,9 @@ export const accountSchema = z
     account_type: accountTypeSchema,
     credential_env: z.string().min(1).optional(),
     enabled: z.boolean().default(true),
-    quota: quotaSchema.optional()
+    quota: quotaSchema.optional(),
+    // per_account scope: only these config model ids may pair with this account
+    allowed_models: z.array(z.string().min(1)).optional()
   })
   .strict();
 

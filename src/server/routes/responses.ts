@@ -645,7 +645,8 @@ export async function registerResponsesRoute(
           providerKey: candidate.provider.id,
           modelKey:
             state.modelStatuses?.[candidate.modelId]?.model_key ??
-            candidate.modelId
+            candidate.modelId,
+          accountId: candidate.account.id
         });
         break;
       } catch (error) {
@@ -660,6 +661,7 @@ export async function registerResponsesRoute(
           modelKey:
             state.modelStatuses?.[candidate.modelId]?.model_key ??
             candidate.modelId,
+          accountId: candidate.account.id,
           error
         });
 

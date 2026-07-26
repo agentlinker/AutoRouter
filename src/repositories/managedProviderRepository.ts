@@ -1,8 +1,9 @@
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 
 import {
   logicalModelsTable,
+  managedAccountModelsTable,
   managedModelsTable,
   managedProviderCredentialsTable,
   managedProviderEndpointsTable,
@@ -17,16 +18,48 @@ import {
 } from "../db/schema.js";
 import { displayNameFromLogicalName, mergeAliases, toLogicalModelName } from "../catalog/logicalModelNames.js";
 
+export type ProviderKind = "official" | "relay" | "custom";
+export type ModelAvailabilityScope = "shared_by_provider" | "per_account";
+
 export interface ManagedProviderInput {
   providerKey: string;
   displayName: string;
   adapterType: "openai_compatible" | "openrouter" | "anthropic";
   baseUrl: string;
   websiteUrl?: string | null;
+  providerKind?: ProviderKind;
+  modelAvailabilityScope?: ModelAvailabilityScope;
   enabled?: boolean;
   trustLevel?: "low" | "medium" | "high";
   privacyLevel?: "public_only" | "normal" | "private";
   usageTrust?: "low" | "medium" | "high";
+}
+
+export interface ManagedAccountInput {
+  accountKey: string;
+  endpointKey?: string | null;
+  encryptedApiKey: string;
+  apiKeyHint?: string | null;
+  enabled?: boolean;
+  expiresAt?: string | null;
+  quotaJson?: string | null;
+}
+
+export interface ManagedAccountUpdateInput {
+  endpointKey?: string | null;
+  encryptedApiKey?: string;
+  apiKeyHint?: string | null;
+  enabled?: boolean;
+  expiresAt?: string | null;
+  quotaJson?: string | null;
+}
+
+export interface AccountQuota {
+  monthly_usd_limit?: number;
+  remaining_usd?: number;
+  remaining_requests?: number;
+  reset_at?: string;
+  source?: "manual" | "discovered" | "unknown";
 }
 
 export interface ManagedEndpointInput {
@@ -62,6 +95,8 @@ export interface ManagedProviderUpdateInput {
   protocol?: "openai" | "anthropic";
   baseUrl?: string;
   websiteUrl?: string | null;
+  providerKind?: ProviderKind;
+  modelAvailabilityScope?: ModelAvailabilityScope;
   enabled?: boolean;
 }
 
@@ -85,7 +120,9 @@ export interface ManagedModelCapabilitiesUpdateInput {
 
 export interface ManagedProviderDetails {
   provider: ManagedProviderRow;
+  /** @deprecated use accounts; first/default account for backward compatibility */
   credential: ManagedCredentialRow | null;
+  accounts: ManagedCredentialRow[];
   endpoints: ManagedProviderEndpointRow[];
   models: ManagedModelRow[];
   latestSync: ModelSyncRunRow | null;
@@ -121,6 +158,68 @@ function nowIso(): string {
 function keyHintFromApiKey(apiKey: string): string {
   const suffix = apiKey.slice(-4);
   return suffix ? `...${suffix}` : "hidden";
+}
+
+function defaultProviderKind(kind?: ProviderKind): ProviderKind {
+  return kind ?? "custom";
+}
+
+function defaultModelAvailabilityScope(
+  scope: ModelAvailabilityScope | undefined,
+  kind: ProviderKind
+): ModelAvailabilityScope {
+  if (scope) {
+    return scope;
+  }
+  return kind === "official" ? "shared_by_provider" : "per_account";
+}
+
+export function parseAccountQuota(quotaJson: string | null | undefined): AccountQuota | undefined {
+  if (!quotaJson) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(quotaJson) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return undefined;
+    }
+    const record = parsed as Record<string, unknown>;
+    const quota: AccountQuota = {};
+    if (typeof record.monthly_usd_limit === "number") {
+      quota.monthly_usd_limit = record.monthly_usd_limit;
+    }
+    if (typeof record.remaining_usd === "number") {
+      quota.remaining_usd = record.remaining_usd;
+    }
+    if (typeof record.remaining_requests === "number") {
+      quota.remaining_requests = record.remaining_requests;
+    }
+    if (typeof record.reset_at === "string") {
+      quota.reset_at = record.reset_at;
+    }
+    if (
+      record.source === "manual" ||
+      record.source === "discovered" ||
+      record.source === "unknown"
+    ) {
+      quota.source = record.source;
+    }
+    return Object.keys(quota).length > 0 ? quota : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function normalizeBaseUrlForMerge(baseUrl: string): string {
+  try {
+    const url = new URL(baseUrl.trim());
+    url.hash = "";
+    url.search = "";
+    const pathname = url.pathname.replace(/\/+$/, "");
+    return `${url.protocol}//${url.host.toLowerCase()}${pathname}`;
+  } catch {
+    return baseUrl.trim().replace(/\/+$/, "").toLowerCase();
+  }
 }
 
 export class ManagedProviderRepository {
@@ -260,6 +359,113 @@ export class ManagedProviderRepository {
     ]));
   }
 
+
+  private isPerAccountScope(provider: Pick<ManagedProviderRow, "modelAvailabilityScope">): boolean {
+    return provider.modelAvailabilityScope === "per_account";
+  }
+
+  private listAccountModelIds(accountId: number): Set<number> {
+    const rows = this.db.select().from(managedAccountModelsTable)
+      .where(and(
+        eq(managedAccountModelsTable.accountId, accountId),
+        eq(managedAccountModelsTable.enabled, true)
+      ))
+      .all();
+    return new Set(rows.map((row) => row.managedModelId));
+  }
+
+  private replaceAccountModelLinks(
+    db: Db,
+    accountId: number,
+    modelIds: number[],
+    now: string
+  ) {
+    // Keep links for models not in this replacement set only if caller passes full set.
+    db.delete(managedAccountModelsTable)
+      .where(eq(managedAccountModelsTable.accountId, accountId))
+      .run();
+
+    if (modelIds.length === 0) {
+      return;
+    }
+
+    db.insert(managedAccountModelsTable).values(
+      modelIds.map((managedModelId) => ({
+        accountId,
+        managedModelId,
+        enabled: true,
+        discoveredAt: now,
+        lastSeenAt: now
+      }))
+    ).run();
+  }
+
+  private upsertAccountModelLinks(
+    db: Db,
+    accountId: number,
+    modelIds: number[],
+    now: string,
+    options?: { replaceEndpointModelIds?: number[] }
+  ) {
+    if (options?.replaceEndpointModelIds) {
+      for (const managedModelId of options.replaceEndpointModelIds) {
+        db.delete(managedAccountModelsTable)
+          .where(and(
+            eq(managedAccountModelsTable.accountId, accountId),
+            eq(managedAccountModelsTable.managedModelId, managedModelId)
+          ))
+          .run();
+      }
+    }
+
+    for (const managedModelId of modelIds) {
+      const existing = db.select().from(managedAccountModelsTable)
+        .where(and(
+          eq(managedAccountModelsTable.accountId, accountId),
+          eq(managedAccountModelsTable.managedModelId, managedModelId)
+        ))
+        .get();
+      if (existing) {
+        db.update(managedAccountModelsTable)
+          .set({
+            enabled: true,
+            lastSeenAt: now
+          })
+          .where(eq(managedAccountModelsTable.id, existing.id))
+          .run();
+      } else {
+        db.insert(managedAccountModelsTable).values({
+          accountId,
+          managedModelId,
+          enabled: true,
+          discoveredAt: now,
+          lastSeenAt: now
+        }).run();
+      }
+    }
+  }
+
+  public listAvailableAccountKeysForModel(
+    providerId: number,
+    managedModelId: number
+  ): string[] {
+    const rows = this.db.select().from(managedAccountModelsTable)
+      .where(and(
+        eq(managedAccountModelsTable.managedModelId, managedModelId),
+        eq(managedAccountModelsTable.enabled, true)
+      ))
+      .all();
+    if (rows.length === 0) {
+      return [];
+    }
+    const accountIds = new Set(rows.map((row) => row.accountId));
+    const accounts = this.db.select().from(managedProviderCredentialsTable)
+      .where(eq(managedProviderCredentialsTable.providerId, providerId))
+      .all()
+      .filter((account) => accountIds.has(account.id) && account.enabled !== false);
+    return accounts.map((account) => account.accountKey);
+  }
+
   public listProviderSummaries(): ManagedProviderDetails[] {
     const providers = this.db.select().from(managedProvidersTable).all();
     return providers.map((provider) => this.getProviderDetails(provider.providerKey)).filter(
@@ -276,9 +482,20 @@ export class ManagedProviderRepository {
       return null;
     }
 
-    const credential = this.db.select().from(managedProviderCredentialsTable)
+    const accounts = this.db.select().from(managedProviderCredentialsTable)
       .where(eq(managedProviderCredentialsTable.providerId, provider.id))
-      .get() ?? null;
+      .all()
+      .sort((left, right) => {
+        if (left.accountKey === "default" && right.accountKey !== "default") {
+          return -1;
+        }
+        if (right.accountKey === "default" && left.accountKey !== "default") {
+          return 1;
+        }
+        return left.accountKey.localeCompare(right.accountKey);
+      });
+
+    const credential = accounts[0] ?? null;
 
     const endpoints = this.db.select().from(managedProviderEndpointsTable)
       .where(eq(managedProviderEndpointsTable.providerId, provider.id))
@@ -294,7 +511,58 @@ export class ManagedProviderRepository {
       .limit(1)
       .get() ?? null;
 
-    return { provider, credential, endpoints, models, latestSync };
+    return { provider, credential, accounts, endpoints, models, latestSync };
+  }
+
+  public getAccount(providerKey: string, accountKey: string): ManagedCredentialRow | null {
+    const provider = this.db.select().from(managedProvidersTable)
+      .where(eq(managedProvidersTable.providerKey, providerKey))
+      .get();
+    if (!provider) {
+      return null;
+    }
+    return this.db.select().from(managedProviderCredentialsTable)
+      .where(and(
+        eq(managedProviderCredentialsTable.providerId, provider.id),
+        eq(managedProviderCredentialsTable.accountKey, accountKey)
+      ))
+      .get() ?? null;
+  }
+
+  public listAccounts(providerKey: string): ManagedCredentialRow[] {
+    return this.getProviderDetails(providerKey)?.accounts ?? [];
+  }
+
+  public findProvidersByEndpoint(input: {
+    protocol: "openai" | "anthropic";
+    baseUrl: string;
+  }): Array<{
+    provider: ManagedProviderRow;
+    endpoint: ManagedProviderEndpointRow;
+  }> {
+    const normalized = normalizeBaseUrlForMerge(input.baseUrl);
+    const endpoints = this.db.select().from(managedProviderEndpointsTable).all();
+    const matches: Array<{
+      provider: ManagedProviderRow;
+      endpoint: ManagedProviderEndpointRow;
+    }> = [];
+
+    for (const endpoint of endpoints) {
+      if (endpoint.protocol !== input.protocol) {
+        continue;
+      }
+      if (normalizeBaseUrlForMerge(endpoint.baseUrl) !== normalized) {
+        continue;
+      }
+      const provider = this.db.select().from(managedProvidersTable)
+        .where(eq(managedProvidersTable.id, endpoint.providerId))
+        .get();
+      if (provider) {
+        matches.push({ provider, endpoint });
+      }
+    }
+
+    return matches;
   }
 
   public createProviderWithModels(input: {
@@ -340,6 +608,15 @@ export class ManagedProviderRepository {
     const now = nowIso();
     const representativeEndpoint = input.endpointBundles[0]?.endpoint;
 
+    const providerKind = defaultProviderKind(
+      input.provider.providerKind ?? (existing.provider.providerKind as ProviderKind | undefined)
+    );
+    const modelAvailabilityScope = defaultModelAvailabilityScope(
+      input.provider.modelAvailabilityScope ??
+        (existing.provider.modelAvailabilityScope as ModelAvailabilityScope | undefined),
+      providerKind
+    );
+
     return this.db.transaction((tx) => {
       tx.update(managedProvidersTable)
         .set({
@@ -347,6 +624,8 @@ export class ManagedProviderRepository {
           adapterType: representativeEndpoint?.adapterType ?? input.provider.adapterType,
           baseUrl: representativeEndpoint?.baseUrl ?? input.provider.baseUrl,
           websiteUrl: input.provider.websiteUrl ?? null,
+          providerKind,
+          modelAvailabilityScope,
           enabled: input.provider.enabled ?? existing.provider.enabled,
           trustLevel: input.provider.trustLevel ?? existing.provider.trustLevel,
           privacyLevel: input.provider.privacyLevel ?? existing.provider.privacyLevel,
@@ -356,30 +635,11 @@ export class ManagedProviderRepository {
         .where(eq(managedProvidersTable.providerKey, input.providerKey))
         .run();
 
-      if (input.encryptedApiKey) {
-        const currentCredential = tx.select().from(managedProviderCredentialsTable)
-          .where(eq(managedProviderCredentialsTable.providerId, existing.provider.id))
-          .get();
-
-        if (currentCredential) {
-          tx.update(managedProviderCredentialsTable)
-            .set({
-              apiKeyEncrypted: input.encryptedApiKey,
-              keyHint: input.apiKeyHint ?? null,
-              updatedAt: now
-            })
-            .where(eq(managedProviderCredentialsTable.providerId, existing.provider.id))
-            .run();
-        } else {
-          tx.insert(managedProviderCredentialsTable).values({
-            providerId: existing.provider.id,
-            apiKeyEncrypted: input.encryptedApiKey,
-            keyHint: input.apiKeyHint ?? null,
-            createdAt: now,
-            updatedAt: now
-          }).run();
-        }
-      }
+      // Endpoints are replaced; temporarily clear endpoint bindings on accounts.
+      tx.update(managedProviderCredentialsTable)
+        .set({ endpointId: null, updatedAt: now })
+        .where(eq(managedProviderCredentialsTable.providerId, existing.provider.id))
+        .run();
 
       tx.delete(managedModelsTable)
         .where(eq(managedModelsTable.providerId, existing.provider.id))
@@ -389,6 +649,7 @@ export class ManagedProviderRepository {
         .run();
 
       let discoveredCount = 0;
+      let firstEndpointId: number | null = null;
 
       for (const bundle of input.endpointBundles) {
         const endpointInsert = tx.insert(managedProviderEndpointsTable)
@@ -407,6 +668,10 @@ export class ManagedProviderRepository {
           })
           .returning()
           .get();
+
+        if (firstEndpointId === null) {
+          firstEndpointId = endpointInsert.id;
+        }
 
         discoveredCount += bundle.models.length;
 
@@ -426,6 +691,43 @@ export class ManagedProviderRepository {
         }
       }
 
+      if (input.encryptedApiKey) {
+        const currentCredential = tx.select().from(managedProviderCredentialsTable)
+          .where(and(
+            eq(managedProviderCredentialsTable.providerId, existing.provider.id),
+            eq(managedProviderCredentialsTable.accountKey, "default")
+          ))
+          .get() ?? tx.select().from(managedProviderCredentialsTable)
+          .where(eq(managedProviderCredentialsTable.providerId, existing.provider.id))
+          .get();
+
+        if (currentCredential) {
+          tx.update(managedProviderCredentialsTable)
+            .set({
+              apiKeyEncrypted: input.encryptedApiKey,
+              keyHint: input.apiKeyHint ?? null,
+              // preserve unbound accounts so dual-protocol endpoints keep working
+              updatedAt: now
+            })
+            .where(eq(managedProviderCredentialsTable.id, currentCredential.id))
+            .run();
+        } else {
+          tx.insert(managedProviderCredentialsTable).values({
+            providerId: existing.provider.id,
+            accountKey: "default",
+            endpointId: null,
+            enabled: true,
+            runtimeStatus: "normal",
+            statusSource: "system",
+            recentErrorCount: 0,
+            apiKeyEncrypted: input.encryptedApiKey,
+            keyHint: input.apiKeyHint ?? null,
+            createdAt: now,
+            updatedAt: now
+          }).run();
+        }
+      }
+
       tx.insert(modelSyncRunsTable).values({
         providerId: existing.provider.id,
         status: "success",
@@ -434,6 +736,24 @@ export class ManagedProviderRepository {
         finishedAt: now,
         discoveredCount
       }).run();
+
+      if (modelAvailabilityScope === "per_account") {
+        const modelIds = tx.select().from(managedModelsTable)
+          .where(eq(managedModelsTable.providerId, existing.provider.id))
+          .all()
+          .map((model) => model.id);
+        const accounts = tx.select().from(managedProviderCredentialsTable)
+          .where(eq(managedProviderCredentialsTable.providerId, existing.provider.id))
+          .all();
+        for (const account of accounts) {
+          this.replaceAccountModelLinks(
+            tx as unknown as Db,
+            account.id,
+            modelIds,
+            now
+          );
+        }
+      }
 
       return this.getProviderDetails(input.providerKey);
     });
@@ -447,6 +767,12 @@ export class ManagedProviderRepository {
   }): ManagedProviderDetails {
     const now = nowIso();
 
+    const providerKind = defaultProviderKind(input.provider.providerKind);
+    const modelAvailabilityScope = defaultModelAvailabilityScope(
+      input.provider.modelAvailabilityScope,
+      providerKind
+    );
+
     return this.db.transaction((tx) => {
       const providerInsert = tx.insert(managedProvidersTable)
         .values({
@@ -455,6 +781,8 @@ export class ManagedProviderRepository {
           adapterType: input.provider.adapterType,
           baseUrl: input.provider.baseUrl,
           websiteUrl: input.provider.websiteUrl ?? null,
+          providerKind,
+          modelAvailabilityScope,
           enabled: input.provider.enabled ?? true,
           trustLevel: input.provider.trustLevel ?? "low",
           privacyLevel: input.provider.privacyLevel ?? "public_only",
@@ -465,15 +793,8 @@ export class ManagedProviderRepository {
         .returning()
         .get();
 
-      tx.insert(managedProviderCredentialsTable).values({
-        providerId: providerInsert.id,
-        apiKeyEncrypted: input.encryptedApiKey,
-        keyHint: input.apiKeyHint ?? null,
-        createdAt: now,
-        updatedAt: now
-        }).run();
-
       let discoveredCount = 0;
+      let firstEndpointId: number | null = null;
 
       for (const bundle of input.endpointBundles) {
         const endpointInsert = tx.insert(managedProviderEndpointsTable)
@@ -493,6 +814,10 @@ export class ManagedProviderRepository {
           .returning()
           .get();
 
+        if (firstEndpointId === null) {
+          firstEndpointId = endpointInsert.id;
+        }
+
         discoveredCount += bundle.models.length;
 
         if (bundle.models.length > 0) {
@@ -510,6 +835,34 @@ export class ManagedProviderRepository {
         }
       }
 
+      const defaultAccount = tx.insert(managedProviderCredentialsTable).values({
+        providerId: providerInsert.id,
+        accountKey: "default",
+        // null endpoint means this key can be used on all provider endpoints
+        endpointId: null,
+        enabled: true,
+        runtimeStatus: "normal",
+        statusSource: "system",
+        recentErrorCount: 0,
+        apiKeyEncrypted: input.encryptedApiKey,
+        keyHint: input.apiKeyHint ?? null,
+        createdAt: now,
+        updatedAt: now
+      }).returning().get();
+
+      if (modelAvailabilityScope === "per_account") {
+        const modelIds = tx.select().from(managedModelsTable)
+          .where(eq(managedModelsTable.providerId, providerInsert.id))
+          .all()
+          .map((model) => model.id);
+        this.replaceAccountModelLinks(
+          tx as unknown as Db,
+          defaultAccount.id,
+          modelIds,
+          now
+        );
+      }
+
       tx.insert(modelSyncRunsTable).values({
         providerId: providerInsert.id,
         status: "success",
@@ -525,6 +878,7 @@ export class ManagedProviderRepository {
 
   public syncProviderModels(providerKey: string, input: {
     endpointKey?: string;
+    accountKey?: string;
     models: ManagedDiscoveredModelInput[];
     errorMessage?: string | null;
     status: "success" | "error";
@@ -542,7 +896,10 @@ export class ManagedProviderRepository {
       return null;
     }
 
+    const accountKey = input.accountKey ?? "default";
+    const account = this.getAccount(providerKey, accountKey);
     const now = nowIso();
+    const perAccount = this.isPerAccountScope(provider);
 
     this.db.transaction((tx) => {
       tx.insert(modelSyncRunsTable).values({
@@ -566,26 +923,76 @@ export class ManagedProviderRepository {
         .all();
       const preservedByModelKey = this.preservedFieldsByModelKey(existingEndpointModels);
 
-      tx.delete(managedModelsTable)
-        .where(and(
-          eq(managedModelsTable.providerId, provider.id),
-          eq(managedModelsTable.endpointId, endpoint.id)
-        ))
-        .run();
+      if (perAccount) {
+        // Upsert models so other accounts keep their links.
+        const touchedIds: number[] = [];
+        for (const model of input.models) {
+          const existing = existingEndpointModels.find(
+            (item) => item.modelKey === model.modelKey || item.providerModelId === model.providerModelId
+          );
+          if (existing) {
+            tx.update(managedModelsTable)
+              .set({
+                modelKey: model.modelKey,
+                providerModelId: model.providerModelId,
+                modelName: model.modelName,
+                contextWindow: model.contextWindow,
+                supportsStreaming: model.supportsStreaming,
+                supportsTools: model.supportsTools,
+                supportsJsonMode: model.supportsJsonMode,
+                pricingJson: model.pricingJson ?? null,
+                rawMetadataJson: model.rawMetadataJson ?? null,
+                updatedAt: now
+              })
+              .where(eq(managedModelsTable.id, existing.id))
+              .run();
+            touchedIds.push(existing.id);
+          } else {
+            const inserted = tx.insert(managedModelsTable).values(
+              this.buildManagedModelInsert({
+                db: tx as unknown as Db,
+                providerId: provider.id,
+                endpointId: endpoint.id,
+                model,
+                now,
+                preserved: preservedByModelKey.get(model.modelKey)
+              })
+            ).returning().get();
+            touchedIds.push(inserted.id);
+          }
+        }
 
-      if (input.models.length > 0) {
-        tx.insert(managedModelsTable).values(
-          input.models.map((model) =>
-            this.buildManagedModelInsert({
-              db: tx as unknown as Db,
-              providerId: provider.id,
-              endpointId: endpoint.id,
-              model,
-              now,
-              preserved: preservedByModelKey.get(model.modelKey)
-            })
-          )
-        ).run();
+        if (account) {
+          this.upsertAccountModelLinks(
+            tx as unknown as Db,
+            account.id,
+            touchedIds,
+            now,
+            { replaceEndpointModelIds: existingEndpointModels.map((model) => model.id) }
+          );
+        }
+      } else {
+        tx.delete(managedModelsTable)
+          .where(and(
+            eq(managedModelsTable.providerId, provider.id),
+            eq(managedModelsTable.endpointId, endpoint.id)
+          ))
+          .run();
+
+        if (input.models.length > 0) {
+          tx.insert(managedModelsTable).values(
+            input.models.map((model) =>
+              this.buildManagedModelInsert({
+                db: tx as unknown as Db,
+                providerId: provider.id,
+                endpointId: endpoint.id,
+                model,
+                now,
+                preserved: preservedByModelKey.get(model.modelKey)
+              })
+            )
+          ).run();
+        }
       }
     });
 
@@ -603,11 +1010,14 @@ export class ManagedProviderRepository {
       .all();
 
     return providers.flatMap((provider) => {
-      const credential = this.db.select().from(managedProviderCredentialsTable)
-        .where(eq(managedProviderCredentialsTable.providerId, provider.id))
-        .get();
+      const accounts = this.db.select().from(managedProviderCredentialsTable)
+        .where(and(
+          eq(managedProviderCredentialsTable.providerId, provider.id),
+          eq(managedProviderCredentialsTable.enabled, true)
+        ))
+        .all();
 
-      if (!credential) {
+      if (accounts.length === 0) {
         return [];
       }
 
@@ -623,17 +1033,31 @@ export class ManagedProviderRepository {
           eq(managedModelsTable.enabled, true)
         ))
         .all();
+      const perAccount = this.isPerAccountScope(provider);
 
-      return endpoints.map((endpoint) => {
-        const endpointModels = providerModels
-          .filter((model) => model.endpointId === endpoint.id);
+      return accounts.flatMap((account) => {
+        const boundEndpoints = account.endpointId == null
+          ? endpoints
+          : endpoints.filter((endpoint) => endpoint.id === account.endpointId);
+        const accountModelIds = perAccount
+          ? this.listAccountModelIds(account.id)
+          : null;
 
-        return {
-          provider,
-          credential,
-          endpoint,
-          models: endpointModels.length > 0 ? endpointModels : providerModels
-        };
+        return boundEndpoints.map((endpoint) => {
+          const endpointModels = providerModels
+            .filter((model) => model.endpointId === endpoint.id);
+          const sharedModels = endpointModels.length > 0 ? endpointModels : providerModels;
+          const models = accountModelIds
+            ? sharedModels.filter((model) => accountModelIds.has(model.id))
+            : sharedModels;
+
+          return {
+            provider,
+            credential: account,
+            endpoint,
+            models
+          };
+        });
       });
     });
   }
@@ -712,12 +1136,20 @@ export class ManagedProviderRepository {
     }
 
     const now = nowIso();
+    const nextScope =
+      input.modelAvailabilityScope ?? existing.provider.modelAvailabilityScope;
+    const scopeChangedToPerAccount =
+      existing.provider.modelAvailabilityScope !== "per_account" &&
+      nextScope === "per_account";
+
     this.db.update(managedProvidersTable)
       .set({
         displayName: input.displayName ?? existing.provider.displayName,
         baseUrl: input.baseUrl ?? existing.provider.baseUrl,
         websiteUrl:
           input.websiteUrl !== undefined ? input.websiteUrl : existing.provider.websiteUrl,
+        providerKind: input.providerKind ?? existing.provider.providerKind,
+        modelAvailabilityScope: nextScope,
         enabled: input.enabled ?? existing.provider.enabled,
         ...(input.enabled === true
           ? {
@@ -734,6 +1166,13 @@ export class ManagedProviderRepository {
       })
       .where(eq(managedProvidersTable.providerKey, providerKey))
       .run();
+
+    if (scopeChangedToPerAccount) {
+      const modelIds = existing.models.map((model) => model.id);
+      for (const account of existing.accounts) {
+        this.replaceAccountModelLinks(this.db, account.id, modelIds, now);
+      }
+    }
 
     if (input.baseUrl !== undefined || input.protocol !== undefined || input.enabled !== undefined) {
       this.db.update(managedProviderEndpointsTable)
@@ -918,6 +1357,11 @@ export class ManagedProviderRepository {
 
     const now = nowIso();
     const existing = this.db.select().from(managedProviderCredentialsTable)
+      .where(and(
+        eq(managedProviderCredentialsTable.providerId, provider.id),
+        eq(managedProviderCredentialsTable.accountKey, "default")
+      ))
+      .get() ?? this.db.select().from(managedProviderCredentialsTable)
       .where(eq(managedProviderCredentialsTable.providerId, provider.id))
       .get();
 
@@ -928,13 +1372,19 @@ export class ManagedProviderRepository {
           keyHint: apiKeyHint,
           updatedAt: now
         })
-        .where(eq(managedProviderCredentialsTable.providerId, provider.id))
+        .where(eq(managedProviderCredentialsTable.id, existing.id))
         .run();
       return true;
     }
 
     this.db.insert(managedProviderCredentialsTable).values({
       providerId: provider.id,
+      accountKey: "default",
+      endpointId: null,
+      enabled: true,
+      runtimeStatus: "normal",
+      statusSource: "system",
+      recentErrorCount: 0,
       apiKeyEncrypted: encryptedApiKey,
       keyHint: apiKeyHint,
       createdAt: now,
@@ -942,6 +1392,273 @@ export class ManagedProviderRepository {
     }).run();
 
     return true;
+  }
+
+  public createAccount(
+    providerKey: string,
+    input: ManagedAccountInput
+  ): ManagedCredentialRow | null {
+    const provider = this.db.select().from(managedProvidersTable)
+      .where(eq(managedProvidersTable.providerKey, providerKey))
+      .get();
+    if (!provider) {
+      return null;
+    }
+
+    const existing = this.getAccount(providerKey, input.accountKey);
+    if (existing) {
+      return null;
+    }
+
+    let endpointId: number | null = null;
+    if (input.endpointKey) {
+      const endpoint = this.getProviderEndpoint(providerKey, input.endpointKey);
+      if (!endpoint) {
+        return null;
+      }
+      endpointId = endpoint.id;
+    }
+
+    const now = nowIso();
+    return this.db.insert(managedProviderCredentialsTable).values({
+      providerId: provider.id,
+      accountKey: input.accountKey,
+      endpointId,
+      enabled: input.enabled ?? true,
+      runtimeStatus: "normal",
+      statusSource: "system",
+      recentErrorCount: 0,
+      expiresAt: input.expiresAt ?? null,
+      quotaJson: input.quotaJson ?? null,
+      apiKeyEncrypted: input.encryptedApiKey,
+      keyHint: input.apiKeyHint ?? null,
+      createdAt: now,
+      updatedAt: now
+    }).returning().get();
+  }
+
+  public updateAccount(
+    providerKey: string,
+    accountKey: string,
+    input: ManagedAccountUpdateInput
+  ): ManagedCredentialRow | null {
+    const account = this.getAccount(providerKey, accountKey);
+    if (!account) {
+      return null;
+    }
+
+    let endpointId = account.endpointId;
+    if (input.endpointKey !== undefined) {
+      if (input.endpointKey === null || input.endpointKey === "") {
+        endpointId = null;
+      } else {
+        const endpoint = this.getProviderEndpoint(providerKey, input.endpointKey);
+        if (!endpoint) {
+          return null;
+        }
+        endpointId = endpoint.id;
+      }
+    }
+
+    const now = nowIso();
+    const enableRecover =
+      input.enabled === true
+        ? {
+            enabled: true,
+            runtimeStatus: "normal" as const,
+            statusReason: null,
+            statusMessage: null,
+            statusSource: "manual",
+            statusUpdatedAt: now,
+            statusCooldownUntil: null,
+            recentErrorCount: 0
+          }
+        : input.enabled === false
+          ? { enabled: false }
+          : {};
+
+    this.db.update(managedProviderCredentialsTable)
+      .set({
+        ...enableRecover,
+        endpointId,
+        expiresAt: input.expiresAt !== undefined ? input.expiresAt : account.expiresAt,
+        quotaJson: input.quotaJson !== undefined ? input.quotaJson : account.quotaJson,
+        apiKeyEncrypted: input.encryptedApiKey ?? account.apiKeyEncrypted,
+        keyHint: input.apiKeyHint !== undefined ? input.apiKeyHint : account.keyHint,
+        updatedAt: now
+      })
+      .where(eq(managedProviderCredentialsTable.id, account.id))
+      .run();
+
+    return this.db.select().from(managedProviderCredentialsTable)
+      .where(eq(managedProviderCredentialsTable.id, account.id))
+      .get() ?? null;
+  }
+
+  public deleteAccount(providerKey: string, accountKey: string): boolean {
+    const account = this.getAccount(providerKey, accountKey);
+    if (!account) {
+      return false;
+    }
+
+    // Keep at least one account so provider remains usable.
+    const siblings = this.listAccounts(providerKey);
+    if (siblings.length <= 1) {
+      return false;
+    }
+
+    const result = this.db.delete(managedProviderCredentialsTable)
+      .where(eq(managedProviderCredentialsTable.id, account.id))
+      .run();
+    return result.changes > 0;
+  }
+
+  public setAccountEnabled(
+    providerKey: string,
+    accountKey: string,
+    enabled: boolean
+  ): ManagedCredentialRow | null {
+    return this.updateAccount(providerKey, accountKey, { enabled });
+  }
+
+  public markAccountAuthFailed(
+    providerKey: string,
+    accountKey: string,
+    message: string
+  ): ManagedCredentialRow | null {
+    const account = this.getAccount(providerKey, accountKey);
+    if (!account) {
+      return null;
+    }
+    const now = nowIso();
+    this.db.update(managedProviderCredentialsTable)
+      .set({
+        runtimeStatus: "disabled",
+        statusReason: "auth_failed",
+        statusMessage: message || "Invalid API key",
+        statusSource: "system",
+        statusUpdatedAt: now,
+        statusCooldownUntil: null,
+        lastErrorAt: now,
+        lastErrorCode: "provider_auth_failed",
+        lastErrorMessage: message || "Invalid API key",
+        updatedAt: now
+      })
+      .where(eq(managedProviderCredentialsTable.id, account.id))
+      .run();
+    return this.db.select().from(managedProviderCredentialsTable)
+      .where(eq(managedProviderCredentialsTable.id, account.id))
+      .get() ?? null;
+  }
+
+  public applyAccountRateLimit(
+    providerKey: string,
+    accountKey: string,
+    input: {
+      permanent: boolean;
+      cooldownUntil: string | null;
+      message: string;
+      recentErrorCount?: number;
+    }
+  ): ManagedCredentialRow | null {
+    const account = this.getAccount(providerKey, accountKey);
+    if (!account) {
+      return null;
+    }
+    const now = nowIso();
+    this.db.update(managedProviderCredentialsTable)
+      .set({
+        runtimeStatus: "rate_limited",
+        statusReason: input.permanent ? "rate_limited_permanent" : "rate_limited",
+        statusMessage: input.message,
+        statusSource: "system",
+        statusUpdatedAt: now,
+        statusCooldownUntil: input.permanent ? null : input.cooldownUntil,
+        recentErrorCount: input.recentErrorCount ?? account.recentErrorCount,
+        lastErrorAt: now,
+        lastErrorCode: "provider_rate_limited",
+        lastErrorMessage: input.message,
+        updatedAt: now
+      })
+      .where(eq(managedProviderCredentialsTable.id, account.id))
+      .run();
+    return this.db.select().from(managedProviderCredentialsTable)
+      .where(eq(managedProviderCredentialsTable.id, account.id))
+      .get() ?? null;
+  }
+
+  public applyAccountOtherError(
+    providerKey: string,
+    accountKey: string,
+    input: {
+      recentErrorCount: number;
+      abnormal: boolean;
+      code?: string;
+      message: string;
+    }
+  ): ManagedCredentialRow | null {
+    const account = this.getAccount(providerKey, accountKey);
+    if (!account) {
+      return null;
+    }
+    const now = nowIso();
+    this.db.update(managedProviderCredentialsTable)
+      .set({
+        runtimeStatus: input.abnormal
+          ? "abnormal"
+          : account.runtimeStatus === "abnormal"
+            ? "abnormal"
+            : "normal",
+        statusReason: input.abnormal ? "error_threshold" : account.statusReason,
+        statusMessage: input.abnormal ? input.message : account.statusMessage,
+        statusSource: input.abnormal ? "system" : account.statusSource,
+        statusUpdatedAt: input.abnormal ? now : account.statusUpdatedAt,
+        recentErrorCount: input.recentErrorCount,
+        lastErrorAt: now,
+        lastErrorCode: input.code ?? "provider_error",
+        lastErrorMessage: input.message,
+        updatedAt: now
+      })
+      .where(eq(managedProviderCredentialsTable.id, account.id))
+      .run();
+    return this.db.select().from(managedProviderCredentialsTable)
+      .where(eq(managedProviderCredentialsTable.id, account.id))
+      .get() ?? null;
+  }
+
+  public markAccountSuccess(
+    providerKey: string,
+    accountKey: string,
+    clearCounters: boolean
+  ): ManagedCredentialRow | null {
+    const account = this.getAccount(providerKey, accountKey);
+    if (!account) {
+      return null;
+    }
+    if (
+      account.runtimeStatus === "abnormal" ||
+      account.runtimeStatus === "disabled" ||
+      account.statusReason === "rate_limited_permanent"
+    ) {
+      return account;
+    }
+    const now = nowIso();
+    this.db.update(managedProviderCredentialsTable)
+      .set({
+        runtimeStatus: "normal",
+        statusReason: null,
+        statusMessage: null,
+        statusSource: "system",
+        statusUpdatedAt: now,
+        statusCooldownUntil: null,
+        recentErrorCount: clearCounters ? 0 : account.recentErrorCount,
+        updatedAt: now
+      })
+      .where(eq(managedProviderCredentialsTable.id, account.id))
+      .run();
+    return this.db.select().from(managedProviderCredentialsTable)
+      .where(eq(managedProviderCredentialsTable.id, account.id))
+      .get() ?? null;
   }
 
 

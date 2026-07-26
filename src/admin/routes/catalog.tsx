@@ -526,6 +526,12 @@ function CatalogInstanceRow(props: {
         <strong>{props.instance.provider_display_name}</strong>
         <code>{props.instance.model_key}</code>
         <span className="badge">{props.instance.endpoint_key}</span>
+        <span className="badge">
+          可用 Key {props.instance.available_account_count ?? 0}
+          {props.instance.available_accounts && props.instance.available_accounts.length > 0
+            ? `: ${props.instance.available_accounts.join(", ")}`
+            : ""}
+        </span>
       </div>
       <SwitchControl
         checked={props.instance.enabled}

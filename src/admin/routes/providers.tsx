@@ -28,17 +28,26 @@ import { z } from "zod";
 
 import {
   createProvider,
+  createProviderAccount,
   createProviderEndpoint,
   deleteProvider,
+  deleteProviderAccount,
+  listProviderTemplates,
   listProviders,
+  mergeCheckProvider,
   setProviderEnabled,
   syncProvider,
+  syncProviderAccount,
   updateProvider,
+  updateProviderAccount,
   updateProviderModelCapabilities,
   type CreateProviderPayload,
   type ProviderDetails,
+  type ProviderModel,
+  type ProviderTemplate,
   type UpdateProviderPayload
 } from "../api/providers.js";
+import { AppDialog } from "../components/Dialog.js";
 
 export const providerTokenStorageKey = "autorouter_admin_token";
 
@@ -57,7 +66,10 @@ const providerFormSchema = z.object({
     .refine((value) => !value || z.string().url().safeParse(value).success, {
       message: "官网地址必须是有效网址"
     }),
-  api_key: z.string().optional()
+  api_key: z.string().optional(),
+  provider_kind: z.enum(["official", "relay", "custom"]).optional(),
+  model_availability_scope: z.enum(["shared_by_provider", "per_account"]).optional(),
+  template_id: z.string().optional()
 }).strict();
 
 function RequiredMark() {
@@ -83,6 +95,98 @@ function runtimeStatusLabel(status?: string | null) {
 
 function runtimeStatusBadgeClass(status?: string | null) {
   return status === "normal" || !status ? "badge success" : "badge warning";
+}
+
+function isRuntimeNormal(status?: string | null) {
+  return status === "normal" || !status;
+}
+
+function isAccountSchedulable(account: NonNullable<ProviderDetails["accounts"]>[number]) {
+  if (!account.enabled) {
+    return false;
+  }
+  if (account.runtime_status === "disabled" || account.runtime_status === "abnormal") {
+    return false;
+  }
+  if (account.expires_at) {
+    const expiresAt = Date.parse(account.expires_at);
+    if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
+      return false;
+    }
+  }
+  if (
+    account.quota &&
+    typeof account.quota.remaining_usd === "number" &&
+    account.quota.remaining_usd <= 0
+  ) {
+    return false;
+  }
+  if (
+    account.runtime_status === "rate_limited" &&
+    (account.status_reason === "rate_limited_permanent" ||
+      (account.status_cooldown_until &&
+        Date.parse(account.status_cooldown_until) > Date.now()))
+  ) {
+    return false;
+  }
+  return isRuntimeNormal(account.runtime_status) || account.runtime_status === "rate_limited";
+}
+
+function isProviderAvailable(provider: ProviderDetails) {
+  const hasSchedulableAccount =
+    (provider.available_account_count ??
+      provider.accounts?.filter(isAccountSchedulable).length ??
+      (provider.key_hint ? 1 : 0)) > 0;
+  return provider.enabled && isRuntimeNormal(provider.runtime_status) && hasSchedulableAccount;
+}
+
+function isProviderModelAvailable(model: { enabled?: boolean; runtime_status?: string | null }) {
+  return model.enabled !== false && isRuntimeNormal(model.runtime_status);
+}
+
+function isProviderModelSchedulable(provider: ProviderDetails, model: ProviderModel) {
+  return isProviderAvailable(provider) && isProviderModelAvailable(model);
+}
+
+function providerModelUnavailableReason(provider: ProviderDetails, model: ProviderModel) {
+  if (!provider.enabled || !isRuntimeNormal(provider.runtime_status)) {
+    return runtimeStatusDetail(provider) || "Provider 不可用";
+  }
+  if ((provider.available_account_count ?? 0) <= 0) {
+    return "没有可调度的 API Key";
+  }
+  if (!isProviderModelAvailable(model)) {
+    return runtimeStatusDetail(model) || "模型不可用";
+  }
+  return "";
+}
+
+function formatQuotaSummary(quota: NonNullable<ProviderDetails["accounts"]>[number]["quota"]) {
+  if (!quota) {
+    return "未设置";
+  }
+  const parts: string[] = [];
+  if (typeof quota.remaining_usd === "number") {
+    parts.push(`剩余 $${quota.remaining_usd}`);
+  }
+  if (typeof quota.monthly_usd_limit === "number") {
+    parts.push(`月限 $${quota.monthly_usd_limit}`);
+  }
+  if (typeof quota.remaining_requests === "number") {
+    parts.push(`剩余请求 ${quota.remaining_requests}`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : "未设置";
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) {
+    return "未知";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString();
 }
 
 function runtimeStatusDetail(input: {
@@ -323,9 +427,6 @@ export function AdminRoot() {
     );
   }
 
-  const providers = providersQuery.data?.data ?? [];
-  const totalModels = providers.reduce((sum, provider) => sum + provider.models.length, 0);
-
   return (
     <main className="console-shell">
       <aside className="sidebar">
@@ -356,10 +457,6 @@ export function AdminRoot() {
           })}
         </nav>
 
-        <div className="sidebar-footer">
-          <span className="status-dot" />
-          <span>Gateway online</span>
-        </div>
       </aside>
 
       <section className="workspace">
@@ -384,30 +481,6 @@ export function AdminRoot() {
           </div>
         </header>
 
-        <section className="stats-grid">
-          <div className="stat-card">
-            <Network size={18} />
-            <div>
-              <span>Providers</span>
-              <strong>{providers.length}</strong>
-            </div>
-          </div>
-          <div className="stat-card">
-            <DatabaseZap size={18} />
-            <div>
-              <span>Models</span>
-              <strong>{totalModels}</strong>
-            </div>
-          </div>
-          <div className="stat-card">
-            <Activity size={18} />
-            <div>
-              <span>Gateway</span>
-              <strong>Online</strong>
-            </div>
-          </div>
-        </section>
-
         <Outlet />
       </section>
     </main>
@@ -420,15 +493,37 @@ export function ProviderListPage() {
   const providersQuery = useProviders(token);
   const providers = providersQuery.data?.data ?? [];
   const totalModels = providers.reduce((sum, provider) => sum + provider.models.length, 0);
+  const availableProviders = providers.filter(isProviderAvailable).length;
+  const availableModels = providers.reduce(
+    (sum, provider) =>
+      sum + provider.models.filter((model) => isProviderModelSchedulable(provider, model)).length,
+    0
+  );
 
   return (
     <section className="page-panel">
+      <section className="stats-grid provider-stats-grid">
+        <div className="stat-card">
+          <Network size={18} />
+          <div>
+            <span>Providers</span>
+            <strong>{providers.length}</strong>
+            <small>可用 {availableProviders}</small>
+          </div>
+        </div>
+        <div className="stat-card">
+          <DatabaseZap size={18} />
+          <div>
+            <span>Models</span>
+            <strong>{totalModels}</strong>
+            <small>可用 {availableModels}</small>
+          </div>
+        </div>
+      </section>
+
       <div className="list-header">
         <div>
           <h2>Provider 列表</h2>
-          <p className="muted">
-            {providers.length} providers · {totalModels} models
-          </p>
         </div>
         <div className="page-actions">
           <button
@@ -632,7 +727,10 @@ export function ProviderDetailPage() {
 
       <div className="detail-grid">
         <MetricCard label="模型数量" value={String(provider.models.length)} />
-        <MetricCard label="Key" value={provider.key_hint ?? "hidden"} />
+        <MetricCard
+          label="Accounts"
+          value={`${provider.available_account_count ?? 0}/${provider.account_count ?? provider.accounts?.length ?? 0}`}
+        />
       </div>
 
       <div className="panel detail-card">
@@ -656,6 +754,23 @@ export function ProviderDetailPage() {
               {runtimeStatusLabel(provider.runtime_status)}
             </span>
           </dd>
+          <dt>Provider 类型</dt>
+          <dd>{provider.provider_kind ?? "custom"}</dd>
+          <dt>模型可用性</dt>
+          <dd>
+            {provider.model_availability_scope === "shared_by_provider"
+              ? "按 Provider 共享"
+              : "按 Account 独立"}
+          </dd>
+          <dt>Accounts</dt>
+          <dd>
+            {provider.account_count ?? provider.accounts?.length ?? 1} keys /
+            {" "}
+            {provider.available_account_count ??
+              provider.accounts?.filter(isAccountSchedulable).length ??
+              0}{" "}
+            available
+          </dd>
           <dt>官网地址</dt>
           <dd>
             {provider.website_url ? (
@@ -666,6 +781,10 @@ export function ProviderDetailPage() {
               "未填写"
             )}
           </dd>
+          <dt>添加时间</dt>
+          <dd>{formatDateTime(provider.created_at)}</dd>
+          <dt>修改时间</dt>
+          <dd>{formatDateTime(provider.updated_at)}</dd>
           <dt>最近同步</dt>
           <dd>{provider.latest_sync?.status ?? "暂无记录"}</dd>
         </dl>
@@ -748,6 +867,12 @@ export function ProviderDetailPage() {
         </form>
         {endpointMessage ? <p className={`status ${endpointMessage.mode ?? ""}`}>{endpointMessage.text}</p> : null}
       </div>
+
+      <ProviderAccountsPanel
+        token={token}
+        provider={provider}
+        onChanged={() => void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) })}
+      />
 
       <div className="panel detail-card">
         <h3>模型列表</h3>
@@ -853,6 +978,20 @@ function ProviderFormPage(props: {
   const isEditing = props.mode === "edit";
   const [message, setMessage] = useState<{ text: string; mode?: "success" | "error" } | null>(null);
 
+  const [templates, setTemplates] = useState<ProviderTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [mergeDialog, setMergeDialog] = useState<{
+    open: boolean;
+    matches: Array<{
+      provider_key: string;
+      display_name: string;
+      endpoint_key: string;
+      protocol: string;
+      base_url: string;
+    }>;
+    pendingValues: CreateProviderPayload | null;
+  }>({ open: false, matches: [], pendingValues: null });
+
   const form = useForm<CreateProviderPayload>({
     resolver: zodResolver(providerFormSchema),
     defaultValues: {
@@ -866,7 +1005,10 @@ function ProviderFormPage(props: {
         }
       ],
       website_url: "",
-      api_key: ""
+      api_key: "",
+      provider_kind: "custom",
+      model_availability_scope: "per_account",
+      template_id: ""
     }
   });
   const { fields, append, remove } = useFieldArray({
@@ -894,43 +1036,103 @@ function ProviderFormPage(props: {
       display_name: props.provider?.display_name ?? "",
       endpoints: nextEndpoints,
       website_url: props.provider?.website_url ?? "",
-      api_key: ""
+      api_key: "",
+      provider_kind: props.provider?.provider_kind ?? "custom",
+      model_availability_scope: props.provider?.model_availability_scope ?? "per_account",
+      template_id: ""
     });
+    setSelectedTemplateId("");
     setMessage(null);
   }, [form, props.provider]);
 
-  const mutation = useMutation({
-    mutationFn: async (values: CreateProviderPayload) => {
-      const normalizedEndpoints = values.endpoints.map((endpoint, index) => ({
-        endpoint_key: endpoint.endpoint_key.trim() || `endpoint-${index + 1}`,
-        protocol: endpoint.protocol,
-        base_url: endpoint.base_url.trim()
-      }));
-      const normalized = {
-        provider_key: values.provider_key.trim(),
-        display_name: values.display_name.trim(),
-        endpoints: normalizedEndpoints,
-        website_url: values.website_url?.trim() ?? "",
-        api_key: values.api_key?.trim() ?? ""
+  useEffect(() => {
+    if (isEditing) {
+      return;
+    }
+    void listProviderTemplates(props.token)
+      .then((response) => setTemplates(response.data))
+      .catch(() => setTemplates([]));
+  }, [isEditing, props.token]);
+
+  async function submitProvider(values: CreateProviderPayload, options?: { skipMergeCheck?: boolean }) {
+    const normalizedEndpoints = values.endpoints.map((endpoint, index) => ({
+      endpoint_key: endpoint.endpoint_key.trim() || `endpoint-${index + 1}`,
+      protocol: endpoint.protocol,
+      base_url: endpoint.base_url.trim()
+    }));
+    const normalized: CreateProviderPayload = {
+      provider_key: values.provider_key.trim(),
+      display_name: values.display_name.trim(),
+      endpoints: normalizedEndpoints,
+      website_url: values.website_url?.trim() ?? "",
+      api_key: values.api_key?.trim() ?? "",
+      provider_kind: values.provider_kind,
+      model_availability_scope: values.model_availability_scope,
+      template_id: values.template_id || undefined
+    };
+    if (!isEditing && !normalized.api_key) {
+      throw new Error("请填写 API Key");
+    }
+
+    if (isEditing && props.provider) {
+      const payload: UpdateProviderPayload = {
+        display_name: normalized.display_name,
+        endpoints: normalized.endpoints,
+        website_url: normalized.website_url,
+        api_key: normalized.api_key || undefined,
+        provider_kind: normalized.provider_kind,
+        model_availability_scope: normalized.model_availability_scope
       };
-      if (!isEditing && !normalized.api_key) {
-        throw new Error("请填写 API Key");
+      return updateProvider(props.token, props.provider.provider_key, payload);
+    }
+
+    if (!options?.skipMergeCheck && normalized.endpoints[0]) {
+      const first = normalized.endpoints[0];
+      const merge = await mergeCheckProvider(props.token, {
+        protocol: first.protocol,
+        base_url: first.base_url
+      });
+      if (merge.matches.length > 0) {
+        setMergeDialog({
+          open: true,
+          matches: merge.matches,
+          pendingValues: normalized
+        });
+        return null;
       }
+    }
 
-      if (isEditing && props.provider) {
-        const payload: UpdateProviderPayload = {
-          display_name: normalized.display_name,
-          endpoints: normalized.endpoints,
-          website_url: normalized.website_url,
-          api_key: normalized.api_key || undefined
-        };
+    return createProvider(props.token, normalized);
+  }
 
-        return updateProvider(props.token, props.provider.provider_key, payload);
+  const mutation = useMutation({
+    mutationFn: async (values: CreateProviderPayload) => submitProvider(values),
+    onSuccess: (result) => {
+      if (!result) {
+        return;
       }
-
-      return createProvider(props.token, normalized);
+      setMessage({
+        text: "Provider 已保存，可用模型已更新",
+        mode: "success"
+      });
+      props.onDone();
     },
-    onSuccess: () => {
+    onError: (error) => {
+      setMessage({
+        text: error instanceof Error ? error.message : "保存失败���",
+        mode: "error"
+      });
+    }
+  });
+
+  const forceCreateMutation = useMutation({
+    mutationFn: async (values: CreateProviderPayload) =>
+      submitProvider(values, { skipMergeCheck: true }),
+    onSuccess: (result) => {
+      if (!result) {
+        return;
+      }
+      setMergeDialog({ open: false, matches: [], pendingValues: null });
       setMessage({
         text: "Provider 已保存，可用模型已更新",
         mode: "success"
@@ -940,6 +1142,32 @@ function ProviderFormPage(props: {
     onError: (error) => {
       setMessage({
         text: error instanceof Error ? error.message : "保存失败",
+        mode: "error"
+      });
+    }
+  });
+
+  const mergeAccountMutation = useMutation({
+    mutationFn: async () => {
+      const values = mergeDialog.pendingValues;
+      const target = mergeDialog.matches[0];
+      if (!values || !target || !values.api_key) {
+        throw new Error("缺少合并所需信息");
+      }
+      return createProviderAccount(props.token, target.provider_key, {
+        account_key: `key-${Date.now().toString(36)}`,
+        endpoint_key: target.endpoint_key,
+        api_key: values.api_key
+      });
+    },
+    onSuccess: () => {
+      setMergeDialog({ open: false, matches: [], pendingValues: null });
+      setMessage({ text: "已合并到已有 Provider 并添加 API Key", mode: "success" });
+      props.onDone();
+    },
+    onError: (error) => {
+      setMessage({
+        text: error instanceof Error ? error.message : "合并失败",
         mode: "error"
       });
     }
@@ -979,6 +1207,63 @@ function ProviderFormPage(props: {
           </span>
           <input {...form.register("display_name")} placeholder="My Provider" />
           {errors.display_name ? <small>{errors.display_name.message}</small> : null}
+        </label>
+
+        {!isEditing ? (
+          <label className="field">
+            <span>官方模版</span>
+            <select
+              value={selectedTemplateId}
+              onChange={(event) => {
+                const templateId = event.target.value;
+                setSelectedTemplateId(templateId);
+                const template = templates.find((item) => item.template_id === templateId);
+                if (!template) {
+                  form.setValue("template_id", "");
+                  return;
+                }
+                form.setValue("template_id", template.template_id);
+                form.setValue("provider_key", template.suggested_provider_key);
+                form.setValue("display_name", template.display_name);
+                form.setValue("website_url", template.website_url ?? "");
+                form.setValue("provider_kind", template.provider_kind);
+                form.setValue("model_availability_scope", template.model_availability_scope);
+                form.setValue(
+                  "endpoints",
+                  template.endpoints.map((endpoint) => ({
+                    endpoint_key: endpoint.endpoint_key,
+                    protocol: endpoint.protocol,
+                    base_url: endpoint.base_url
+                  }))
+                );
+              }}
+            >
+              <option value="">自定义创建</option>
+              {templates.map((template) => (
+                <option key={template.template_id} value={template.template_id}>
+                  {template.vendor_name} · {template.display_name}
+                  {template.region ? ` (${template.region})` : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+
+        <label className="field">
+          <span>Provider 类型</span>
+          <select {...form.register("provider_kind")}>
+            <option value="official">official</option>
+            <option value="relay">relay</option>
+            <option value="custom">custom</option>
+          </select>
+        </label>
+
+        <label className="field">
+          <span>模型可用性范围</span>
+          <select {...form.register("model_availability_scope")}>
+            <option value="shared_by_provider">按 Provider 共享</option>
+            <option value="per_account">按 Account 独立</option>
+          </select>
         </label>
 
         <div className="field endpoint-group">
@@ -1078,6 +1363,43 @@ function ProviderFormPage(props: {
       </form>
 
       {message ? <p className={`status ${message.mode ?? ""}`}>{message.text}</p> : null}
+
+      <AppDialog
+        open={mergeDialog.open}
+        tone="info"
+        title="检测到可合并的 Provider"
+        confirmLabel="关闭"
+        onClose={() => setMergeDialog({ open: false, matches: [], pendingValues: null })}
+      >
+        <p>
+          已有 Provider “{mergeDialog.matches[0]?.display_name}” 使用了相同 base_url / 协议。
+        </p>
+        <p className="muted">
+          {mergeDialog.matches[0]?.endpoint_key}: {mergeDialog.matches[0]?.base_url}
+        </p>
+        <div className="form-actions" style={{ marginTop: 12 }}>
+          <button
+            className="primary-action"
+            type="button"
+            disabled={mergeAccountMutation.isPending}
+            onClick={() => mergeAccountMutation.mutate()}
+          >
+            合并并添加 API Key
+          </button>
+          <button
+            className="ghost-action"
+            type="button"
+            disabled={forceCreateMutation.isPending || !mergeDialog.pendingValues}
+            onClick={() => {
+              if (mergeDialog.pendingValues) {
+                forceCreateMutation.mutate(mergeDialog.pendingValues);
+              }
+            }}
+          >
+            仍然新建
+          </button>
+        </div>
+      </AppDialog>
     </section>
   );
 }
@@ -1140,7 +1462,11 @@ function ProviderCard(props: {
   disabled: boolean;
   onAction: (action: string) => void;
 }) {
-  const visibleModels = useMemo(() => props.provider.models.slice(0, 12), [props.provider.models]);
+  const [modelsExpanded, setModelsExpanded] = useState(false);
+  const visibleModels = useMemo(
+    () => (modelsExpanded ? props.provider.models : props.provider.models.slice(0, 12)),
+    [modelsExpanded, props.provider.models]
+  );
   const hiddenModelCount = Math.max(0, props.provider.models.length - visibleModels.length);
 
   return (
@@ -1200,6 +1526,29 @@ function ProviderCard(props: {
           <strong>{props.provider.models.length}</strong>
         </div>
         <div className="metric">
+          <span>添加时间</span>
+          <strong>{formatDateTime(props.provider.created_at)}</strong>
+        </div>
+        <div className="metric">
+          <span>修改时间</span>
+          <strong>{formatDateTime(props.provider.updated_at)}</strong>
+        </div>
+        <div className="metric">
+          <span>Accounts</span>
+          <strong>
+            {props.provider.account_count ?? props.provider.accounts?.length ?? 1} keys /
+            {" "}
+            {props.provider.available_account_count ??
+              props.provider.accounts?.filter(isAccountSchedulable).length ??
+              (props.provider.key_hint ? 1 : 0)}{" "}
+            available
+          </strong>
+        </div>
+        <div className="metric">
+          <span>类型</span>
+          <strong>{props.provider.provider_kind ?? "custom"}</strong>
+        </div>
+        <div className="metric">
           <span>Key</span>
           <strong>{props.provider.key_hint ?? "hidden"}</strong>
         </div>
@@ -1226,11 +1575,265 @@ function ProviderCard(props: {
 
       <ul className="model-list">
         {visibleModels.map((model) => (
-          <li key={model.model_key}>{model.model_name}</li>
+          <li
+            key={model.model_key}
+            className={isProviderModelSchedulable(props.provider, model) ? "available" : "unavailable"}
+            title={
+              isProviderModelSchedulable(props.provider, model)
+                ? "可用"
+                : providerModelUnavailableReason(props.provider, model) || "不可用"
+            }
+          >
+            {model.model_name}
+          </li>
         ))}
-        {hiddenModelCount > 0 ? <li>+{hiddenModelCount}</li> : null}
+        {hiddenModelCount > 0 ? (
+          <li>
+            <button
+              className="model-list-toggle"
+              type="button"
+              onClick={() => setModelsExpanded(true)}
+            >
+              +{hiddenModelCount}
+            </button>
+          </li>
+        ) : null}
+        {modelsExpanded && props.provider.models.length > 12 ? (
+          <li>
+            <button
+              className="model-list-toggle"
+              type="button"
+              onClick={() => setModelsExpanded(false)}
+            >
+              收起
+            </button>
+          </li>
+        ) : null}
       </ul>
     </article>
+  );
+}
+
+function ProviderAccountsPanel(props: {
+  token: string;
+  provider: ProviderDetails;
+  onChanged: () => void;
+}) {
+  const accounts = props.provider.accounts ?? [];
+  const [form, setForm] = useState({
+    account_key: "",
+    endpoint_key: props.provider.endpoints[0]?.endpoint_key ?? "",
+    api_key: "",
+    expires_at: "",
+    remaining_usd: ""
+  });
+  const [message, setMessage] = useState<{ text: string; mode?: "success" | "error" } | null>(null);
+
+  const createMutation = useMutation({
+    mutationFn: async () => {
+      if (!form.account_key.trim() || !form.api_key.trim()) {
+        throw new Error("请填写 Account Key 和 API Key");
+      }
+      return createProviderAccount(props.token, props.provider.provider_key, {
+        account_key: form.account_key.trim(),
+        endpoint_key: form.endpoint_key || undefined,
+        api_key: form.api_key.trim(),
+        expires_at: form.expires_at ? new Date(form.expires_at).toISOString() : null,
+        quota: form.remaining_usd
+          ? {
+              remaining_usd: Number(form.remaining_usd),
+              source: "manual"
+            }
+          : undefined
+      });
+    },
+    onSuccess: () => {
+      setMessage({ text: "Account 已添加", mode: "success" });
+      setForm({
+        account_key: "",
+        endpoint_key: props.provider.endpoints[0]?.endpoint_key ?? "",
+        api_key: "",
+        expires_at: "",
+        remaining_usd: ""
+      });
+      props.onChanged();
+    },
+    onError: (error) => {
+      setMessage({
+        text: error instanceof Error ? error.message : "添加 Account 失败",
+        mode: "error"
+      });
+    }
+  });
+
+  const toggleMutation = useMutation({
+    mutationFn: async (input: { account_key: string; enabled: boolean }) =>
+      updateProviderAccount(props.token, props.provider.provider_key, input.account_key, {
+        enabled: input.enabled
+      }),
+    onSuccess: props.onChanged
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (accountKey: string) =>
+      deleteProviderAccount(props.token, props.provider.provider_key, accountKey),
+    onSuccess: props.onChanged,
+    onError: (error) => {
+      setMessage({
+        text: error instanceof Error ? error.message : "删除 Account 失败",
+        mode: "error"
+      });
+    }
+  });
+
+  const syncMutation = useMutation({
+    mutationFn: async (accountKey: string) =>
+      syncProviderAccount(props.token, props.provider.provider_key, accountKey),
+    onSuccess: () => {
+      setMessage({ text: "Account 模型已同步", mode: "success" });
+      props.onChanged();
+    },
+    onError: (error) => {
+      setMessage({
+        text: error instanceof Error ? error.message : "同步 Account 模型失败",
+        mode: "error"
+      });
+    }
+  });
+
+  return (
+    <div className="panel detail-card">
+      <h3>Accounts / API Keys</h3>
+      <div className="model-capability-table provider-model-table">
+        <div className="model-capability-header">
+          <span>Account</span>
+          <span>启用</span>
+          <span>调度状态</span>
+          <span>过期时间</span>
+          <span>额度</span>
+          <span>操作</span>
+        </div>
+        {accounts.map((account) => (
+          <div className="model-capability-row" key={account.account_key}>
+            <div className="model-name-cell">
+              <strong>{account.account_key}</strong>
+              <code>{account.key_hint ?? "hidden"}</code>
+              <span className="badge">{account.endpoint_key ?? "全部 Endpoint"}</span>
+            </div>
+            <SwitchControl
+              checked={account.enabled}
+              disabled={toggleMutation.isPending}
+              label={`${account.account_key} 启用开关`}
+              onChange={(checked) =>
+                toggleMutation.mutate({
+                  account_key: account.account_key,
+                  enabled: checked
+                })
+              }
+            />
+            <span
+              className={runtimeStatusBadgeClass(account.runtime_status)}
+              title={runtimeStatusDetail(account)}
+            >
+              {runtimeStatusLabel(account.runtime_status)}
+            </span>
+            <span>{account.expires_at ? formatDateTime(account.expires_at) : "未设置"}</span>
+            <span>{formatQuotaSummary(account.quota)}</span>
+            <div className="page-actions">
+              <button
+                type="button"
+                className="ghost-action small-action"
+                disabled={syncMutation.isPending}
+                onClick={() => syncMutation.mutate(account.account_key)}
+              >
+                <RefreshCw size={14} />
+                同步模型
+              </button>
+              <button
+                type="button"
+                className="ghost-action small-action"
+                disabled={deleteMutation.isPending || accounts.length <= 1}
+                onClick={() => deleteMutation.mutate(account.account_key)}
+              >
+                <Trash2 size={14} />
+                删除
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <form
+        className="form endpoint-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          createMutation.mutate();
+        }}
+      >
+        <label className="field">
+          <span>Account Key</span>
+          <input
+            value={form.account_key}
+            placeholder="backup-1"
+            onChange={(event) =>
+              setForm((current) => ({ ...current, account_key: event.target.value }))
+            }
+          />
+        </label>
+        <label className="field">
+          <span>绑定 Endpoint</span>
+          <select
+            value={form.endpoint_key}
+            onChange={(event) =>
+              setForm((current) => ({ ...current, endpoint_key: event.target.value }))
+            }
+          >
+            <option value="">全部 Endpoint</option>
+            {props.provider.endpoints.map((endpoint) => (
+              <option key={endpoint.endpoint_key} value={endpoint.endpoint_key}>
+                {endpoint.endpoint_key}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>API Key</span>
+          <input
+            type="password"
+            value={form.api_key}
+            placeholder="sk-..."
+            onChange={(event) =>
+              setForm((current) => ({ ...current, api_key: event.target.value }))
+            }
+          />
+        </label>
+        <label className="field">
+          <span>过期时间</span>
+          <input
+            type="datetime-local"
+            value={form.expires_at}
+            onChange={(event) =>
+              setForm((current) => ({ ...current, expires_at: event.target.value }))
+            }
+          />
+        </label>
+        <label className="field">
+          <span>剩余额度 USD</span>
+          <input
+            value={form.remaining_usd}
+            placeholder="可选"
+            onChange={(event) =>
+              setForm((current) => ({ ...current, remaining_usd: event.target.value }))
+            }
+          />
+        </label>
+        <button className="primary-action" type="submit" disabled={createMutation.isPending}>
+          <Plus size={16} />
+          {createMutation.isPending ? "添加中..." : "添加 Account"}
+        </button>
+      </form>
+      {message ? <p className={`status ${message.mode ?? ""}`}>{message.text}</p> : null}
+    </div>
   );
 }
 

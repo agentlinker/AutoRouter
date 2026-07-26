@@ -10,11 +10,13 @@ import type { TraceStore } from "../trace/traceStore.js";
 import type pino from "pino";
 
 import type { ManagedProviderRepository } from "../repositories/managedProviderRepository.js";
+import { parseAccountQuota } from "../repositories/managedProviderRepository.js";
 import { SecretCipher } from "../security/secretCipher.js";
 import { CredentialStore } from "./credentialStore.js";
 import type { RuntimeSnapshot } from "./runtimeTypes.js";
 import {
   DEFAULT_RUNTIME_STATUS_SETTINGS,
+  isCooldownActive,
   isRuntimeStatusValue,
   type RuntimeStatus
 } from "./runtimeStatus.js";
@@ -94,7 +96,8 @@ export class RuntimeConfigProjector {
     for (const bundle of managedBundles) {
       const providerId = bundle.provider.providerKey;
       const endpointId = `${providerId}/${bundle.endpoint.endpointKey}`;
-      const accountId = `${providerId}/${bundle.endpoint.endpointKey}`;
+      const accountKey = bundle.credential.accountKey || "default";
+      const accountId = `${providerId}/${bundle.endpoint.endpointKey}/${accountKey}`;
       const decryptedCredential = this.options.secretCipher.decrypt(
         bundle.credential.apiKeyEncrypted
       );
@@ -127,11 +130,12 @@ export class RuntimeConfigProjector {
         }
       };
 
-      mergedConfig.accounts[accountId] = {
-        endpoint: endpointId,
-        account_type: "api_key",
-        enabled: bundle.provider.enabled && bundle.endpoint.enabled
-      };
+      const accountEnabled =
+        bundle.provider.enabled &&
+        bundle.endpoint.enabled &&
+        bundle.credential.enabled !== false;
+      const perAccount = bundle.provider.modelAvailabilityScope === "per_account";
+      const allowedModels: string[] = [];
 
       for (const model of bundle.models) {
         if (!model.enabled) {
@@ -147,6 +151,7 @@ export class RuntimeConfigProjector {
             ? model.modelKey
             : `${providerId}/${bundle.endpoint.endpointKey}/${model.providerModelId}`;
 
+        allowedModels.push(modelKey);
         mergedConfig.models[modelKey] = {
           endpoint: endpointId,
           model_name: model.modelName,
@@ -159,6 +164,22 @@ export class RuntimeConfigProjector {
           pricing: parsePricingJson(effective.pricingJson)
         };
       }
+
+      const existingAccount = mergedConfig.accounts[accountId];
+      const mergedAllowed = perAccount
+        ? Array.from(new Set([
+            ...(existingAccount?.allowed_models ?? []),
+            ...allowedModels
+          ]))
+        : undefined;
+
+      mergedConfig.accounts[accountId] = {
+        endpoint: endpointId,
+        account_type: "api_key",
+        enabled: accountEnabled,
+        quota: parseAccountQuota(bundle.credential.quotaJson),
+        ...(mergedAllowed ? { allowed_models: mergedAllowed } : {})
+      };
     }
 
     const config = parseConfigSource(mergedConfig as unknown as Record<string, unknown>);
@@ -188,18 +209,69 @@ export class RuntimeConfigProjector {
       provider.status_message = managed.statusMessage ?? undefined;
       provider.status_cooldown_until = managed.statusCooldownUntil ?? null;
 
-      if (status === "disabled") {
+      if (status === "disabled" || status === "abnormal") {
         for (const account of registry.accounts) {
           if (account.id.startsWith(`${provider.id}/`)) {
             account.available = false;
-            account.disabled_reason = managed.statusReason ?? "provider_auth_failed";
-            account.disabled_message = managed.statusMessage ?? "Invalid API key";
+            account.disabled_reason = managed.statusReason ?? "provider_unavailable";
+            account.disabled_message = managed.statusMessage ?? "Provider unavailable";
           }
         }
       }
     }
 
+    const now = new Date();
     for (const bundle of managedBundles) {
+      const accountKey = bundle.credential.accountKey || "default";
+      const accountId = `${bundle.provider.providerKey}/${bundle.endpoint.endpointKey}/${accountKey}`;
+      const account = registry.accounts.find((item) => item.id === accountId);
+      if (account) {
+        account.recent_error_count = bundle.credential.recentErrorCount ?? 0;
+        const accountStatus = isRuntimeStatusValue(bundle.credential.runtimeStatus)
+          ? bundle.credential.runtimeStatus
+          : "normal";
+
+        if (bundle.credential.expiresAt) {
+          const expiresAt = Date.parse(bundle.credential.expiresAt);
+          if (Number.isFinite(expiresAt) && expiresAt <= now.getTime()) {
+            account.available = false;
+            account.disabled_reason = "account_expired";
+            account.disabled_message = "Account expired";
+          }
+        }
+
+        if (accountStatus === "disabled") {
+          account.available = false;
+          account.disabled_reason = bundle.credential.statusReason ?? "account_auth_failed";
+          account.disabled_message =
+            bundle.credential.statusMessage ?? "Invalid API key";
+        } else if (accountStatus === "abnormal") {
+          account.available = false;
+          account.disabled_reason = bundle.credential.statusReason ?? "account_abnormal";
+          account.disabled_message =
+            bundle.credential.statusMessage ?? "Account abnormal";
+        } else if (accountStatus === "rate_limited") {
+          if (
+            bundle.credential.statusReason === "rate_limited_permanent" ||
+            isCooldownActive(bundle.credential.statusCooldownUntil, now)
+          ) {
+            account.available = false;
+            account.disabled_reason = bundle.credential.statusReason ?? "account_rate_limited";
+            account.disabled_message =
+              bundle.credential.statusMessage ?? "Account rate limited";
+          }
+        }
+
+        if (
+          account.quota?.remaining_usd !== undefined &&
+          account.quota.remaining_usd <= 0
+        ) {
+          account.available = false;
+          account.disabled_reason = "account_quota_exhausted";
+          account.disabled_message = "Account quota exhausted";
+        }
+      }
+
       for (const model of bundle.models) {
         if (!model.enabled) {
           continue;

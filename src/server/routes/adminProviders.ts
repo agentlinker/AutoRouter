@@ -2,7 +2,15 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 
 import { ProviderModelDiscoveryService } from "../../discovery/providerModelDiscovery.js";
-import { ManagedProviderRepository, type ManagedDiscoveredModelInput } from "../../repositories/managedProviderRepository.js";
+import {
+  ManagedProviderRepository,
+  normalizeBaseUrlForMerge,
+  type ManagedDiscoveredModelInput
+} from "../../repositories/managedProviderRepository.js";
+import {
+  getOfficialProviderTemplate,
+  listOfficialProviderTemplates
+} from "../../providers/officialProviderTemplates.js";
 import { SecretCipher } from "../../security/secretCipher.js";
 import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
 import { HttpError } from "../../utils/httpErrors.js";
@@ -10,6 +18,17 @@ import { HttpError } from "../../utils/httpErrors.js";
 const protocolSchema = z.enum(["openai", "anthropic"]);
 const endpointAdapterSchema = z.enum(["openai_compatible", "openrouter", "anthropic"]);
 const endpointKeySchema = z.string().min(1).regex(/^[A-Za-z0-9_.-]+$/);
+
+const providerKindSchema = z.enum(["official", "relay", "custom"]);
+const modelAvailabilityScopeSchema = z.enum(["shared_by_provider", "per_account"]);
+const accountKeySchema = z.string().min(1).regex(/^[A-Za-z0-9_.-]+$/);
+const accountQuotaSchema = z.object({
+  monthly_usd_limit: z.number().nonnegative().optional(),
+  remaining_usd: z.number().nonnegative().optional(),
+  remaining_requests: z.number().nonnegative().optional(),
+  reset_at: z.string().optional(),
+  source: z.enum(["manual", "discovered", "unknown"]).optional()
+}).strict();
 
 const createProviderBodySchema = z.object({
   provider_key: z.string().min(1),
@@ -24,6 +43,9 @@ const createProviderBodySchema = z.object({
   }).strict()).min(1).optional(),
   website_url: z.string().url().optional().or(z.literal("")),
   api_key: z.string().min(1),
+  provider_kind: providerKindSchema.optional(),
+  model_availability_scope: modelAvailabilityScopeSchema.optional(),
+  template_id: z.string().min(1).optional(),
   trust_level: z.enum(["low", "medium", "high"]).default("low"),
   privacy_level: z.enum(["public_only", "normal", "private"]).default("normal"),
   usage_trust: z.enum(["low", "medium", "high"]).default("low")
@@ -41,7 +63,31 @@ const patchProviderBodySchema = z.object({
     enabled: z.boolean().optional()
   }).strict()).min(1).optional(),
   website_url: z.string().url().optional().or(z.literal("")),
-  api_key: z.string().min(1).optional()
+  api_key: z.string().min(1).optional(),
+  provider_kind: providerKindSchema.optional(),
+  model_availability_scope: modelAvailabilityScopeSchema.optional()
+}).strict();
+
+const createAccountBodySchema = z.object({
+  account_key: accountKeySchema,
+  endpoint_key: endpointKeySchema.optional(),
+  api_key: z.string().min(1),
+  expires_at: z.string().min(1).optional().nullable(),
+  quota: accountQuotaSchema.optional().nullable(),
+  enabled: z.boolean().optional()
+}).strict();
+
+const patchAccountBodySchema = z.object({
+  endpoint_key: endpointKeySchema.optional().nullable(),
+  api_key: z.string().min(1).optional(),
+  expires_at: z.string().min(1).optional().nullable(),
+  quota: accountQuotaSchema.optional().nullable(),
+  enabled: z.boolean().optional()
+}).strict();
+
+const mergeCheckBodySchema = z.object({
+  protocol: protocolSchema,
+  base_url: z.string().url()
 }).strict();
 
 const createEndpointBodySchema = z.object({
@@ -149,6 +195,8 @@ function buildProviderInput(input: {
   provider_key: string;
   display_name: string;
   website_url?: string | null;
+  provider_kind?: "official" | "relay" | "custom";
+  model_availability_scope?: "shared_by_provider" | "per_account";
   trust_level: "low" | "medium" | "high";
   privacy_level: "public_only" | "normal" | "private";
   usage_trust: "low" | "medium" | "high";
@@ -164,6 +212,8 @@ function buildProviderInput(input: {
   adapterType: "openai_compatible" | "openrouter" | "anthropic";
   baseUrl: string;
   websiteUrl: string | null;
+  providerKind?: "official" | "relay" | "custom";
+  modelAvailabilityScope?: "shared_by_provider" | "per_account";
   enabled?: boolean;
   trustLevel: "low" | "medium" | "high";
   privacyLevel: "public_only" | "normal" | "private";
@@ -177,6 +227,8 @@ function buildProviderInput(input: {
     adapterType: representativeEndpoint ? toAdapterType(representativeEndpoint.protocol) : "openai_compatible",
     baseUrl: representativeEndpoint?.base_url ?? "",
     websiteUrl: input.website_url || null,
+    providerKind: input.provider_kind,
+    modelAvailabilityScope: input.model_availability_scope,
     enabled: input.enabled,
     trustLevel: input.trust_level,
     privacyLevel: input.privacy_level,
@@ -251,12 +303,81 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
     return null;
   }
 
+  const accounts = (details.accounts ?? (details.credential ? [details.credential] : [])).map((account) => {
+    const endpointKey =
+      details.endpoints.find((endpoint) => endpoint.id === account.endpointId)?.endpointKey ?? null;
+    let quota: Record<string, unknown> | null = null;
+    if (account.quotaJson) {
+      try {
+        const parsed = JSON.parse(account.quotaJson) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          quota = parsed as Record<string, unknown>;
+        }
+      } catch {
+        quota = null;
+      }
+    }
+    return {
+      account_key: account.accountKey,
+      endpoint_key: endpointKey,
+      enabled: account.enabled ?? true,
+      runtime_status: account.runtimeStatus ?? "normal",
+      status_reason: account.statusReason ?? null,
+      status_message: account.statusMessage ?? null,
+      status_source: account.statusSource ?? "system",
+      status_updated_at: account.statusUpdatedAt ?? null,
+      status_cooldown_until: account.statusCooldownUntil ?? null,
+      recent_error_count: account.recentErrorCount ?? 0,
+      expires_at: account.expiresAt ?? null,
+      quota,
+      key_hint: account.keyHint ?? null,
+      last_error_at: account.lastErrorAt ?? null,
+      last_error_code: account.lastErrorCode ?? null,
+      last_error_message: account.lastErrorMessage ?? null,
+      created_at: account.createdAt,
+      updated_at: account.updatedAt
+    };
+  });
+
+  const availableAccounts = accounts.filter((account) => {
+    if (!account.enabled) {
+      return false;
+    }
+    if (account.runtime_status === "disabled" || account.runtime_status === "abnormal") {
+      return false;
+    }
+    if (account.expires_at) {
+      const expiresAt = Date.parse(account.expires_at);
+      if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
+        return false;
+      }
+    }
+    if (
+      account.quota &&
+      typeof account.quota.remaining_usd === "number" &&
+      account.quota.remaining_usd <= 0
+    ) {
+      return false;
+    }
+    if (
+      account.runtime_status === "rate_limited" &&
+      (account.status_reason === "rate_limited_permanent" ||
+        (account.status_cooldown_until &&
+          Date.parse(account.status_cooldown_until) > Date.now()))
+    ) {
+      return false;
+    }
+    return true;
+  }).length;
+
   return {
     provider_key: details.provider.providerKey,
     display_name: details.provider.displayName,
     adapter_type: details.provider.adapterType,
     base_url: details.provider.baseUrl,
     website_url: details.provider.websiteUrl,
+    provider_kind: details.provider.providerKind ?? "custom",
+    model_availability_scope: details.provider.modelAvailabilityScope ?? "per_account",
     enabled: details.provider.enabled,
     runtime_status: details.provider.runtimeStatus ?? "normal",
     status_reason: details.provider.statusReason ?? null,
@@ -267,7 +388,12 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
     trust_level: details.provider.trustLevel,
     privacy_level: details.provider.privacyLevel,
     usage_trust: details.provider.usageTrust,
-    key_hint: details.credential?.keyHint ?? null,
+    created_at: details.provider.createdAt,
+    updated_at: details.provider.updatedAt,
+    key_hint: details.credential?.keyHint ?? accounts[0]?.key_hint ?? null,
+    account_count: accounts.length,
+    available_account_count: availableAccounts,
+    accounts,
     endpoints: details.endpoints.map((endpoint) => ({
       endpoint_key: endpoint.endpointKey,
       protocol: endpoint.protocol,
@@ -325,6 +451,43 @@ export async function registerAdminProvidersRoutes(
     };
   });
 
+  fastify.get("/admin/api/provider-templates", async () => {
+    return {
+      data: listOfficialProviderTemplates()
+    };
+  });
+
+  fastify.get<{ Params: { templateId: string } }>(
+    "/admin/api/provider-templates/:templateId",
+    async (request) => {
+      const template = getOfficialProviderTemplate(request.params.templateId);
+      if (!template) {
+        throw new HttpError(404, "template_not_found", "Provider template not found");
+      }
+      return template;
+    }
+  );
+
+  fastify.post<{ Body: unknown }>("/admin/api/providers/merge-check", async (request) => {
+    const body = mergeCheckBodySchema.parse(request.body);
+    const matches = dependencies.repository.findProvidersByEndpoint({
+      protocol: body.protocol,
+      baseUrl: body.base_url
+    });
+    return {
+      normalized_base_url: normalizeBaseUrlForMerge(body.base_url),
+      matches: matches.map((item) => ({
+        provider_key: item.provider.providerKey,
+        display_name: item.provider.displayName,
+        provider_kind: item.provider.providerKind ?? "custom",
+        model_availability_scope: item.provider.modelAvailabilityScope ?? "per_account",
+        endpoint_key: item.endpoint.endpointKey,
+        protocol: item.endpoint.protocol,
+        base_url: item.endpoint.baseUrl
+      }))
+    };
+  });
+
   fastify.get<{ Params: { providerKey: string } }>("/admin/api/providers/:providerKey", async (request) => {
     const details = dependencies.repository.getProviderDetails(request.params.providerKey);
     if (!details) {
@@ -341,10 +504,20 @@ export async function registerAdminProvidersRoutes(
       throw new HttpError(409, "provider_exists", "Provider already exists");
     }
 
+    const template = body.template_id ? getOfficialProviderTemplate(body.template_id) : null;
+    if (body.template_id && !template) {
+      throw new HttpError(404, "template_not_found", "Provider template not found");
+    }
+
     const endpointInputs = normalizeEndpointInputs({
       protocol: body.protocol,
       baseUrl: body.base_url,
-      endpoints: body.endpoints
+      endpoints: body.endpoints ?? template?.endpoints.map((endpoint) => ({
+        endpoint_key: endpoint.endpoint_key,
+        protocol: endpoint.protocol,
+        base_url: endpoint.base_url,
+        enabled: endpoint.enabled
+      }))
     });
     if (endpointInputs.length === 0) {
       throw new HttpError(400, "invalid_request", "At least one endpoint is required");
@@ -358,7 +531,13 @@ export async function registerAdminProvidersRoutes(
     });
 
     const details = dependencies.repository.createProviderWithEndpointBundles({
-      provider: buildProviderInput(body, endpointInputs),
+      provider: buildProviderInput({
+        ...body,
+        website_url: body.website_url || template?.website_url || "",
+        provider_kind: body.provider_kind ?? template?.provider_kind,
+        model_availability_scope:
+          body.model_availability_scope ?? template?.model_availability_scope
+      }, endpointInputs),
       encryptedApiKey: dependencies.secretCipher.encrypt(body.api_key),
       apiKeyHint: ManagedProviderRepository.toApiKeyHint(body.api_key),
       endpointBundles
@@ -394,6 +573,7 @@ export async function registerAdminProvidersRoutes(
 
       const updated = dependencies.repository.syncProviderModels(details.provider.providerKey, {
         endpointKey: endpoint.endpointKey,
+        accountKey: details.accounts?.[0]?.accountKey ?? details.credential?.accountKey ?? "default",
         status: "success",
         models: discoveredModels
       });
@@ -447,6 +627,15 @@ export async function registerAdminProvidersRoutes(
               provider_key: existing.provider.providerKey,
               display_name: body.display_name ?? existing.provider.displayName,
               website_url: body.website_url === "" ? null : body.website_url ?? existing.provider.websiteUrl,
+              provider_kind:
+                body.provider_kind ??
+                (existing.provider.providerKind as "official" | "relay" | "custom" | undefined),
+              model_availability_scope:
+                body.model_availability_scope ??
+                (existing.provider.modelAvailabilityScope as
+                  | "shared_by_provider"
+                  | "per_account"
+                  | undefined),
               trust_level: existing.provider.trustLevel as "low" | "medium" | "high",
               privacy_level: existing.provider.privacyLevel as "public_only" | "normal" | "private",
               usage_trust: existing.provider.usageTrust as "low" | "medium" | "high",
@@ -466,7 +655,9 @@ export async function registerAdminProvidersRoutes(
       dependencies.repository.updateProvider(request.params.providerKey, {
         enabled: body.enabled,
         displayName: body.display_name,
-        websiteUrl: body.website_url === "" ? null : body.website_url
+        websiteUrl: body.website_url === "" ? null : body.website_url,
+        providerKind: body.provider_kind,
+        modelAvailabilityScope: body.model_availability_scope
       });
 
       if (body.api_key) {
@@ -520,6 +711,7 @@ export async function registerAdminProvidersRoutes(
 
       const updated = dependencies.repository.syncProviderModels(existing.provider.providerKey, {
         endpointKey: endpoint.endpointKey,
+        accountKey: existing.accounts?.[0]?.accountKey ?? existing.credential?.accountKey ?? "default",
         status: "success",
         models: discoveredModels
       });
@@ -586,6 +778,7 @@ export async function registerAdminProvidersRoutes(
 
       const updated = dependencies.repository.syncProviderModels(details.provider.providerKey, {
         endpointKey: endpoint.endpointKey,
+        accountKey: details.accounts?.[0]?.accountKey ?? details.credential?.accountKey ?? "default",
         status: "success",
         models: discoveredModels
       });
@@ -613,6 +806,183 @@ export async function registerAdminProvidersRoutes(
 
       await dependencies.runtimeManager.reload();
       return serializeProviderDetails(updated);
+    }
+  );
+
+  fastify.get<{ Params: { providerKey: string } }>(
+    "/admin/api/providers/:providerKey/accounts",
+    async (request) => {
+      const details = dependencies.repository.getProviderDetails(request.params.providerKey);
+      if (!details) {
+        throw new HttpError(404, "provider_not_found", "Provider not found");
+      }
+      return {
+        data: serializeProviderDetails(details)?.accounts ?? []
+      };
+    }
+  );
+
+  fastify.post<{ Params: { providerKey: string }; Body: unknown }>(
+    "/admin/api/providers/:providerKey/accounts",
+    async (request, reply) => {
+      const body = createAccountBodySchema.parse(request.body);
+      const existing = dependencies.repository.getProviderDetails(request.params.providerKey);
+      if (!existing) {
+        throw new HttpError(404, "provider_not_found", "Provider not found");
+      }
+      if (dependencies.repository.getAccount(request.params.providerKey, body.account_key)) {
+        throw new HttpError(409, "account_exists", "Account already exists");
+      }
+
+      const created = dependencies.repository.createAccount(request.params.providerKey, {
+        accountKey: body.account_key,
+        endpointKey: body.endpoint_key,
+        encryptedApiKey: dependencies.secretCipher.encrypt(body.api_key),
+        apiKeyHint: ManagedProviderRepository.toApiKeyHint(body.api_key),
+        enabled: body.enabled,
+        expiresAt: body.expires_at ?? null,
+        quotaJson: body.quota ? JSON.stringify(body.quota) : null
+      });
+      if (!created) {
+        throw new HttpError(400, "invalid_request", "Failed to create account");
+      }
+
+      await dependencies.runtimeManager.reload();
+      reply.status(201);
+      return serializeProviderDetails(
+        dependencies.repository.getProviderDetails(request.params.providerKey)
+      );
+    }
+  );
+
+  fastify.patch<{ Params: { providerKey: string; accountKey: string }; Body: unknown }>(
+    "/admin/api/providers/:providerKey/accounts/:accountKey",
+    async (request) => {
+      const body = patchAccountBodySchema.parse(request.body);
+      const existing = dependencies.repository.getAccount(
+        request.params.providerKey,
+        request.params.accountKey
+      );
+      if (!existing) {
+        throw new HttpError(404, "account_not_found", "Account not found");
+      }
+
+      const updated = dependencies.repository.updateAccount(
+        request.params.providerKey,
+        request.params.accountKey,
+        {
+          endpointKey: body.endpoint_key,
+          encryptedApiKey: body.api_key
+            ? dependencies.secretCipher.encrypt(body.api_key)
+            : undefined,
+          apiKeyHint: body.api_key
+            ? ManagedProviderRepository.toApiKeyHint(body.api_key)
+            : undefined,
+          enabled: body.enabled,
+          expiresAt: body.expires_at,
+          quotaJson:
+            body.quota === undefined
+              ? undefined
+              : body.quota === null
+                ? null
+                : JSON.stringify(body.quota)
+        }
+      );
+      if (!updated) {
+        throw new HttpError(400, "invalid_request", "Failed to update account");
+      }
+
+      await dependencies.runtimeManager.reload();
+      return serializeProviderDetails(
+        dependencies.repository.getProviderDetails(request.params.providerKey)
+      );
+    }
+  );
+
+  fastify.post<{ Params: { providerKey: string; accountKey: string }; Body: unknown }>(
+    "/admin/api/providers/:providerKey/accounts/:accountKey/sync-models",
+    async (request) => {
+      const details = dependencies.repository.getProviderDetails(request.params.providerKey);
+      const account = dependencies.repository.getAccount(
+        request.params.providerKey,
+        request.params.accountKey
+      );
+      if (!details || !account) {
+        throw new HttpError(404, "account_not_found", "Account not found");
+      }
+
+      const apiKey = dependencies.secretCipher.decrypt(account.apiKeyEncrypted);
+      const boundEndpoint = account.endpointId
+        ? details.endpoints.find((item) => item.id === account.endpointId)
+        : null;
+      const endpoints = boundEndpoint
+        ? [boundEndpoint]
+        : details.endpoints.filter((item) => item.enabled);
+
+      if (endpoints.length === 0) {
+        throw new HttpError(404, "endpoint_not_found", "Provider endpoint not found");
+      }
+
+      let lastUpdated = details;
+      for (const endpoint of endpoints) {
+        let models: ManagedDiscoveredModelInput[] = [];
+        try {
+          models = await discoverModelsForEndpoint(dependencies.discoveryService, {
+            providerKey: details.provider.providerKey,
+            endpointKey: endpoint.endpointKey,
+            protocol: endpoint.protocol as "openai" | "anthropic",
+            adapterType: endpoint.adapterType as "openai_compatible" | "openrouter" | "anthropic",
+            baseUrl: endpoint.baseUrl,
+            apiKey
+          });
+        } catch (error) {
+          lastUpdated = dependencies.repository.syncProviderModels(details.provider.providerKey, {
+            endpointKey: endpoint.endpointKey,
+            accountKey: account.accountKey,
+            status: "error",
+            errorMessage: error instanceof Error ? error.message : "discovery_failed",
+            models: []
+          }) ?? lastUpdated;
+          continue;
+        }
+
+        lastUpdated = dependencies.repository.syncProviderModels(details.provider.providerKey, {
+          endpointKey: endpoint.endpointKey,
+          accountKey: account.accountKey,
+          status: "success",
+          models
+        }) ?? lastUpdated;
+      }
+
+      await dependencies.runtimeManager.reload();
+      return serializeProviderDetails(lastUpdated);
+    }
+  );
+
+  fastify.delete<{ Params: { providerKey: string; accountKey: string } }>(
+    "/admin/api/providers/:providerKey/accounts/:accountKey",
+    async (request, reply) => {
+      const existing = dependencies.repository.getAccount(
+        request.params.providerKey,
+        request.params.accountKey
+      );
+      if (!existing) {
+        throw new HttpError(404, "account_not_found", "Account not found");
+      }
+      const deleted = dependencies.repository.deleteAccount(
+        request.params.providerKey,
+        request.params.accountKey
+      );
+      if (!deleted) {
+        throw new HttpError(
+          400,
+          "account_required",
+          "Provider must keep at least one account"
+        );
+      }
+      await dependencies.runtimeManager.reload();
+      reply.status(204);
+      return null;
     }
   );
 

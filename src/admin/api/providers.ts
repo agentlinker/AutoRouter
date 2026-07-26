@@ -31,12 +31,63 @@ export interface ProviderEndpoint {
   supports_json_mode: boolean;
 }
 
+export interface ProviderAccount {
+  account_key: string;
+  endpoint_key: string | null;
+  enabled: boolean;
+  runtime_status?: string;
+  status_reason?: string | null;
+  status_message?: string | null;
+  status_source?: string | null;
+  status_updated_at?: string | null;
+  status_cooldown_until?: string | null;
+  recent_error_count?: number;
+  expires_at?: string | null;
+  quota?: {
+    monthly_usd_limit?: number;
+    remaining_usd?: number;
+    remaining_requests?: number;
+    reset_at?: string;
+    source?: string;
+  } | null;
+  key_hint: string | null;
+  last_error_at?: string | null;
+  last_error_code?: string | null;
+  last_error_message?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProviderTemplate {
+  template_id: string;
+  vendor_id: string;
+  vendor_name: string;
+  product_line: string;
+  region?: string;
+  display_name: string;
+  suggested_provider_key: string;
+  website_url?: string;
+  docs_url?: string;
+  provider_kind: "official" | "relay" | "custom";
+  model_availability_scope: "shared_by_provider" | "per_account";
+  endpoints: Array<{
+    endpoint_key: string;
+    protocol: "openai" | "anthropic";
+    adapter_type: "openai_compatible" | "anthropic";
+    base_url: string;
+    enabled?: boolean;
+  }>;
+  notes?: string;
+}
+
 export interface ProviderDetails {
   provider_key: string;
   display_name: string;
   adapter_type: string;
   base_url: string;
   website_url: string | null;
+  provider_kind?: "official" | "relay" | "custom";
+  model_availability_scope?: "shared_by_provider" | "per_account";
   enabled: boolean;
   runtime_status?: string;
   status_reason?: string | null;
@@ -47,7 +98,12 @@ export interface ProviderDetails {
   trust_level: string;
   privacy_level: string;
   usage_trust: string;
+  created_at: string;
+  updated_at: string;
   key_hint: string | null;
+  account_count?: number;
+  available_account_count?: number;
+  accounts?: ProviderAccount[];
   endpoints: ProviderEndpoint[];
   latest_sync: {
     status: string;
@@ -69,6 +125,9 @@ export interface ProviderFormValues {
   endpoints: ProviderEndpointInput[];
   website_url?: string;
   api_key?: string;
+  provider_kind?: "official" | "relay" | "custom";
+  model_availability_scope?: "shared_by_provider" | "per_account";
+  template_id?: string;
 }
 
 export interface ProviderEndpointInput {
@@ -180,4 +239,93 @@ export function updateProviderModelCapabilities(
     method: "PATCH",
     body: JSON.stringify(payload)
   });
+}
+
+export function listProviderTemplates(token: string): Promise<{ data: ProviderTemplate[] }> {
+  return requestJson<{ data: ProviderTemplate[] }>("/admin/api/provider-templates", token);
+}
+
+export function mergeCheckProvider(
+  token: string,
+  payload: { protocol: "openai" | "anthropic"; base_url: string }
+): Promise<{
+  normalized_base_url: string;
+  matches: Array<{
+    provider_key: string;
+    display_name: string;
+    provider_kind: string;
+    model_availability_scope: string;
+    endpoint_key: string;
+    protocol: string;
+    base_url: string;
+  }>;
+}> {
+  return requestJson("/admin/api/providers/merge-check", token, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function createProviderAccount(
+  token: string,
+  providerKey: string,
+  payload: {
+    account_key: string;
+    endpoint_key?: string;
+    api_key: string;
+    expires_at?: string | null;
+    quota?: ProviderAccount["quota"];
+    enabled?: boolean;
+  }
+): Promise<ProviderDetails> {
+  return requestJson<ProviderDetails>(`/admin/api/providers/${providerKey}/accounts`, token, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function updateProviderAccount(
+  token: string,
+  providerKey: string,
+  accountKey: string,
+  payload: {
+    endpoint_key?: string | null;
+    api_key?: string;
+    expires_at?: string | null;
+    quota?: ProviderAccount["quota"] | null;
+    enabled?: boolean;
+  }
+): Promise<ProviderDetails> {
+  return requestJson<ProviderDetails>(
+    `/admin/api/providers/${providerKey}/accounts/${accountKey}`,
+    token,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
+export function deleteProviderAccount(
+  token: string,
+  providerKey: string,
+  accountKey: string
+): Promise<null> {
+  return requestJson<null>(
+    `/admin/api/providers/${providerKey}/accounts/${accountKey}`,
+    token,
+    { method: "DELETE" }
+  );
+}
+
+export function syncProviderAccount(
+  token: string,
+  providerKey: string,
+  accountKey: string
+): Promise<ProviderDetails> {
+  return requestJson<ProviderDetails>(
+    `/admin/api/providers/${providerKey}/accounts/${accountKey}/sync-models`,
+    token,
+    { method: "POST" }
+  );
 }

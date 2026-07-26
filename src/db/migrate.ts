@@ -364,6 +364,235 @@ export function runMigrations(sqlite: Database.Database) {
     );
   `);
 
+
+  // Multi-account provider fields
+  const managedProviderKindColumns = sqlite.pragma("table_info(managed_providers)") as Array<{
+    name: string;
+  }>;
+  const managedProviderKindDefinitions: Array<{ name: string; sql: string }> = [
+    { name: "provider_kind", sql: "ALTER TABLE managed_providers ADD COLUMN provider_kind TEXT NOT NULL DEFAULT 'custom';" },
+    {
+      name: "model_availability_scope",
+      sql: "ALTER TABLE managed_providers ADD COLUMN model_availability_scope TEXT NOT NULL DEFAULT 'per_account';"
+    }
+  ];
+  for (const definition of managedProviderKindDefinitions) {
+    if (!managedProviderKindColumns.some((column) => column.name === definition.name)) {
+      sqlite.exec(definition.sql);
+    }
+  }
+
+  const credentialColumns = sqlite.pragma("table_info(managed_provider_credentials)") as Array<{
+    name: string;
+  }>;
+  const hasAccountKey = credentialColumns.some((column) => column.name === "account_key");
+  if (!hasAccountKey) {
+    sqlite.exec(`
+      CREATE TABLE managed_provider_credentials_v2 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider_id INTEGER NOT NULL,
+        account_key TEXT NOT NULL DEFAULT 'default',
+        endpoint_id INTEGER,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        runtime_status TEXT NOT NULL DEFAULT 'normal',
+        status_reason TEXT,
+        status_message TEXT,
+        status_source TEXT NOT NULL DEFAULT 'system',
+        status_updated_at TEXT,
+        status_cooldown_until TEXT,
+        recent_error_count INTEGER NOT NULL DEFAULT 0,
+        expires_at TEXT,
+        quota_json TEXT,
+        last_error_at TEXT,
+        last_error_code TEXT,
+        last_error_message TEXT,
+        api_key_encrypted TEXT NOT NULL,
+        key_hint TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (provider_id) REFERENCES managed_providers(id) ON DELETE CASCADE,
+        UNIQUE (provider_id, account_key)
+      );
+
+      INSERT INTO managed_provider_credentials_v2 (
+        id,
+        provider_id,
+        account_key,
+        endpoint_id,
+        enabled,
+        runtime_status,
+        status_reason,
+        status_message,
+        status_source,
+        status_updated_at,
+        status_cooldown_until,
+        recent_error_count,
+        api_key_encrypted,
+        key_hint,
+        created_at,
+        updated_at
+      )
+      SELECT
+        credentials.id,
+        credentials.provider_id,
+        'default',
+        (
+          SELECT endpoints.id
+          FROM managed_provider_endpoints AS endpoints
+          WHERE endpoints.provider_id = credentials.provider_id
+          ORDER BY
+            CASE WHEN endpoints.endpoint_key = 'default' THEN 0 ELSE 1 END,
+            endpoints.id ASC
+          LIMIT 1
+        ),
+        1,
+        CASE
+          WHEN providers.runtime_status = 'disabled'
+            AND providers.status_reason = 'auth_failed'
+          THEN 'disabled'
+          ELSE 'normal'
+        END,
+        CASE
+          WHEN providers.runtime_status = 'disabled'
+            AND providers.status_reason = 'auth_failed'
+          THEN providers.status_reason
+          ELSE NULL
+        END,
+        CASE
+          WHEN providers.runtime_status = 'disabled'
+            AND providers.status_reason = 'auth_failed'
+          THEN providers.status_message
+          ELSE NULL
+        END,
+        CASE
+          WHEN providers.runtime_status = 'disabled'
+            AND providers.status_reason = 'auth_failed'
+          THEN COALESCE(providers.status_source, 'system')
+          ELSE 'system'
+        END,
+        CASE
+          WHEN providers.runtime_status = 'disabled'
+            AND providers.status_reason = 'auth_failed'
+          THEN providers.status_updated_at
+          ELSE NULL
+        END,
+        NULL,
+        0,
+        credentials.api_key_encrypted,
+        credentials.key_hint,
+        credentials.created_at,
+        credentials.updated_at
+      FROM managed_provider_credentials AS credentials
+      LEFT JOIN managed_providers AS providers
+        ON providers.id = credentials.provider_id;
+
+      DROP TABLE managed_provider_credentials;
+      ALTER TABLE managed_provider_credentials_v2 RENAME TO managed_provider_credentials;
+
+      UPDATE managed_providers
+      SET
+        runtime_status = 'normal',
+        status_reason = NULL,
+        status_message = NULL,
+        status_source = 'system',
+        status_updated_at = NULL,
+        status_cooldown_until = NULL,
+        recent_error_count = 0
+      WHERE runtime_status = 'disabled'
+        AND status_reason = 'auth_failed';
+    `);
+  } else {
+    const credentialColumnDefinitions: Array<{ name: string; sql: string }> = [
+      { name: "endpoint_id", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN endpoint_id INTEGER;" },
+      { name: "enabled", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;" },
+      { name: "runtime_status", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN runtime_status TEXT NOT NULL DEFAULT 'normal';" },
+      { name: "status_reason", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN status_reason TEXT;" },
+      { name: "status_message", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN status_message TEXT;" },
+      { name: "status_source", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN status_source TEXT NOT NULL DEFAULT 'system';" },
+      { name: "status_updated_at", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN status_updated_at TEXT;" },
+      { name: "status_cooldown_until", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN status_cooldown_until TEXT;" },
+      { name: "recent_error_count", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN recent_error_count INTEGER NOT NULL DEFAULT 0;" },
+      { name: "expires_at", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN expires_at TEXT;" },
+      { name: "quota_json", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN quota_json TEXT;" },
+      { name: "last_error_at", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN last_error_at TEXT;" },
+      { name: "last_error_code", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN last_error_code TEXT;" },
+      { name: "last_error_message", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN last_error_message TEXT;" }
+    ];
+    for (const definition of credentialColumnDefinitions) {
+      if (!credentialColumns.some((column) => column.name === definition.name)) {
+        sqlite.exec(definition.sql);
+      }
+    }
+    sqlite.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS managed_provider_credentials_provider_account_unique
+        ON managed_provider_credentials (provider_id, account_key);
+    `);
+  }
+
+
+  // Backfill official provider kind/scope from known official endpoint base urls.
+  sqlite.exec(`
+    UPDATE managed_providers
+    SET
+      provider_kind = 'official',
+      model_availability_scope = 'shared_by_provider'
+    WHERE id IN (
+      SELECT DISTINCT provider_id
+      FROM managed_provider_endpoints
+      WHERE lower(rtrim(base_url, '/')) IN (
+        'https://open.bigmodel.cn/api/paas/v4',
+        'https://open.bigmodel.cn/api/anthropic',
+        'https://token-plan-cn.xiaomimimo.com/v1',
+        'https://token-plan-cn.xiaomimimo.com/anthropic',
+        'https://token-plan-sgp.xiaomimimo.com/v1',
+        'https://token-plan-sgp.xiaomimimo.com/anthropic',
+        'https://ark.cn-beijing.volces.com/api/coding/v3',
+        'https://ark.cn-beijing.volces.com/api/coding',
+        'https://api.longcat.chat/openai',
+        'https://api.longcat.chat/anthropic'
+      )
+    );
+  `);
+
+
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS managed_account_models (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id INTEGER NOT NULL,
+      managed_model_id INTEGER NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      discovered_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      FOREIGN KEY (account_id) REFERENCES managed_provider_credentials(id) ON DELETE CASCADE,
+      FOREIGN KEY (managed_model_id) REFERENCES managed_models(id) ON DELETE CASCADE,
+      UNIQUE (account_id, managed_model_id)
+    );
+  `);
+
+  // For per_account providers, seed default account model availability from existing models.
+  sqlite.exec(`
+    INSERT OR IGNORE INTO managed_account_models (
+      account_id,
+      managed_model_id,
+      enabled,
+      discovered_at,
+      last_seen_at
+    )
+    SELECT
+      credentials.id,
+      models.id,
+      1,
+      models.discovered_at,
+      models.updated_at
+    FROM managed_provider_credentials AS credentials
+    INNER JOIN managed_providers AS providers
+      ON providers.id = credentials.provider_id
+    INNER JOIN managed_models AS models
+      ON models.provider_id = providers.id
+    WHERE providers.model_availability_scope = 'per_account'
+      AND credentials.account_key = 'default';
+  `);
+
   // Backfill logical models from provider model ids and bind all managed rows to canonical logical rows.
   const now = new Date().toISOString();
   const managedRows = sqlite

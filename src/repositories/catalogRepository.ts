@@ -3,7 +3,9 @@ import { and, eq } from "drizzle-orm";
 
 import {
   logicalModelsTable,
+  managedAccountModelsTable,
   managedModelsTable,
+  managedProviderCredentialsTable,
   managedProviderEndpointsTable,
   managedProvidersTable,
   type LogicalModelRow,
@@ -25,6 +27,8 @@ export interface CatalogModelInstance {
   model: ManagedModelRow;
   provider: ManagedProviderRow;
   endpoint: ManagedProviderEndpointRow | null;
+  available_accounts: string[];
+  available_account_count: number;
 }
 
 export interface CatalogLogicalModelDetails {
@@ -311,6 +315,25 @@ export class CatalogRepository {
     const endpoints = new Map(
       this.db.select().from(managedProviderEndpointsTable).all().map((endpoint) => [endpoint.id, endpoint])
     );
+    const accountsByProvider = new Map<number, Array<{ id: number; accountKey: string; enabled: boolean }>>();
+    for (const account of this.db.select().from(managedProviderCredentialsTable).all()) {
+      const list = accountsByProvider.get(account.providerId) ?? [];
+      list.push({
+        id: account.id,
+        accountKey: account.accountKey,
+        enabled: account.enabled !== false
+      });
+      accountsByProvider.set(account.providerId, list);
+    }
+    const accountModelLinks = this.db.select().from(managedAccountModelsTable)
+      .where(eq(managedAccountModelsTable.enabled, true))
+      .all();
+    const modelAccountIds = new Map<number, Set<number>>();
+    for (const link of accountModelLinks) {
+      const set = modelAccountIds.get(link.managedModelId) ?? new Set<number>();
+      set.add(link.accountId);
+      modelAccountIds.set(link.managedModelId, set);
+    }
 
     return models.flatMap((model) => {
       const provider = providers.get(model.providerId);
@@ -318,10 +341,25 @@ export class CatalogRepository {
         return [];
       }
 
+      const providerAccounts = accountsByProvider.get(provider.id) ?? [];
+      let availableAccounts: string[];
+      if (provider.modelAvailabilityScope === "per_account") {
+        const linked = modelAccountIds.get(model.id) ?? new Set<number>();
+        availableAccounts = providerAccounts
+          .filter((account) => account.enabled && linked.has(account.id))
+          .map((account) => account.accountKey);
+      } else {
+        availableAccounts = providerAccounts
+          .filter((account) => account.enabled)
+          .map((account) => account.accountKey);
+      }
+
       return [{
         model,
         provider,
-        endpoint: model.endpointId ? endpoints.get(model.endpointId) ?? null : null
+        endpoint: model.endpointId ? endpoints.get(model.endpointId) ?? null : null,
+        available_accounts: availableAccounts,
+        available_account_count: availableAccounts.length
       }];
     });
   }

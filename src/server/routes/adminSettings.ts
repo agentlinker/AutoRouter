@@ -62,7 +62,7 @@ export async function registerAdminSettingsRoutes(
             },
             {
               key: "auth_disables_provider",
-              label: "401/403 禁用整个 Provider",
+              label: "401/403 禁用当前 Account（API Key）",
               value: String(runtimeStatus.auth_disables_provider)
             }
           ],

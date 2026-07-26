@@ -7,6 +7,8 @@ export const managedProvidersTable = sqliteTable("managed_providers", {
   adapterType: text("adapter_type").notNull(),
   baseUrl: text("base_url").notNull(),
   websiteUrl: text("website_url"),
+  providerKind: text("provider_kind").notNull().default("custom"),
+  modelAvailabilityScope: text("model_availability_scope").notNull().default("per_account"),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
   runtimeStatus: text("runtime_status").notNull().default("normal"),
   statusReason: text("status_reason"),
@@ -27,12 +29,30 @@ export const managedProvidersTable = sqliteTable("managed_providers", {
 export const managedProviderCredentialsTable = sqliteTable("managed_provider_credentials", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   providerId: integer("provider_id").notNull(),
+  accountKey: text("account_key").notNull().default("default"),
+  endpointId: integer("endpoint_id"),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  runtimeStatus: text("runtime_status").notNull().default("normal"),
+  statusReason: text("status_reason"),
+  statusMessage: text("status_message"),
+  statusSource: text("status_source").notNull().default("system"),
+  statusUpdatedAt: text("status_updated_at"),
+  statusCooldownUntil: text("status_cooldown_until"),
+  recentErrorCount: integer("recent_error_count").notNull().default(0),
+  expiresAt: text("expires_at"),
+  quotaJson: text("quota_json"),
+  lastErrorAt: text("last_error_at"),
+  lastErrorCode: text("last_error_code"),
+  lastErrorMessage: text("last_error_message"),
   apiKeyEncrypted: text("api_key_encrypted").notNull(),
   keyHint: text("key_hint"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull()
 }, (table) => ({
-  providerUnique: uniqueIndex("managed_provider_credentials_provider_id_unique").on(table.providerId)
+  providerAccountUnique: uniqueIndex("managed_provider_credentials_provider_account_unique").on(
+    table.providerId,
+    table.accountKey
+  )
 }));
 
 export const managedProviderEndpointsTable = sqliteTable("managed_provider_endpoints", {
@@ -123,6 +143,20 @@ export const managedModelsTable = sqliteTable("managed_models", {
   )
 }));
 
+export const managedAccountModelsTable = sqliteTable("managed_account_models", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  accountId: integer("account_id").notNull(),
+  managedModelId: integer("managed_model_id").notNull(),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  discoveredAt: text("discovered_at").notNull(),
+  lastSeenAt: text("last_seen_at").notNull()
+}, (table) => ({
+  accountModelUnique: uniqueIndex("managed_account_models_account_model_unique").on(
+    table.accountId,
+    table.managedModelId
+  )
+}));
+
 export const modelSyncRunsTable = sqliteTable("model_sync_runs", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   providerId: integer("provider_id").notNull(),
@@ -191,6 +225,7 @@ export const schema = {
   managedProviderEndpointsTable,
   logicalModelsTable,
   managedModelsTable,
+  managedAccountModelsTable,
   modelSyncRunsTable,
   appSettingsTable,
   routeTracesTable
@@ -201,6 +236,7 @@ export type ManagedCredentialRow = typeof managedProviderCredentialsTable.$infer
 export type ManagedProviderEndpointRow = typeof managedProviderEndpointsTable.$inferSelect;
 export type LogicalModelRow = typeof logicalModelsTable.$inferSelect;
 export type ManagedModelRow = typeof managedModelsTable.$inferSelect;
+export type ManagedAccountModelRow = typeof managedAccountModelsTable.$inferSelect;
 export type ModelSyncRunRow = typeof modelSyncRunsTable.$inferSelect;
 export type RouteTraceRow = typeof routeTracesTable.$inferSelect;
 
