@@ -244,10 +244,11 @@ function KeyStatusBadge(props: { configured: boolean }) {
   );
 }
 
-function TraceStatusBadge(props: { status: "success" | "failed" }) {
+function TraceStatusBadge(props: { status: "success" | "success_with_fallback" | "failed" }) {
+  const success = props.status === "success" || props.status === "success_with_fallback";
   return (
-    <span className={`badge ${props.status === "success" ? "success" : "warning"}`}>
-      {props.status === "success" ? "成功" : "失败"}
+    <span className={`badge ${success ? "success" : "warning"}`}>
+      {props.status === "success_with_fallback" ? "Fallback 成功" : success ? "成功" : "失败"}
     </span>
   );
 }

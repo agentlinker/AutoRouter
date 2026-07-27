@@ -815,7 +815,7 @@ export async function registerResponsesRoute(
     state.traceStore.append({
       ...baseTrace,
       execution: {
-        status: "success",
+        status: fallbacks.length > 0 ? "success_with_fallback" : "success",
         latency_ms: latencyMs,
         input_tokens: usage?.prompt_tokens,
         output_tokens: usage?.completion_tokens,

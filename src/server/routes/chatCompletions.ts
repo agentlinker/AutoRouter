@@ -446,7 +446,7 @@ export async function registerChatCompletionsRoute(
       ...baseTrace,
       policy_hits: sessionId ? ["session_sticky"] : [],
       execution: {
-        status: "success",
+        status: fallbackHistory.length > 0 ? "success_with_fallback" : "success",
         latency_ms: latencyMs,
         input_tokens: providerResponse.usage?.prompt_tokens,
         output_tokens: providerResponse.usage?.completion_tokens,

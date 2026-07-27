@@ -247,6 +247,7 @@ describe("gateway integration", () => {
       })
     ]);
     expect(explain.json().fallbacks).toHaveLength(1);
+    expect(state.traceStore.latest()?.execution.status).toBe("success_with_fallback");
 
     await gateway.close();
   });

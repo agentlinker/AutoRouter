@@ -56,7 +56,7 @@ export interface RouteTrace {
   } | null;
   policy_hits: string[];
   execution: {
-    status: "success" | "failed";
+    status: "success" | "success_with_fallback" | "failed";
     latency_ms: number;
     input_tokens?: number;
     output_tokens?: number;

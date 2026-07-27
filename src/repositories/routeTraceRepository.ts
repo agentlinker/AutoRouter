@@ -196,7 +196,7 @@ export class RouteTraceRepository {
   public getUsageTotals() {
     const result = this.db.select({
       requests: sql<number>`count(*)`,
-      successCount: sql<number>`sum(case when ${routeTracesTable.executionStatus} = 'success' then 1 else 0 end)`,
+      successCount: sql<number>`sum(case when ${routeTracesTable.executionStatus} in ('success', 'success_with_fallback') then 1 else 0 end)`,
       failureCount: sql<number>`sum(case when ${routeTracesTable.executionStatus} = 'failed' then 1 else 0 end)`,
       avgLatencyMs: sql<number>`coalesce(round(avg(${routeTracesTable.latencyMs})), 0)`,
       inputTokens: sql<number>`coalesce(sum(${routeTracesTable.inputTokens}), 0)`,
@@ -227,7 +227,7 @@ export class RouteTraceRepository {
     return this.db.select({
       providerKey: sql<string>`coalesce(${routeTracesTable.selectedProvider}, 'unassigned')`,
       requestCount: sql<number>`count(*)`,
-      successCount: sql<number>`sum(case when ${routeTracesTable.executionStatus} = 'success' then 1 else 0 end)`,
+      successCount: sql<number>`sum(case when ${routeTracesTable.executionStatus} in ('success', 'success_with_fallback') then 1 else 0 end)`,
       failureCount: sql<number>`sum(case when ${routeTracesTable.executionStatus} = 'failed' then 1 else 0 end)`,
       avgLatencyMs: sql<number>`coalesce(round(avg(${routeTracesTable.latencyMs})), 0)`,
       inputTokens: sql<number>`coalesce(sum(${routeTracesTable.inputTokens}), 0)`,
