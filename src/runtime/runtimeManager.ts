@@ -1,6 +1,7 @@
 import type { RouterState } from "../state/routerState.js";
 
 import { RuntimeConfigProjector, type RuntimeProjectorOptions } from "./runtimeConfigProjector.js";
+import { DEFAULT_RUNTIME_STATUS_SETTINGS } from "./runtimeStatus.js";
 import type { RuntimeManagerLike, RuntimeSnapshot } from "./runtimeTypes.js";
 import { CredentialStore } from "./credentialStore.js";
 import { ModelCatalog } from "../catalog/modelCatalog.js";
@@ -28,13 +29,7 @@ export function createStaticRuntimeManager(state: RouterState): RuntimeManagerLi
   const snapshot: RuntimeSnapshot = {
     ...state,
     modelStatuses: state.modelStatuses ?? {},
-    runtimeStatusSettings: state.runtimeStatusSettings ?? {
-      error_threshold: 10,
-      rate_limit_backoff_seconds: [30, 60, 120, 300, 600, 3600, 86400],
-      permanent_after_final_backoff: true,
-      clear_counters_on_success: true,
-      auth_disables_provider: true
-    },
+    runtimeStatusSettings: state.runtimeStatusSettings ?? DEFAULT_RUNTIME_STATUS_SETTINGS,
     modelCatalog: new ModelCatalog(state.config),
     credentialStore: new CredentialStore(new Map())
   };

@@ -345,6 +345,7 @@ export function runMigrations(sqlite: Database.Database) {
     { name: "status_updated_at", sql: "ALTER TABLE managed_models ADD COLUMN status_updated_at TEXT;" },
     { name: "status_cooldown_until", sql: "ALTER TABLE managed_models ADD COLUMN status_cooldown_until TEXT;" },
     { name: "rate_limit_strike", sql: "ALTER TABLE managed_models ADD COLUMN rate_limit_strike INTEGER NOT NULL DEFAULT 0;" },
+    { name: "cooldown_strike", sql: "ALTER TABLE managed_models ADD COLUMN cooldown_strike INTEGER NOT NULL DEFAULT 0;" },
     { name: "recent_error_count", sql: "ALTER TABLE managed_models ADD COLUMN recent_error_count INTEGER NOT NULL DEFAULT 0;" },
     { name: "last_error_at", sql: "ALTER TABLE managed_models ADD COLUMN last_error_at TEXT;" },
     { name: "last_error_code", sql: "ALTER TABLE managed_models ADD COLUMN last_error_code TEXT;" },
@@ -527,6 +528,18 @@ export function runMigrations(sqlite: Database.Database) {
       CREATE UNIQUE INDEX IF NOT EXISTS managed_provider_credentials_provider_account_unique
         ON managed_provider_credentials (provider_id, account_key);
     `);
+  }
+
+  // 错误冷却阶梯的 strike 计数，独立于 rate_limit_strike（后者专供 429 阶梯），
+  // 避免两套阶梯共用一个计数器互相干扰。放在上面的 if/else 之后统一补，
+  // 这样重建表和增量 ALTER 两条路径都能拿到该列。
+  const credentialCooldownColumns = sqlite.pragma(
+    "table_info(managed_provider_credentials)"
+  ) as Array<{ name: string }>;
+  if (!credentialCooldownColumns.some((column) => column.name === "cooldown_strike")) {
+    sqlite.exec(
+      "ALTER TABLE managed_provider_credentials ADD COLUMN cooldown_strike INTEGER NOT NULL DEFAULT 0;"
+    );
   }
 
 

@@ -931,7 +931,10 @@ export function SettingsDetailPage() {
   const [runtimeForm, setRuntimeForm] = useState({
     error_threshold: "10",
     rate_limit_backoff_seconds: "30, 60, 120, 300, 600, 3600, 86400",
+    error_backoff_seconds: "15, 30, 60, 300, 900, 3600",
+    model_unavailable_backoff_seconds: "1800, 21600, 86400",
     permanent_after_final_backoff: true,
+    error_permanent_after_final_backoff: false,
     clear_counters_on_success: true,
     auth_disables_provider: true
   });
@@ -952,7 +955,14 @@ export function SettingsDetailPage() {
       rate_limit_backoff_seconds: Array.isArray(values.rate_limit_backoff_seconds)
         ? values.rate_limit_backoff_seconds.join(", ")
         : "30, 60, 120, 300, 600, 3600, 86400",
+      error_backoff_seconds: Array.isArray(values.error_backoff_seconds)
+        ? values.error_backoff_seconds.join(", ")
+        : "15, 30, 60, 300, 900, 3600",
+      model_unavailable_backoff_seconds: Array.isArray(values.model_unavailable_backoff_seconds)
+        ? values.model_unavailable_backoff_seconds.join(", ")
+        : "1800, 21600, 86400",
       permanent_after_final_backoff: values.permanent_after_final_backoff !== false,
+      error_permanent_after_final_backoff: values.error_permanent_after_final_backoff === true,
       clear_counters_on_success: values.clear_counters_on_success !== false,
       auth_disables_provider: values.auth_disables_provider !== false
     });
@@ -960,18 +970,30 @@ export function SettingsDetailPage() {
 
   const saveMutation = useMutation({
     mutationFn: () => {
-      const backoff = runtimeForm.rate_limit_backoff_seconds
-        .split(",")
-        .map((value) => Number(value.trim()))
-        .filter((value) => Number.isFinite(value) && value > 0);
-      if (backoff.length === 0) {
-        throw new Error("429 退避阶梯至少需要一个正数秒数");
-      }
+      const parseLadder = (raw: string, label: string) => {
+        const ladder = raw
+          .split(",")
+          .map((value) => Number(value.trim()))
+          .filter((value) => Number.isFinite(value) && value > 0);
+        if (ladder.length === 0) {
+          throw new Error(`${label}至少需要一个正数秒数`);
+        }
+        return ladder;
+      };
 
       return updateSettingsSection(token, sectionId, {
         error_threshold: Number(runtimeForm.error_threshold),
-        rate_limit_backoff_seconds: backoff,
+        rate_limit_backoff_seconds: parseLadder(
+          runtimeForm.rate_limit_backoff_seconds,
+          "429 退避阶梯"
+        ),
+        error_backoff_seconds: parseLadder(runtimeForm.error_backoff_seconds, "错误冷却阶梯"),
+        model_unavailable_backoff_seconds: parseLadder(
+          runtimeForm.model_unavailable_backoff_seconds,
+          "模型下线冷却阶梯"
+        ),
         permanent_after_final_backoff: runtimeForm.permanent_after_final_backoff,
+        error_permanent_after_final_backoff: runtimeForm.error_permanent_after_final_backoff,
         clear_counters_on_success: runtimeForm.clear_counters_on_success,
         auth_disables_provider: runtimeForm.auth_disables_provider
       });
@@ -1042,7 +1064,34 @@ export function SettingsDetailPage() {
       {section.section_id === "runtime_status" ? (
         <div className="panel form form-card">
           <label className="field">
-            <span>连续其它错误阈值 N</span>
+            <span>错误冷却阶梯(秒)</span>
+            <input
+              value={runtimeForm.error_backoff_seconds}
+              onChange={(event) =>
+                setRuntimeForm((current) => ({
+                  ...current,
+                  error_backoff_seconds: event.target.value
+                }))
+              }
+            />
+            <small className="muted">
+              上游 5xx / 超时 / 不可达时冷却当前 Account，首次报错即生效，重复失败按阶梯递增。
+            </small>
+          </label>
+          <label className="field">
+            <span>模型下线(404/410)冷却阶梯(秒)</span>
+            <input
+              value={runtimeForm.model_unavailable_backoff_seconds}
+              onChange={(event) =>
+                setRuntimeForm((current) => ({
+                  ...current,
+                  model_unavailable_backoff_seconds: event.target.value
+                }))
+              }
+            />
+          </label>
+          <label className="field">
+            <span>模型累计错误阈值 N</span>
             <input
               value={runtimeForm.error_threshold}
               type="number"
@@ -1054,6 +1103,9 @@ export function SettingsDetailPage() {
                 }))
               }
             />
+            <small className="muted">
+              Account 冷却反复救不回来时的兜底：单个模型累计错误达到该值转永久熔断，需手动启用恢复。
+            </small>
           </label>
           <label className="field">
             <span>429 退避阶梯(秒)</span>
@@ -1084,6 +1136,19 @@ export function SettingsDetailPage() {
             <label className="capability-toggle">
               <input
                 type="checkbox"
+                checked={runtimeForm.error_permanent_after_final_backoff}
+                onChange={(event) =>
+                  setRuntimeForm((current) => ({
+                    ...current,
+                    error_permanent_after_final_backoff: event.target.checked
+                  }))
+                }
+              />
+              <span>错误顶阶后永久熔断 Account</span>
+            </label>
+            <label className="capability-toggle">
+              <input
+                type="checkbox"
                 checked={runtimeForm.clear_counters_on_success}
                 onChange={(event) =>
                   setRuntimeForm((current) => ({
@@ -1105,7 +1170,7 @@ export function SettingsDetailPage() {
                   }))
                 }
               />
-              <span>401/403 禁用整个 Provider</span>
+              <span>401/403 禁用当前 Account（API Key）</span>
             </label>
           </div>
         </div>

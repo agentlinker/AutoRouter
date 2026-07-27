@@ -12,6 +12,10 @@ import {
   listOfficialProviderTemplates
 } from "../../providers/officialProviderTemplates.js";
 import { SecretCipher } from "../../security/secretCipher.js";
+import {
+  accountUnavailableReason,
+  isRuntimeStatusValue
+} from "../../runtime/runtimeStatus.js";
 import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
 import { HttpError } from "../../utils/httpErrors.js";
 
@@ -343,9 +347,6 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
     if (!account.enabled) {
       return false;
     }
-    if (account.runtime_status === "disabled" || account.runtime_status === "abnormal") {
-      return false;
-    }
     if (account.expires_at) {
       const expiresAt = Date.parse(account.expires_at);
       if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
@@ -359,15 +360,17 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
     ) {
       return false;
     }
-    if (
-      account.runtime_status === "rate_limited" &&
-      (account.status_reason === "rate_limited_permanent" ||
-        (account.status_cooldown_until &&
-          Date.parse(account.status_cooldown_until) > Date.now()))
-    ) {
-      return false;
-    }
-    return true;
+    // 与调度侧共用同一套运行态判定，避免这里漏掉新增状态导致虚报可用数
+    return (
+      accountUnavailableReason({
+        runtimeStatus: isRuntimeStatusValue(account.runtime_status)
+          ? account.runtime_status
+          : "normal",
+        statusReason: account.status_reason,
+        statusMessage: account.status_message,
+        statusCooldownUntil: account.status_cooldown_until
+      }) === null
+    );
   }).length;
 
   return {

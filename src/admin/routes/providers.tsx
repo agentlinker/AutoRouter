@@ -82,6 +82,8 @@ function runtimeStatusLabel(status?: string | null) {
       return "鉴权异常";
     case "rate_limited":
       return "限流中";
+    case "cooling_down":
+      return "错误冷却中";
     case "abnormal":
       return "失败过多";
     case "normal":
@@ -101,11 +103,40 @@ function isRuntimeNormal(status?: string | null) {
   return status === "normal" || !status;
 }
 
-function isAccountSchedulable(account: NonNullable<ProviderDetails["accounts"]>[number]) {
-  if (!account.enabled) {
+function isCooldownActive(cooldownUntil?: string | null) {
+  if (!cooldownUntil) {
     return false;
   }
-  if (account.runtime_status === "disabled" || account.runtime_status === "abnormal") {
+  const until = Date.parse(cooldownUntil);
+  return Number.isFinite(until) && until > Date.now();
+}
+
+/**
+ * 与后端 runtimeStatus.ts 的判定保持一致：
+ * disabled / abnormal 需人工恢复；rate_limited 与 cooling_down 冷却到期即可再调度。
+ */
+function isRuntimeStatusSchedulable(input: {
+  runtime_status?: string | null;
+  status_reason?: string | null;
+  status_cooldown_until?: string | null;
+}) {
+  if (isRuntimeNormal(input.runtime_status)) {
+    return true;
+  }
+  if (input.runtime_status === "disabled" || input.runtime_status === "abnormal") {
+    return false;
+  }
+  if (input.runtime_status === "rate_limited" || input.runtime_status === "cooling_down") {
+    if (input.status_reason?.endsWith("_permanent")) {
+      return false;
+    }
+    return !isCooldownActive(input.status_cooldown_until);
+  }
+  return false;
+}
+
+function isAccountSchedulable(account: NonNullable<ProviderDetails["accounts"]>[number]) {
+  if (!account.enabled) {
     return false;
   }
   if (account.expires_at) {
@@ -121,15 +152,7 @@ function isAccountSchedulable(account: NonNullable<ProviderDetails["accounts"]>[
   ) {
     return false;
   }
-  if (
-    account.runtime_status === "rate_limited" &&
-    (account.status_reason === "rate_limited_permanent" ||
-      (account.status_cooldown_until &&
-        Date.parse(account.status_cooldown_until) > Date.now()))
-  ) {
-    return false;
-  }
-  return isRuntimeNormal(account.runtime_status) || account.runtime_status === "rate_limited";
+  return isRuntimeStatusSchedulable(account);
 }
 
 function isProviderAvailable(provider: ProviderDetails) {
@@ -137,11 +160,16 @@ function isProviderAvailable(provider: ProviderDetails) {
     (provider.available_account_count ??
       provider.accounts?.filter(isAccountSchedulable).length ??
       (provider.key_hint ? 1 : 0)) > 0;
-  return provider.enabled && isRuntimeNormal(provider.runtime_status) && hasSchedulableAccount;
+  return provider.enabled && isRuntimeStatusSchedulable(provider) && hasSchedulableAccount;
 }
 
-function isProviderModelAvailable(model: { enabled?: boolean; runtime_status?: string | null }) {
-  return model.enabled !== false && isRuntimeNormal(model.runtime_status);
+function isProviderModelAvailable(model: {
+  enabled?: boolean;
+  runtime_status?: string | null;
+  status_reason?: string | null;
+  status_cooldown_until?: string | null;
+}) {
+  return model.enabled !== false && isRuntimeStatusSchedulable(model);
 }
 
 function isProviderModelSchedulable(provider: ProviderDetails, model: ProviderModel) {
@@ -149,7 +177,7 @@ function isProviderModelSchedulable(provider: ProviderDetails, model: ProviderMo
 }
 
 function providerModelUnavailableReason(provider: ProviderDetails, model: ProviderModel) {
-  if (!provider.enabled || !isRuntimeNormal(provider.runtime_status)) {
+  if (!provider.enabled || !isRuntimeStatusSchedulable(provider)) {
     return runtimeStatusDetail(provider) || "Provider 不可用";
   }
   if ((provider.available_account_count ?? 0) <= 0) {

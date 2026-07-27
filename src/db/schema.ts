@@ -38,6 +38,8 @@ export const managedProviderCredentialsTable = sqliteTable("managed_provider_cre
   statusSource: text("status_source").notNull().default("system"),
   statusUpdatedAt: text("status_updated_at"),
   statusCooldownUntil: text("status_cooldown_until"),
+  /** 错误冷却阶梯计数，独立于 429 的 rate_limit_strike */
+  cooldownStrike: integer("cooldown_strike").notNull().default(0),
   recentErrorCount: integer("recent_error_count").notNull().default(0),
   expiresAt: text("expires_at"),
   quotaJson: text("quota_json"),
@@ -120,6 +122,8 @@ export const managedModelsTable = sqliteTable("managed_models", {
   statusUpdatedAt: text("status_updated_at"),
   statusCooldownUntil: text("status_cooldown_until"),
   rateLimitStrike: integer("rate_limit_strike").notNull().default(0),
+  /** 错误冷却阶梯计数（model_unavailable），独立于 429 的 rate_limit_strike */
+  cooldownStrike: integer("cooldown_strike").notNull().default(0),
   recentErrorCount: integer("recent_error_count").notNull().default(0),
   lastErrorAt: text("last_error_at"),
   lastErrorCode: text("last_error_code"),

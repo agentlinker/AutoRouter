@@ -102,17 +102,17 @@ function canUseCandidate(
   privacyLevel: string,
   modelStatus?: ModelRuntimeStatusState | null
 ): string | null {
+  // provider.enabled is reflected via endpoint/account projection; runtime_status gates here.
+  // 统一走 providerFilterReason，冷却类状态由它按 cooldown 判定是否放行。
   const providerReason = providerFilterReason({
     enabled: true,
     runtimeStatus: provider.runtime_status ?? "normal",
     statusReason: provider.status_reason,
-    statusMessage: provider.status_message
+    statusMessage: provider.status_message,
+    statusCooldownUntil: provider.status_cooldown_until
   });
-  // provider.enabled is reflected via endpoint/account projection; runtime_status gates here
-  if (provider.runtime_status && provider.runtime_status !== "normal") {
-    if (provider.runtime_status === "disabled" || provider.runtime_status === "abnormal") {
-      return providerReason;
-    }
+  if (providerReason) {
+    return providerReason;
   }
 
   if (modelStatus) {

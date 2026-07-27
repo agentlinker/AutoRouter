@@ -16,7 +16,8 @@ import { CredentialStore } from "./credentialStore.js";
 import type { RuntimeSnapshot } from "./runtimeTypes.js";
 import {
   DEFAULT_RUNTIME_STATUS_SETTINGS,
-  isCooldownActive,
+  accountUnavailableReason,
+  isProviderSchedulable,
   isRuntimeStatusValue,
   type RuntimeStatus
 } from "./runtimeStatus.js";
@@ -209,7 +210,15 @@ export class RuntimeConfigProjector {
       provider.status_message = managed.statusMessage ?? undefined;
       provider.status_cooldown_until = managed.statusCooldownUntil ?? null;
 
-      if (status === "disabled" || status === "abnormal") {
+      const providerSchedulable = isProviderSchedulable({
+        enabled: true,
+        runtimeStatus: status,
+        statusReason: managed.statusReason,
+        statusMessage: managed.statusMessage,
+        statusCooldownUntil: managed.statusCooldownUntil
+      });
+
+      if (!providerSchedulable) {
         for (const account of registry.accounts) {
           if (account.id.startsWith(`${provider.id}/`)) {
             account.available = false;
@@ -240,26 +249,17 @@ export class RuntimeConfigProjector {
           }
         }
 
-        if (accountStatus === "disabled") {
+        const unavailable = accountUnavailableReason({
+          runtimeStatus: accountStatus,
+          statusReason: bundle.credential.statusReason,
+          statusMessage: bundle.credential.statusMessage,
+          statusCooldownUntil: bundle.credential.statusCooldownUntil,
+          now
+        });
+        if (unavailable) {
           account.available = false;
-          account.disabled_reason = bundle.credential.statusReason ?? "account_auth_failed";
-          account.disabled_message =
-            bundle.credential.statusMessage ?? "Invalid API key";
-        } else if (accountStatus === "abnormal") {
-          account.available = false;
-          account.disabled_reason = bundle.credential.statusReason ?? "account_abnormal";
-          account.disabled_message =
-            bundle.credential.statusMessage ?? "Account abnormal";
-        } else if (accountStatus === "rate_limited") {
-          if (
-            bundle.credential.statusReason === "rate_limited_permanent" ||
-            isCooldownActive(bundle.credential.statusCooldownUntil, now)
-          ) {
-            account.available = false;
-            account.disabled_reason = bundle.credential.statusReason ?? "account_rate_limited";
-            account.disabled_message =
-              bundle.credential.statusMessage ?? "Account rate limited";
-          }
+          account.disabled_reason = unavailable.reason;
+          account.disabled_message = unavailable.message;
         }
 
         if (

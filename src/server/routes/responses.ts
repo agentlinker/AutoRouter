@@ -563,6 +563,60 @@ export async function registerResponsesRoute(
     let lastError: unknown;
     let sawNativeResponsesAdapter = false;
 
+    const buildBaseTrace = () => ({
+      trace_id: traceId,
+      timestamp: new Date().toISOString(),
+      session_id: null,
+      request: {
+        model: request.body.model!,
+        normalized_model: routeDecision.normalizedModel,
+        prompt_hash: promptHash,
+        stream: request.body.stream ?? false,
+        has_tools: Array.isArray(request.body.tools) && request.body.tools.length > 0,
+        privacy_level: privacyLevel,
+        context_tokens_est: estimateResponsesContextTokens(request.body)
+      },
+      candidates: routeDecision.candidates.map((candidate) => ({
+        route_id: candidate.routeId,
+        endpoint: candidate.endpoint,
+        platform: candidate.platform,
+        provider: candidate.provider,
+        account: candidate.account,
+        model_id: candidate.modelId,
+        model: candidate.model,
+        score: candidate.score,
+        sticky: candidate.sticky
+      })),
+      filtered: routeDecision.filtered.map((candidate) => ({
+        route_id: candidate.routeId,
+        endpoint: candidate.endpoint,
+        platform: candidate.platform,
+        provider: candidate.provider,
+        account: candidate.account,
+        model_id: candidate.modelId,
+        model: candidate.model,
+        reason: candidate.filteredReason,
+        score: candidate.score,
+        sticky: candidate.sticky
+      })),
+      selected: selectedCandidate
+        ? {
+            route_id: selectedCandidate.routeId,
+            endpoint: selectedCandidate.endpoint.id,
+            platform: selectedCandidate.platform.id,
+            provider: selectedCandidate.provider.id,
+            account_hash: sha256(selectedCandidate.account.id),
+            model_id: selectedCandidate.modelId,
+            model: selectedCandidate.modelName,
+            score: selectedCandidate.score
+          }
+        : null,
+      policy_hits: ["responses_native"],
+      attempts,
+      fallbacks,
+      feedback: null
+    });
+
     for (const [index, candidate] of orderedCandidates.entries()) {
       // Auth failures disable the account mid-request; skip remaining aliases on the same account.
       if (!candidate.account.available) {
@@ -594,14 +648,17 @@ export async function registerResponsesRoute(
       };
       const attemptStartedAt = Date.now();
       let firstTokenMs: number | undefined;
+      let wroteToClient = false;
 
       try {
         if (request.body.stream) {
-          reply.raw.setHeader("content-type", "text/event-stream; charset=utf-8");
-          reply.raw.setHeader("cache-control", "no-cache");
-          reply.raw.setHeader("connection", "keep-alive");
-          reply.raw.setHeader("x-autorouter-trace-id", traceId);
-          reply.raw.setHeader("x-autorouter-normalized-model", routeDecision.normalizedModel);
+          if (!reply.raw.headersSent) {
+            reply.raw.setHeader("content-type", "text/event-stream; charset=utf-8");
+            reply.raw.setHeader("cache-control", "no-cache");
+            reply.raw.setHeader("connection", "keep-alive");
+            reply.raw.setHeader("x-autorouter-trace-id", traceId);
+            reply.raw.setHeader("x-autorouter-normalized-model", routeDecision.normalizedModel);
+          }
 
           for await (const chunk of adapter.streamResponse!({
             ...(request.body as Record<string, unknown>),
@@ -612,6 +669,7 @@ export async function registerResponsesRoute(
               firstTokenMs = Date.now() - attemptStartedAt;
             }
             reply.raw.write(chunk.raw);
+            wroteToClient = true;
           }
           reply.raw.end();
           providerResponse = { status: 200, body: null, usage: undefined };
@@ -688,6 +746,26 @@ export async function registerResponsesRoute(
           candidate.account.disabled_message = error.message || PROVIDER_AUTH_FAILED_MESSAGE;
         }
 
+        if (request.body.stream && wroteToClient) {
+          selectedCandidate = candidate;
+          state.traceStore.append({
+            ...buildBaseTrace(),
+            policy_hits: ["responses_native", "stream_partial_failed"],
+            execution: {
+              status: "failed",
+              latency_ms: Date.now() - startedAt,
+              error: error instanceof Error ? error.message : "provider_responses_failed"
+            },
+            cost: {
+              estimated_usd: null,
+              actual_usd: null,
+              price_confidence: "unknown"
+            }
+          });
+          reply.raw.end();
+          return reply;
+        }
+
         // Any upstream failure should fall through to remaining candidates.
         // retryable only describes same-candidate retry semantics, not cross-candidate fallback.
         if (index < orderedCandidates.length - 1) {
@@ -712,59 +790,7 @@ export async function registerResponsesRoute(
 
     const latencyMs = Date.now() - startedAt;
     const usage = responsesUsageToChatUsage(providerResponse?.usage);
-    const baseTrace = {
-      trace_id: traceId,
-      timestamp: new Date().toISOString(),
-      session_id: null,
-      request: {
-        model: request.body.model,
-        normalized_model: routeDecision.normalizedModel,
-        prompt_hash: promptHash,
-        stream: request.body.stream ?? false,
-        has_tools: Array.isArray(request.body.tools) && request.body.tools.length > 0,
-        privacy_level: privacyLevel,
-        context_tokens_est: estimateResponsesContextTokens(request.body)
-      },
-      candidates: routeDecision.candidates.map((candidate) => ({
-        route_id: candidate.routeId,
-        endpoint: candidate.endpoint,
-        platform: candidate.platform,
-        provider: candidate.provider,
-        account: candidate.account,
-        model_id: candidate.modelId,
-        model: candidate.model,
-        score: candidate.score,
-        sticky: candidate.sticky
-      })),
-      filtered: routeDecision.filtered.map((candidate) => ({
-        route_id: candidate.routeId,
-        endpoint: candidate.endpoint,
-        platform: candidate.platform,
-        provider: candidate.provider,
-        account: candidate.account,
-        model_id: candidate.modelId,
-        model: candidate.model,
-        reason: candidate.filteredReason,
-        score: candidate.score,
-        sticky: candidate.sticky
-      })),
-      selected: selectedCandidate
-        ? {
-            route_id: selectedCandidate.routeId,
-            endpoint: selectedCandidate.endpoint.id,
-            platform: selectedCandidate.platform.id,
-            provider: selectedCandidate.provider.id,
-            account_hash: sha256(selectedCandidate.account.id),
-            model_id: selectedCandidate.modelId,
-            model: selectedCandidate.modelName,
-            score: selectedCandidate.score
-          }
-        : null,
-      policy_hits: ["responses_native"],
-      attempts,
-      fallbacks,
-      feedback: null
-    };
+    const baseTrace = buildBaseTrace();
 
     if (!providerResponse) {
       state.traceStore.append({

@@ -160,7 +160,7 @@ describe("OpenAiCompatibleAdapter", () => {
       createRouteTarget("https://adapter-stream-auth.example.com/v1")
     );
 
-    await expect(iterator.next()).rejects.toMatchObject({
+    await expect(iterator[Symbol.asyncIterator]().next()).rejects.toMatchObject({
       code: "provider_auth_failed",
       retryable: false
     });

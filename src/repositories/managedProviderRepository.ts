@@ -1471,6 +1471,7 @@ export class ManagedProviderRepository {
             statusSource: "manual",
             statusUpdatedAt: now,
             statusCooldownUntil: null,
+            cooldownStrike: 0,
             recentErrorCount: 0
           }
         : input.enabled === false
@@ -1521,10 +1522,83 @@ export class ManagedProviderRepository {
     return this.updateAccount(providerKey, accountKey, { enabled });
   }
 
+  /** 把 account 打成需人工恢复的 disabled（鉴权失败 / 账单失败） */
+  public markAccountDisabled(
+    providerKey: string,
+    accountKey: string,
+    input: {
+      reason: string;
+      code: string;
+      message: string;
+      fallbackMessage: string;
+    }
+  ): ManagedCredentialRow | null {
+    const account = this.getAccount(providerKey, accountKey);
+    if (!account) {
+      return null;
+    }
+    const now = nowIso();
+    const message = input.message || input.fallbackMessage;
+    this.db.update(managedProviderCredentialsTable)
+      .set({
+        runtimeStatus: "disabled",
+        statusReason: input.reason,
+        statusMessage: message,
+        statusSource: "system",
+        statusUpdatedAt: now,
+        statusCooldownUntil: null,
+        lastErrorAt: now,
+        lastErrorCode: input.code,
+        lastErrorMessage: message,
+        updatedAt: now
+      })
+      .where(eq(managedProviderCredentialsTable.id, account.id))
+      .run();
+    return this.db.select().from(managedProviderCredentialsTable)
+      .where(eq(managedProviderCredentialsTable.id, account.id))
+      .get() ?? null;
+  }
+
   public markAccountAuthFailed(
     providerKey: string,
     accountKey: string,
     message: string
+  ): ManagedCredentialRow | null {
+    return this.markAccountDisabled(providerKey, accountKey, {
+      reason: "auth_failed",
+      code: "provider_auth_failed",
+      message,
+      fallbackMessage: "Invalid API key"
+    });
+  }
+
+  public markAccountBillingFailed(
+    providerKey: string,
+    accountKey: string,
+    message: string
+  ): ManagedCredentialRow | null {
+    return this.markAccountDisabled(providerKey, accountKey, {
+      reason: "billing_failed",
+      code: "provider_billing_failed",
+      message,
+      fallbackMessage: "Account balance or quota exhausted"
+    });
+  }
+
+  /**
+   * 上游 5xx / 超时 / 不可达：把整个 account 打进 cooling_down。
+   * 冷却期内该 account 下所有 model 的候选都会被跳过，一次报错即生效。
+   */
+  public applyAccountCooldown(
+    providerKey: string,
+    accountKey: string,
+    input: {
+      strike: number;
+      permanent: boolean;
+      cooldownUntil: string | null;
+      code?: string;
+      message: string;
+    }
   ): ManagedCredentialRow | null {
     const account = this.getAccount(providerKey, accountKey);
     if (!account) {
@@ -1533,15 +1607,42 @@ export class ManagedProviderRepository {
     const now = nowIso();
     this.db.update(managedProviderCredentialsTable)
       .set({
-        runtimeStatus: "disabled",
-        statusReason: "auth_failed",
-        statusMessage: message || "Invalid API key",
+        runtimeStatus: input.permanent ? "abnormal" : "cooling_down",
+        statusReason: input.permanent ? "error_permanent" : "error_cooldown",
+        statusMessage: input.message,
         statusSource: "system",
         statusUpdatedAt: now,
-        statusCooldownUntil: null,
+        statusCooldownUntil: input.permanent ? null : input.cooldownUntil,
+        cooldownStrike: input.strike,
+        recentErrorCount: account.recentErrorCount + 1,
         lastErrorAt: now,
-        lastErrorCode: "provider_auth_failed",
-        lastErrorMessage: message || "Invalid API key",
+        lastErrorCode: input.code ?? "provider_error",
+        lastErrorMessage: input.message,
+        updatedAt: now
+      })
+      .where(eq(managedProviderCredentialsTable.id, account.id))
+      .run();
+    return this.db.select().from(managedProviderCredentialsTable)
+      .where(eq(managedProviderCredentialsTable.id, account.id))
+      .get() ?? null;
+  }
+
+  /** 请求本身被上游拒绝（400/413/422）：只留痕，不改运行态、不影响调度 */
+  public recordAccountClientError(
+    providerKey: string,
+    accountKey: string,
+    input: { code?: string; message: string }
+  ): ManagedCredentialRow | null {
+    const account = this.getAccount(providerKey, accountKey);
+    if (!account) {
+      return null;
+    }
+    const now = nowIso();
+    this.db.update(managedProviderCredentialsTable)
+      .set({
+        lastErrorAt: now,
+        lastErrorCode: input.code ?? "request_invalid",
+        lastErrorMessage: input.message,
         updatedAt: now
       })
       .where(eq(managedProviderCredentialsTable.id, account.id))
@@ -1587,45 +1688,6 @@ export class ManagedProviderRepository {
       .get() ?? null;
   }
 
-  public applyAccountOtherError(
-    providerKey: string,
-    accountKey: string,
-    input: {
-      recentErrorCount: number;
-      abnormal: boolean;
-      code?: string;
-      message: string;
-    }
-  ): ManagedCredentialRow | null {
-    const account = this.getAccount(providerKey, accountKey);
-    if (!account) {
-      return null;
-    }
-    const now = nowIso();
-    this.db.update(managedProviderCredentialsTable)
-      .set({
-        runtimeStatus: input.abnormal
-          ? "abnormal"
-          : account.runtimeStatus === "abnormal"
-            ? "abnormal"
-            : "normal",
-        statusReason: input.abnormal ? "error_threshold" : account.statusReason,
-        statusMessage: input.abnormal ? input.message : account.statusMessage,
-        statusSource: input.abnormal ? "system" : account.statusSource,
-        statusUpdatedAt: input.abnormal ? now : account.statusUpdatedAt,
-        recentErrorCount: input.recentErrorCount,
-        lastErrorAt: now,
-        lastErrorCode: input.code ?? "provider_error",
-        lastErrorMessage: input.message,
-        updatedAt: now
-      })
-      .where(eq(managedProviderCredentialsTable.id, account.id))
-      .run();
-    return this.db.select().from(managedProviderCredentialsTable)
-      .where(eq(managedProviderCredentialsTable.id, account.id))
-      .get() ?? null;
-  }
-
   public markAccountSuccess(
     providerKey: string,
     accountKey: string,
@@ -1635,6 +1697,7 @@ export class ManagedProviderRepository {
     if (!account) {
       return null;
     }
+    // 永久态需人工 enable；cooling_down 属于可自愈状态，成功即清除。
     if (
       account.runtimeStatus === "abnormal" ||
       account.runtimeStatus === "disabled" ||
@@ -1651,6 +1714,7 @@ export class ManagedProviderRepository {
         statusSource: "system",
         statusUpdatedAt: now,
         statusCooldownUntil: null,
+        cooldownStrike: clearCounters ? 0 : account.cooldownStrike,
         recentErrorCount: clearCounters ? 0 : account.recentErrorCount,
         updatedAt: now
       })
@@ -1736,6 +1800,51 @@ export class ManagedProviderRepository {
     return this.db.select().from(managedModelsTable).where(eq(managedModelsTable.id, model.id)).get() ?? null;
   }
 
+  /**
+   * 404 / 410：这个模型在该 provider 上不存在或已下线，与 account 无关。
+   * 走独立的长冷却阶梯，仍可自愈。
+   */
+  public applyModelUnavailable(
+    providerKey: string,
+    modelKey: string,
+    input: {
+      strike: number;
+      permanent: boolean;
+      cooldownUntil: string | null;
+      code?: string;
+      message: string;
+    }
+  ): ManagedModelRow | null {
+    const model = this.getModelByProviderAndKey(providerKey, modelKey);
+    if (!model) {
+      return null;
+    }
+    const now = nowIso();
+    this.db.update(managedModelsTable)
+      .set({
+        runtimeStatus: input.permanent ? "abnormal" : "cooling_down",
+        statusReason: input.permanent ? "model_unavailable_permanent" : "model_unavailable",
+        statusMessage: input.message,
+        statusSource: "system",
+        statusUpdatedAt: now,
+        statusCooldownUntil: input.permanent ? null : input.cooldownUntil,
+        cooldownStrike: input.strike,
+        recentErrorCount: model.recentErrorCount + 1,
+        lastErrorAt: now,
+        lastErrorCode: input.code ?? "provider_invalid_model",
+        lastErrorMessage: input.message,
+        updatedAt: now
+      })
+      .where(eq(managedModelsTable.id, model.id))
+      .run();
+    return this.db.select().from(managedModelsTable).where(eq(managedModelsTable.id, model.id)).get() ?? null;
+  }
+
+  /**
+   * 上游 5xx / 超时：冷却打在 account 层（节点级），这里只累加模型侧计数做兜底归因。
+   * 累计到阈值才把模型判成永久熔断 —— 即 account 反复冷却也救不回来时才怪模型。
+   * 注意：不得降级已有运行态（历史实现会把 cooling_down / rate_limited 覆盖成 normal）。
+   */
   public applyModelOtherError(
     providerKey: string,
     modelKey: string,
@@ -1753,14 +1862,42 @@ export class ManagedProviderRepository {
     const now = nowIso();
     this.db.update(managedModelsTable)
       .set({
-        runtimeStatus: input.abnormal ? "abnormal" : model.runtimeStatus === "abnormal" ? "abnormal" : "normal",
-        statusReason: input.abnormal ? "error_threshold" : model.statusReason,
-        statusMessage: input.abnormal ? input.message : model.statusMessage,
-        statusSource: input.abnormal ? "system" : model.statusSource,
-        statusUpdatedAt: input.abnormal ? now : model.statusUpdatedAt,
+        ...(input.abnormal
+          ? {
+              runtimeStatus: "abnormal",
+              statusReason: "error_threshold",
+              statusMessage: input.message,
+              statusSource: "system",
+              statusUpdatedAt: now,
+              statusCooldownUntil: null
+            }
+          : {}),
         recentErrorCount: input.recentErrorCount,
         lastErrorAt: now,
         lastErrorCode: input.code ?? "provider_error",
+        lastErrorMessage: input.message,
+        updatedAt: now
+      })
+      .where(eq(managedModelsTable.id, model.id))
+      .run();
+    return this.db.select().from(managedModelsTable).where(eq(managedModelsTable.id, model.id)).get() ?? null;
+  }
+
+  /** 请求本身被上游拒绝（400/413/422）：只留痕，不改运行态、不影响调度 */
+  public recordModelClientError(
+    providerKey: string,
+    modelKey: string,
+    input: { code?: string; message: string }
+  ): ManagedModelRow | null {
+    const model = this.getModelByProviderAndKey(providerKey, modelKey);
+    if (!model) {
+      return null;
+    }
+    const now = nowIso();
+    this.db.update(managedModelsTable)
+      .set({
+        lastErrorAt: now,
+        lastErrorCode: input.code ?? "request_invalid",
         lastErrorMessage: input.message,
         updatedAt: now
       })
@@ -1774,11 +1911,13 @@ export class ManagedProviderRepository {
     if (!model) {
       return null;
     }
-    // permanent / abnormal / disabled require manual enable path; do not auto-clear those
+    // permanent / abnormal / disabled require manual enable path; do not auto-clear those.
+    // cooling_down 属于可自愈状态，成功即清除。
     if (
       model.runtimeStatus === "abnormal" ||
       model.runtimeStatus === "disabled" ||
-      model.statusReason === "rate_limited_permanent"
+      model.statusReason === "rate_limited_permanent" ||
+      model.statusReason === "model_unavailable_permanent"
     ) {
       return model;
     }
@@ -1792,6 +1931,7 @@ export class ManagedProviderRepository {
         statusUpdatedAt: now,
         statusCooldownUntil: null,
         rateLimitStrike: clearCounters ? 0 : model.rateLimitStrike,
+        cooldownStrike: clearCounters ? 0 : model.cooldownStrike,
         recentErrorCount: clearCounters ? 0 : model.recentErrorCount,
         updatedAt: now
       })
@@ -1821,6 +1961,7 @@ export class ManagedProviderRepository {
           statusUpdatedAt: now,
           statusCooldownUntil: null,
           rateLimitStrike: 0,
+          cooldownStrike: 0,
           recentErrorCount: 0,
           updatedAt: now
         })

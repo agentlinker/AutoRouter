@@ -29,6 +29,8 @@ function runtimeStatusLabel(status?: string | null) {
       return "鉴权异常";
     case "rate_limited":
       return "限流中";
+    case "cooling_down":
+      return "错误冷却中";
     case "abnormal":
       return "失败过多";
     case "normal":

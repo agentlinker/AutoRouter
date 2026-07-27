@@ -4,6 +4,7 @@ import type { PriceTable } from "../catalog/priceTable.js";
 import type { RouterConfig } from "../config/schema.js";
 import type { AdapterRegistry } from "../providers/registry.js";
 import type { StickySessionStore } from "../routing/stickySession.js";
+import type { RuntimeStatus } from "../runtime/runtimeStatus.js";
 import type { TraceStore } from "../trace/traceStore.js";
 
 export interface PlatformRuntimeState {
@@ -17,7 +18,7 @@ export interface ProviderRuntimeState {
   trust_level: string;
   privacy_level: string;
   usage_trust: string;
-  runtime_status?: "normal" | "disabled" | "rate_limited" | "abnormal";
+  runtime_status?: RuntimeStatus;
   status_reason?: string;
   status_message?: string;
   status_cooldown_until?: string | null;
@@ -26,7 +27,7 @@ export interface ProviderRuntimeState {
 export interface ModelRuntimeStatusState {
   provider_key: string;
   model_key: string;
-  runtime_status: "normal" | "disabled" | "rate_limited" | "abnormal";
+  runtime_status: RuntimeStatus;
   status_reason?: string | null;
   status_message?: string | null;
   status_cooldown_until?: string | null;

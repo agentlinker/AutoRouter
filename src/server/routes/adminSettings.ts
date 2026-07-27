@@ -13,7 +13,10 @@ import {
 const runtimeStatusSettingsSchema = z.object({
   error_threshold: z.number().int().min(1).max(1000).optional(),
   rate_limit_backoff_seconds: z.array(z.number().positive()).min(1).optional(),
+  error_backoff_seconds: z.array(z.number().positive()).min(1).optional(),
+  model_unavailable_backoff_seconds: z.array(z.number().positive()).min(1).optional(),
   permanent_after_final_backoff: z.boolean().optional(),
+  error_permanent_after_final_backoff: z.boolean().optional(),
   clear_counters_on_success: z.boolean().optional(),
   auth_disables_provider: z.boolean().optional()
 });
@@ -38,11 +41,26 @@ export async function registerAdminSettingsRoutes(
         {
           section_id: "runtime_status",
           label: "运行态与熔断",
-          description: "Provider/模型运行态：错误阈值、429 退避与鉴权禁用策略。",
+          description: "Provider/模型运行态：错误冷却阶梯、429 退避与鉴权禁用策略。",
           items: [
             {
+              key: "error_backoff_seconds",
+              label: "错误冷却阶梯(秒)",
+              value: runtimeStatus.error_backoff_seconds.join(", ")
+            },
+            {
+              key: "model_unavailable_backoff_seconds",
+              label: "模型下线(404/410)冷却阶梯(秒)",
+              value: runtimeStatus.model_unavailable_backoff_seconds.join(", ")
+            },
+            {
+              key: "error_permanent_after_final_backoff",
+              label: "错误顶阶后永久熔断 Account",
+              value: String(runtimeStatus.error_permanent_after_final_backoff)
+            },
+            {
               key: "error_threshold",
-              label: "连续其它错误阈值 N",
+              label: "模型累计错误阈值 N（超过转永久熔断）",
               value: String(runtimeStatus.error_threshold)
             },
             {
