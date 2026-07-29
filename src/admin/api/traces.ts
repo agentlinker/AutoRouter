@@ -52,6 +52,7 @@ export interface TraceRecord {
   selected_provider: string | null;
   selected_endpoint: string | null;
   selected_route_id: string | null;
+  selected_account_hash: string | null;
   selected_model: string | null;
   status: "success" | "success_with_fallback" | "failed";
   latency_ms: number;

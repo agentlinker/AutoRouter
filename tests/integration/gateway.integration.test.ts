@@ -234,6 +234,7 @@ describe("gateway integration", () => {
     expect(explain.json().request.normalized_model).toBe("auto");
     expect(explain.json().selected.platform).toBe("openai");
     expect(explain.json().selected.endpoint).toBe("fallback-openai");
+    expect(explain.json().selected.account_hash).toBeTruthy();
     expect(explain.json().attempts).toEqual([
       expect.objectContaining({
         endpoint: "primary-openai",

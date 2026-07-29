@@ -29,6 +29,7 @@ export async function registerExplainRoute(
           ? {
             endpoint: latestTrace.selected.endpoint,
             platform: latestTrace.selected.platform,
+            account_hash: latestTrace.selected.account_hash,
             model: latestTrace.selected.model
           }
         : null,

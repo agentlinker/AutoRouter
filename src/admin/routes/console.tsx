@@ -35,6 +35,7 @@ import {
 } from "../api/traces.js";
 import { getUsageDetail, getUsageOverview } from "../api/usage.js";
 import { providerTokenStorageKey } from "./providers.js";
+import { formatAccountHashHint } from "../utils/accountHash.js";
 
 function getStoredToken() {
   return localStorage.getItem(providerTokenStorageKey) ?? "";
@@ -275,7 +276,17 @@ function TraceDetailPanel(props: {
       </div>
 
       <div className="detail-grid">
-        <StatCard icon={<Route size={18} />} label="执行状态" value={props.trace.status === "success" ? "成功" : "失败"} />
+        <StatCard
+          icon={<Route size={18} />}
+          label="执行状态"
+          value={
+            props.trace.status === "success_with_fallback"
+              ? "Fallback 成功"
+              : props.trace.status === "success"
+                ? "成功"
+                : "失败"
+          }
+        />
         <StatCard icon={<Activity size={18} />} label="延迟" value={`${formatNumber(props.trace.latency_ms)} ms`} />
         <StatCard icon={<BarChart3 size={18} />} label="总 Tokens" value={formatNumber(props.trace.total_tokens)} />
       </div>
@@ -293,6 +304,8 @@ function TraceDetailPanel(props: {
           <dd>{props.trace.selected_provider ?? "未命中"}</dd>
           <dt>选中 Endpoint</dt>
           <dd>{props.trace.selected_endpoint ?? "未命中"}</dd>
+          <dt>选中 Account</dt>
+          <dd>{formatAccountHashHint(props.trace.selected_account_hash)}</dd>
           <dt>选中模型</dt>
           <dd>{props.trace.selected_model ?? "未命中"}</dd>
           <dt>命中策略</dt>

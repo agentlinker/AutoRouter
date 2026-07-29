@@ -164,6 +164,7 @@ export function serializeTrace(trace: RouteTrace) {
     selected_provider: trace.selected?.provider ?? null,
     selected_endpoint: trace.selected?.endpoint ?? null,
     selected_route_id: trace.selected?.route_id ?? null,
+    selected_account_hash: trace.selected?.account_hash ?? null,
     selected_model: trace.selected?.model ?? null,
     selected_score: trace.selected?.score ?? null,
     status: trace.execution.status,
