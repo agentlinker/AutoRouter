@@ -20,13 +20,23 @@ export function formatConfigValue(value: unknown): string {
   return JSON.stringify(value, null, 2);
 }
 
-function serializeCandidate(candidate: TraceCandidate) {
+function findRuntimeAccount(snapshot: RuntimeSnapshot | undefined, accountId: string) {
+  return snapshot?.accounts.find((account) => account.id === accountId);
+}
+
+function toApiKeyLabel(snapshot: RuntimeSnapshot | undefined, accountId: string): string {
+  const account = findRuntimeAccount(snapshot, accountId);
+  return account?.api_key_hint ?? account?.account_key ?? accountId.split("/").pop() ?? accountId;
+}
+
+function serializeCandidate(candidate: TraceCandidate, snapshot?: RuntimeSnapshot) {
   return {
     route_id: candidate.route_id ?? null,
     endpoint: candidate.endpoint,
     platform: candidate.platform,
     provider: candidate.provider ?? null,
     account: candidate.account,
+    api_key: toApiKeyLabel(snapshot, candidate.account),
     model_id: candidate.model_id ?? null,
     model: candidate.model,
     reason: candidate.reason ?? null,
@@ -35,9 +45,9 @@ function serializeCandidate(candidate: TraceCandidate) {
   };
 }
 
-function serializeAttempt(attempt: TraceAttempt) {
+function serializeAttempt(attempt: TraceAttempt, snapshot?: RuntimeSnapshot) {
   return {
-    ...serializeCandidate(attempt),
+    ...serializeCandidate(attempt, snapshot),
     status: attempt.status,
     error: attempt.error ?? null,
     retryable: attempt.retryable ?? false,
@@ -54,6 +64,7 @@ export interface RouteOutcomeItem {
   platform: string;
   provider: string | null;
   account: string;
+  api_key: string;
   model_id: string | null;
   model: string;
   score: number | null;
@@ -80,13 +91,13 @@ function candidateKey(item: {
   ].join("|");
 }
 
-export function buildRouteOutcomeItems(trace: RouteTrace): RouteOutcomeItem[] {
+export function buildRouteOutcomeItems(trace: RouteTrace, snapshot?: RuntimeSnapshot): RouteOutcomeItem[] {
   const items: RouteOutcomeItem[] = [];
   const seen = new Set<string>();
   const attempts = trace.attempts ?? [];
 
   for (const attempt of attempts) {
-    const base = serializeAttempt(attempt);
+    const base = serializeAttempt(attempt, snapshot);
     const key = candidateKey(base);
     seen.add(key);
     items.push({
@@ -95,6 +106,7 @@ export function buildRouteOutcomeItems(trace: RouteTrace): RouteOutcomeItem[] {
       platform: base.platform,
       provider: base.provider,
       account: base.account,
+      api_key: base.api_key,
       model_id: base.model_id,
       model: base.model,
       score: base.score,
@@ -108,7 +120,7 @@ export function buildRouteOutcomeItems(trace: RouteTrace): RouteOutcomeItem[] {
   }
 
   for (const candidate of trace.candidates) {
-    const base = serializeCandidate(candidate);
+    const base = serializeCandidate(candidate, snapshot);
     const key = candidateKey(base);
     if (seen.has(key)) {
       continue;
@@ -125,7 +137,7 @@ export function buildRouteOutcomeItems(trace: RouteTrace): RouteOutcomeItem[] {
   }
 
   for (const filtered of trace.filtered) {
-    const base = serializeCandidate(filtered);
+    const base = serializeCandidate(filtered, snapshot);
     const key = candidateKey(base);
     if (seen.has(key)) {
       continue;
@@ -144,12 +156,36 @@ export function buildRouteOutcomeItems(trace: RouteTrace): RouteOutcomeItem[] {
   return items;
 }
 
-export function serializeTrace(trace: RouteTrace) {
+function resolveSelectedApiKey(
+  trace: RouteTrace,
+  routeItems: RouteOutcomeItem[]
+): string | null {
+  const selectedSuccess = routeItems.find((item) => item.status === "success");
+  if (selectedSuccess) {
+    return selectedSuccess.api_key;
+  }
+
+  if (!trace.selected) {
+    return null;
+  }
+
+  const matchedCandidate = routeItems.find((item) =>
+    item.endpoint === trace.selected?.endpoint &&
+    item.platform === trace.selected?.platform &&
+    item.provider === (trace.selected?.provider ?? null) &&
+    item.model === trace.selected?.model
+  );
+
+  return matchedCandidate?.api_key ?? null;
+}
+
+export function serializeTrace(trace: RouteTrace, snapshot?: RuntimeSnapshot) {
   const inputTokens = trace.execution.input_tokens ?? 0;
   const outputTokens = trace.execution.output_tokens ?? 0;
   const totalTokens = trace.execution.total_tokens ?? inputTokens + outputTokens;
   const attempts = trace.attempts ?? [];
-  const routeItems = buildRouteOutcomeItems(trace);
+  const routeItems = buildRouteOutcomeItems(trace, snapshot);
+  const selectedApiKey = resolveSelectedApiKey(trace, routeItems);
 
   return {
     trace_id: trace.trace_id,
@@ -165,6 +201,7 @@ export function serializeTrace(trace: RouteTrace) {
     selected_endpoint: trace.selected?.endpoint ?? null,
     selected_route_id: trace.selected?.route_id ?? null,
     selected_account_hash: trace.selected?.account_hash ?? null,
+    selected_api_key: selectedApiKey,
     selected_model: trace.selected?.model ?? null,
     selected_score: trace.selected?.score ?? null,
     status: trace.execution.status,
@@ -182,10 +219,10 @@ export function serializeTrace(trace: RouteTrace) {
     attempt_count: attempts.length,
     fallback_count: trace.fallbacks.length,
     feedback: trace.feedback ?? null,
-    candidates: trace.candidates.map(serializeCandidate),
-    filtered: trace.filtered.map(serializeCandidate),
-    attempts: attempts.map(serializeAttempt),
-    fallbacks: trace.fallbacks.map(serializeCandidate),
+    candidates: trace.candidates.map((candidate) => serializeCandidate(candidate, snapshot)),
+    filtered: trace.filtered.map((candidate) => serializeCandidate(candidate, snapshot)),
+    attempts: attempts.map((attempt) => serializeAttempt(attempt, snapshot)),
+    fallbacks: trace.fallbacks.map((candidate) => serializeCandidate(candidate, snapshot)),
     route_items: routeItems
   };
 }

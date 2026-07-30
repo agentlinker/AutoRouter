@@ -20,7 +20,7 @@ export async function registerAdminTraceRoutes(
     const snapshot = dependencies.runtimeManager.getSnapshot();
 
     return {
-      data: snapshot.traceStore.listRecent(query.limit).map(serializeTrace)
+      data: snapshot.traceStore.listRecent(query.limit).map((trace) => serializeTrace(trace, snapshot))
     };
   });
 
@@ -32,6 +32,6 @@ export async function registerAdminTraceRoutes(
       throw new HttpError(404, "trace_not_found", "Trace not found");
     }
 
-    return serializeTrace(trace);
+    return serializeTrace(trace, snapshot);
   });
 }

@@ -16,7 +16,7 @@ export async function registerAdminUsageRoutes(
     return {
       totals: snapshot.traceStore.getUsageTotals(),
       providers: snapshot.traceStore.listUsageByProvider(),
-      recent_requests: snapshot.traceStore.listRecent(20).map(serializeTrace)
+      recent_requests: snapshot.traceStore.listRecent(20).map((trace) => serializeTrace(trace, snapshot))
     };
   });
 
@@ -28,6 +28,6 @@ export async function registerAdminUsageRoutes(
       throw new HttpError(404, "trace_not_found", "Trace not found");
     }
 
-    return serializeTrace(trace);
+    return serializeTrace(trace, snapshot);
   });
 }

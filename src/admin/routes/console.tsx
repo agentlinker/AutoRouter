@@ -35,7 +35,6 @@ import {
 } from "../api/traces.js";
 import { getUsageDetail, getUsageOverview } from "../api/usage.js";
 import { providerTokenStorageKey } from "./providers.js";
-import { formatAccountHashHint } from "../utils/accountHash.js";
 
 function getStoredToken() {
   return localStorage.getItem(providerTokenStorageKey) ?? "";
@@ -304,8 +303,8 @@ function TraceDetailPanel(props: {
           <dd>{props.trace.selected_provider ?? "未命中"}</dd>
           <dt>选中 Endpoint</dt>
           <dd>{props.trace.selected_endpoint ?? "未命中"}</dd>
-          <dt>选中 Account</dt>
-          <dd>{formatAccountHashHint(props.trace.selected_account_hash)}</dd>
+          <dt>选中 API Key</dt>
+          <dd>{props.trace.selected_api_key ?? "未命中"}</dd>
           <dt>选中模型</dt>
           <dd>{props.trace.selected_model ?? "未命中"}</dd>
           <dt>命中策略</dt>
@@ -328,6 +327,7 @@ function TraceDetailPanel(props: {
               <tr>
                 <th>#</th>
                 <th>Provider</th>
+                <th>API Key</th>
                 <th>模型</th>
                 <th>Endpoint</th>
                 <th>状态</th>
@@ -343,6 +343,7 @@ function TraceDetailPanel(props: {
                   <tr key={`${item.endpoint}-${item.model_id ?? item.model}-${item.status}-${index}`}>
                     <td>{index + 1}</td>
                     <td>{item.provider ?? "—"}</td>
+                    <td>{item.api_key}</td>
                     <td>
                       <strong>{item.model}</strong>
                       {item.model_id ? <span className="table-subtext"><code>{item.model_id}</code></span> : null}
@@ -366,7 +367,7 @@ function TraceDetailPanel(props: {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={9} className="muted">没有路由候选记录。</td>
+                  <td colSpan={10} className="muted">没有路由候选记录。</td>
                 </tr>
               )}
             </tbody>
@@ -662,30 +663,54 @@ export function TraceListPage() {
         </div>
       </div>
 
-      <div className="record-list">
-        {data.data.length > 0 ? (
-          data.data.map((trace) => (
-            <Link
-              key={trace.trace_id}
-              to="/trace/$traceId"
-              params={{ traceId: trace.trace_id }}
-              className="record-item"
-            >
-              <div>
-                <strong>{trace.selected_provider ?? "unassigned"}</strong>
-                <p>
-                  {trace.selected_model ?? trace.normalized_model} · {formatDateTime(trace.timestamp)}
-                </p>
-              </div>
-              <div className="record-meta">
-                <TraceStatusBadge status={trace.status} />
-                <span>{trace.policy_hits.join(", ") || "无策略命中"}</span>
-              </div>
-            </Link>
-          ))
-        ) : (
-          <p className="muted">还没有 trace 记录。</p>
-        )}
+      <div className="panel detail-card">
+        <div className="table-scroll">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>Provider</th>
+                <th>API Key</th>
+                <th>请求模型</th>
+                <th>选中模型</th>
+                <th>状态</th>
+                <th>策略命中</th>
+                <th>延迟</th>
+                <th>Tokens</th>
+                <th>详情</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.data.length > 0 ? (
+                data.data.map((trace) => (
+                  <tr key={trace.trace_id}>
+                    <td>{formatDateTime(trace.timestamp)}</td>
+                    <td>{trace.selected_provider ?? "unassigned"}</td>
+                    <td>{trace.selected_api_key ?? "未命中"}</td>
+                    <td>
+                      <strong>{trace.requested_model}</strong>
+                      <span className="table-subtext">{trace.normalized_model}</span>
+                    </td>
+                    <td>{trace.selected_model ?? "未命中"}</td>
+                    <td><TraceStatusBadge status={trace.status} /></td>
+                    <td>{trace.policy_hits.join(", ") || "无策略命中"}</td>
+                    <td>{formatNumber(trace.latency_ms)} ms</td>
+                    <td>{formatNumber(trace.total_tokens)}</td>
+                    <td>
+                      <Link to="/trace/$traceId" params={{ traceId: trace.trace_id }}>
+                        查看
+                      </Link>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={10} className="muted">还没有 trace 记录。</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </section>
   );

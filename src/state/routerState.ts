@@ -54,6 +54,10 @@ export interface EndpointRuntimeState {
 export interface AccountRuntimeState {
   id: string;
   endpoint_id: string;
+  provider_key?: string;
+  endpoint_key?: string;
+  account_key?: string;
+  api_key_hint?: string;
   account_type: string;
   enabled: boolean;
   available: boolean;

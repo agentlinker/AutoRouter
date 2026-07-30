@@ -235,6 +235,10 @@ export class RuntimeConfigProjector {
       const accountId = `${bundle.provider.providerKey}/${bundle.endpoint.endpointKey}/${accountKey}`;
       const account = registry.accounts.find((item) => item.id === accountId);
       if (account) {
+        account.provider_key = providerId;
+        account.endpoint_key = bundle.endpoint.endpointKey;
+        account.account_key = accountKey;
+        account.api_key_hint = bundle.credential.keyHint ?? undefined;
         account.recent_error_count = bundle.credential.recentErrorCount ?? 0;
         const accountStatus = isRuntimeStatusValue(bundle.credential.runtimeStatus)
           ? bundle.credential.runtimeStatus

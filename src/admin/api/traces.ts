@@ -6,6 +6,7 @@ export interface TraceCandidate {
   platform: string;
   provider: string | null;
   account: string;
+  api_key: string;
   model_id: string | null;
   model: string;
   reason: string | null;
@@ -29,6 +30,7 @@ export interface RouteOutcomeItem {
   platform: string;
   provider: string | null;
   account: string;
+  api_key: string;
   model_id: string | null;
   model: string;
   score: number | null;
@@ -53,6 +55,7 @@ export interface TraceRecord {
   selected_endpoint: string | null;
   selected_route_id: string | null;
   selected_account_hash: string | null;
+  selected_api_key: string | null;
   selected_model: string | null;
   status: "success" | "success_with_fallback" | "failed";
   latency_ms: number;

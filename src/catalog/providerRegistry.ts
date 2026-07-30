@@ -123,6 +123,9 @@ export function buildProviderRegistry(
   const accounts = Object.entries(config.accounts).map(([accountId, account]) => ({
     id: accountId,
     endpoint_id: account.endpoint,
+    provider_key: config.endpoints[account.endpoint]?.provider,
+    endpoint_key: account.endpoint.includes("/") ? account.endpoint.split("/").slice(1).join("/") : account.endpoint,
+    account_key: accountId.includes("/") ? accountId.split("/").pop() : accountId,
     account_type: account.account_type,
     enabled: account.enabled,
     available:
