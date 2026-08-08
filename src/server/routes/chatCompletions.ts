@@ -9,6 +9,7 @@ import { normalizeChatRequest } from "../../routing/normalizeRequest.js";
 import type { ChatCompletionsRequestBody } from "../../routing/types.js";
 import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
 import type { RuntimeStatusService } from "../../runtime/runtimeStatusService.js";
+import { resolveAccountExecutionGate } from "../../runtime/runtimeStatus.js";
 import { recordRouteSelectionFailure } from "./routeSelectionFailure.js";
 
 export async function registerChatCompletionsRoute(
@@ -195,16 +196,18 @@ export async function registerChatCompletionsRoute(
           score: candidate.score,
           sticky: candidate.sticky
         })),
-        selected: {
-          route_id: selectedRoute.routeId,
-          endpoint: selectedRoute.endpoint.id,
-          platform: selectedRoute.platform.id,
-          provider: selectedRoute.provider.id,
-          account_hash: sha256(selectedRoute.account.id),
-          model_id: selectedRoute.modelId,
-          model: selectedRoute.model,
-          score: currentScore
-        },
+        selected: attemptHistory.length > 0
+          ? {
+              route_id: selectedRoute.routeId,
+              endpoint: selectedRoute.endpoint.id,
+              platform: selectedRoute.platform.id,
+              provider: selectedRoute.provider.id,
+              account_hash: sha256(selectedRoute.account.id),
+              model_id: selectedRoute.modelId,
+              model: selectedRoute.model,
+              score: currentScore
+            }
+          : null,
         attempts: attemptHistory,
         fallbacks: fallbackHistory,
         feedback: null
@@ -212,9 +215,24 @@ export async function registerChatCompletionsRoute(
     };
 
     for (const [index, candidate] of orderedCandidates.entries()) {
-      // Auth failures disable the account mid-request; skip remaining aliases on the same account.
-      if (!candidate.account.available) {
+      // Auth failures disable the account mid-request；过期冷却只恢复本次 snapshot 的可执行性。
+      const accountGate = resolveAccountExecutionGate({
+        enabled: candidate.account.enabled,
+        available: candidate.account.available,
+        runtimeStatus: candidate.account.runtime_status ?? "normal",
+        statusReason: candidate.account.status_reason,
+        statusMessage: candidate.account.status_message,
+        statusCooldownUntil: candidate.account.status_cooldown_until,
+        disabledReason: candidate.account.disabled_reason,
+        disabledMessage: candidate.account.disabled_message
+      });
+      if (!accountGate.canExecute) {
         continue;
+      }
+      if (accountGate.recoveredFromExpiredCooldown) {
+        candidate.account.available = true;
+        candidate.account.disabled_reason = undefined;
+        candidate.account.disabled_message = undefined;
       }
 
       const accountConfig = state.config.accounts[candidate.account.id];

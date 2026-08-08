@@ -17,6 +17,7 @@ export const managedProvidersTable = sqliteTable("managed_providers", {
   statusUpdatedAt: text("status_updated_at"),
   statusCooldownUntil: text("status_cooldown_until"),
   recentErrorCount: integer("recent_error_count").notNull().default(0),
+  priority: integer("priority").notNull().default(0),
   trustLevel: text("trust_level").notNull().default("low"),
   privacyLevel: text("privacy_level").notNull().default("public_only"),
   usageTrust: text("usage_trust").notNull().default("low"),

@@ -272,4 +272,70 @@ describe("managed provider multi-account", () => {
     expect(candidatesB.every((item) => item.account.endsWith("/key-b"))).toBe(true);
     expect(candidatesB.some((item) => item.account.endsWith("/default"))).toBe(false);
   });
+
+  it("elevates provider priority above the current maximum", () => {
+    const config = loadConfig({
+      override: {
+        database: { path: join(tempDir, "autorouter.db") },
+        trace: { directory: join(tempDir, "traces"), log_prompts: false },
+        routes: {},
+        providers: {},
+        endpoints: {},
+        accounts: {},
+        models: {},
+        policies: {}
+      }
+    });
+    const db = createDatabaseClient(config.database.path);
+    const repo = new ManagedProviderRepository(db.db);
+    const cipher = new SecretCipher(process.env.AUTO_ROUTER_MASTER_KEY);
+
+    repo.createProviderWithEndpointBundles({
+      provider: {
+        providerKey: "alpha",
+        displayName: "Alpha",
+        adapterType: "openai_compatible",
+        baseUrl: "https://alpha.example.com/v1",
+        priority: 3
+      },
+      encryptedApiKey: cipher.encrypt("alpha-key"),
+      endpointBundles: [
+        {
+          endpoint: {
+            endpointKey: "openai",
+            protocol: "openai",
+            adapterType: "openai_compatible",
+            baseUrl: "https://alpha.example.com/v1"
+          },
+          models: []
+        }
+      ]
+    });
+
+    repo.createProviderWithEndpointBundles({
+      provider: {
+        providerKey: "beta",
+        displayName: "Beta",
+        adapterType: "openai_compatible",
+        baseUrl: "https://beta.example.com/v1",
+        priority: 1
+      },
+      encryptedApiKey: cipher.encrypt("beta-key"),
+      endpointBundles: [
+        {
+          endpoint: {
+            endpointKey: "openai",
+            protocol: "openai",
+            adapterType: "openai_compatible",
+            baseUrl: "https://beta.example.com/v1"
+          },
+          models: []
+        }
+      ]
+    });
+
+    const updated = repo.elevateProviderPriority("beta");
+    expect(updated?.provider.priority).toBe(4);
+    expect(repo.getMaxProviderPriority()).toBe(4);
+  });
 });

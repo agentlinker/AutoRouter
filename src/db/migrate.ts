@@ -67,6 +67,7 @@ export function runMigrations(sqlite: Database.Database) {
       base_url TEXT NOT NULL,
       website_url TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
+      priority INTEGER NOT NULL DEFAULT 0,
       trust_level TEXT NOT NULL DEFAULT 'low',
       privacy_level TEXT NOT NULL DEFAULT 'public_only',
       usage_trust TEXT NOT NULL DEFAULT 'low',
@@ -326,7 +327,8 @@ export function runMigrations(sqlite: Database.Database) {
     { name: "status_source", sql: "ALTER TABLE managed_providers ADD COLUMN status_source TEXT NOT NULL DEFAULT 'system';" },
     { name: "status_updated_at", sql: "ALTER TABLE managed_providers ADD COLUMN status_updated_at TEXT;" },
     { name: "status_cooldown_until", sql: "ALTER TABLE managed_providers ADD COLUMN status_cooldown_until TEXT;" },
-    { name: "recent_error_count", sql: "ALTER TABLE managed_providers ADD COLUMN recent_error_count INTEGER NOT NULL DEFAULT 0;" }
+    { name: "recent_error_count", sql: "ALTER TABLE managed_providers ADD COLUMN recent_error_count INTEGER NOT NULL DEFAULT 0;" },
+    { name: "priority", sql: "ALTER TABLE managed_providers ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;" }
   ];
   for (const definition of managedProviderColumnDefinitions) {
     if (!managedProviderColumns.some((column) => column.name === definition.name)) {

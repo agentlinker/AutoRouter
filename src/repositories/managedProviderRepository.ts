@@ -30,6 +30,7 @@ export interface ManagedProviderInput {
   providerKind?: ProviderKind;
   modelAvailabilityScope?: ModelAvailabilityScope;
   enabled?: boolean;
+  priority?: number;
   trustLevel?: "low" | "medium" | "high";
   privacyLevel?: "public_only" | "normal" | "private";
   usageTrust?: "low" | "medium" | "high";
@@ -98,6 +99,14 @@ export interface ManagedProviderUpdateInput {
   providerKind?: ProviderKind;
   modelAvailabilityScope?: ModelAvailabilityScope;
   enabled?: boolean;
+  priority?: number;
+}
+
+function normalizeProviderPriority(priority: number | undefined): number | undefined {
+  if (priority === undefined || !Number.isFinite(priority)) {
+    return undefined;
+  }
+  return Math.trunc(priority);
 }
 
 export interface ManagedEndpointUpdateInput {
@@ -627,6 +636,8 @@ export class ManagedProviderRepository {
           providerKind,
           modelAvailabilityScope,
           enabled: input.provider.enabled ?? existing.provider.enabled,
+          priority:
+            normalizeProviderPriority(input.provider.priority) ?? existing.provider.priority,
           trustLevel: input.provider.trustLevel ?? existing.provider.trustLevel,
           privacyLevel: input.provider.privacyLevel ?? existing.provider.privacyLevel,
           usageTrust: input.provider.usageTrust ?? existing.provider.usageTrust,
@@ -784,6 +795,7 @@ export class ManagedProviderRepository {
           providerKind,
           modelAvailabilityScope,
           enabled: input.provider.enabled ?? true,
+          priority: normalizeProviderPriority(input.provider.priority) ?? 0,
           trustLevel: input.provider.trustLevel ?? "low",
           privacyLevel: input.provider.privacyLevel ?? "public_only",
           usageTrust: input.provider.usageTrust ?? "low",
@@ -1106,6 +1118,28 @@ export class ManagedProviderRepository {
     return this.getProviderDetails(providerKey);
   }
 
+  public getMaxProviderPriority(): number {
+    const providers = this.db.select().from(managedProvidersTable).all();
+    return providers.reduce((max, provider) => Math.max(max, provider.priority ?? 0), 0);
+  }
+
+  public elevateProviderPriority(providerKey: string): ManagedProviderDetails | null {
+    const existing = this.getProviderDetails(providerKey);
+    if (!existing) {
+      return null;
+    }
+    const now = nowIso();
+    const nextPriority = this.getMaxProviderPriority() + 1;
+    this.db.update(managedProvidersTable)
+      .set({
+        priority: nextPriority,
+        updatedAt: now
+      })
+      .where(eq(managedProvidersTable.id, existing.provider.id))
+      .run();
+    return this.getProviderDetails(providerKey);
+  }
+
   public clearProviderEndpoints(providerKey: string): boolean {
     const provider = this.db.select().from(managedProvidersTable)
       .where(eq(managedProvidersTable.providerKey, providerKey))
@@ -1151,6 +1185,7 @@ export class ManagedProviderRepository {
         providerKind: input.providerKind ?? existing.provider.providerKind,
         modelAvailabilityScope: nextScope,
         enabled: input.enabled ?? existing.provider.enabled,
+        priority: normalizeProviderPriority(input.priority) ?? existing.provider.priority,
         ...(input.enabled === true
           ? {
               runtimeStatus: "normal",

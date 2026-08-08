@@ -14,7 +14,7 @@ import type {
   ProviderRuntimeState
 } from "../state/routerState.js";
 import { HttpError } from "../utils/httpErrors.js";
-import { modelFilterReason, providerFilterReason } from "../runtime/runtimeStatus.js";
+import { modelFilterReason, providerFilterReason, resolveAccountExecutionGate } from "../runtime/runtimeStatus.js";
 import type { StickyRoute } from "./stickySession.js";
 
 export interface SelectedRoute {
@@ -136,12 +136,18 @@ function canUseCandidate(
     return "endpoint_down";
   }
 
-  if (!account.enabled) {
-    return "account_disabled";
-  }
-
-  if (!account.available) {
-    return account.disabled_message ?? account.disabled_reason ?? "account_unavailable";
+  const accountGate = resolveAccountExecutionGate({
+    enabled: account.enabled,
+    available: account.available,
+    runtimeStatus: account.runtime_status ?? "normal",
+    statusReason: account.status_reason,
+    statusMessage: account.status_message,
+    statusCooldownUntil: account.status_cooldown_until,
+    disabledReason: account.disabled_reason,
+    disabledMessage: account.disabled_message
+  });
+  if (!accountGate.canExecute) {
+    return accountGate.message ?? accountGate.reason ?? "account_unavailable";
   }
 
   if (
@@ -463,7 +469,17 @@ export function selectRoute(
     });
   }
 
-  passed.sort((left, right) => right.score - left.score);
+  passed.sort((left, right) => {
+    const priorityDelta = (right.provider.priority ?? 0) - (left.provider.priority ?? 0);
+    if (priorityDelta !== 0) {
+      return priorityDelta;
+    }
+    const scoreDelta = right.score - left.score;
+    if (scoreDelta !== 0) {
+      return scoreDelta;
+    }
+    return left.candidateIndex - right.candidateIndex;
+  });
 
   return {
     selected: passed[0],

@@ -2,6 +2,7 @@ import type { ManagedProviderRepository } from "../repositories/managedProviderR
 import type { AppSettingsRepository } from "../repositories/appSettingsRepository.js";
 import type { RuntimeSnapshot } from "./runtimeTypes.js";
 import {
+  accountUnavailableReason,
   classifyProviderFailure,
   nextCooldown,
   type FailureClass,
@@ -42,6 +43,38 @@ export class RuntimeStatusService {
     return this.appSettings.getRuntimeStatusSettings();
   }
 
+  private toPatchedAccountStatus(account: {
+    runtimeStatus: string;
+    statusReason?: string | null;
+    statusMessage?: string | null;
+    statusCooldownUntil?: string | null;
+  }): {
+    available: boolean;
+    runtime_status: RuntimeStatus;
+    status_reason: string | null;
+    status_message: string | null;
+    status_cooldown_until: string | null;
+    disabled_reason?: string;
+    disabled_message?: string;
+  } {
+    const runtimeStatus = account.runtimeStatus as RuntimeStatus;
+    const unavailable = accountUnavailableReason({
+      runtimeStatus,
+      statusReason: account.statusReason,
+      statusMessage: account.statusMessage,
+      statusCooldownUntil: account.statusCooldownUntil
+    });
+    return {
+      available: unavailable === null,
+      runtime_status: runtimeStatus,
+      status_reason: account.statusReason ?? null,
+      status_message: account.statusMessage ?? null,
+      status_cooldown_until: account.statusCooldownUntil ?? null,
+      disabled_reason: unavailable?.reason,
+      disabled_message: unavailable?.message
+    };
+  }
+
   public recordSuccess(input: {
     snapshot: RuntimeSnapshot;
     providerKey: string;
@@ -58,9 +91,12 @@ export class RuntimeStatusService {
       settings.clear_counters_on_success
     );
     if (account && account.runtimeStatus === "normal") {
-      this.patchAccountStatus(input.snapshot, input.providerKey, accountKey, {
-        available: true
-      });
+      this.patchAccountStatus(
+        input.snapshot,
+        input.providerKey,
+        accountKey,
+        this.toPatchedAccountStatus(account)
+      );
     }
 
     const row = this.managedProviders.markModelSuccess(
@@ -143,11 +179,12 @@ export class RuntimeStatusService {
       context.message
     );
     if (account) {
-      this.patchAccountStatus(context.snapshot, context.providerKey, context.accountKey, {
-        available: false,
-        disabled_reason: PROVIDER_AUTH_FAILED_CODE,
-        disabled_message: context.message || "Invalid API key"
-      });
+      this.patchAccountStatus(
+        context.snapshot,
+        context.providerKey,
+        context.accountKey,
+        this.toPatchedAccountStatus(account)
+      );
     }
   }
 
@@ -159,11 +196,12 @@ export class RuntimeStatusService {
       context.message
     );
     if (account) {
-      this.patchAccountStatus(context.snapshot, context.providerKey, context.accountKey, {
-        available: false,
-        disabled_reason: "billing_failed",
-        disabled_message: context.message || "Account balance or quota exhausted"
-      });
+      this.patchAccountStatus(
+        context.snapshot,
+        context.providerKey,
+        context.accountKey,
+        this.toPatchedAccountStatus(account)
+      );
     }
   }
 
@@ -265,11 +303,12 @@ export class RuntimeStatusService {
       }
     );
     if (account) {
-      this.patchAccountStatus(context.snapshot, context.providerKey, context.accountKey, {
-        available: false,
-        disabled_reason: decision.permanent ? "error_permanent" : "error_cooldown",
-        disabled_message: context.message
-      });
+      this.patchAccountStatus(
+        context.snapshot,
+        context.providerKey,
+        context.accountKey,
+        this.toPatchedAccountStatus(account)
+      );
     }
 
     const currentModel = this.managedProviders.getModelByProviderAndKey(
@@ -321,6 +360,10 @@ export class RuntimeStatusService {
     accountKey: string,
     status: {
       available: boolean;
+      runtime_status?: RuntimeStatus;
+      status_reason?: string | null;
+      status_message?: string | null;
+      status_cooldown_until?: string | null;
       disabled_reason?: string;
       disabled_message?: string;
     }
@@ -329,6 +372,18 @@ export class RuntimeStatusService {
     for (const account of snapshot.accounts) {
       if (account.id.startsWith(`${providerKey}/`) && account.id.endsWith(suffix)) {
         account.available = status.available;
+        if ("runtime_status" in status) {
+          account.runtime_status = status.runtime_status;
+        }
+        if ("status_reason" in status) {
+          account.status_reason = status.status_reason ?? null;
+        }
+        if ("status_message" in status) {
+          account.status_message = status.status_message ?? null;
+        }
+        if ("status_cooldown_until" in status) {
+          account.status_cooldown_until = status.status_cooldown_until ?? null;
+        }
         account.disabled_reason = status.disabled_reason;
         account.disabled_message = status.disabled_message;
       }

@@ -309,6 +309,70 @@ export function accountUnavailableReason(input: {
   return null;
 }
 
+export interface AccountExecutionGate {
+  canExecute: boolean;
+  reason?: string;
+  message?: string;
+  recoveredFromExpiredCooldown: boolean;
+}
+
+/**
+ * 判断当前 snapshot 里的 account 是否可进入执行阶段。
+ * 只恢复派生可用性语义，不改 DB；DB 状态由实际请求后的 success/failure 记录更新。
+ */
+export function resolveAccountExecutionGate(input: {
+  enabled: boolean;
+  available: boolean;
+  runtimeStatus?: RuntimeStatus | null;
+  statusReason?: string | null;
+  statusMessage?: string | null;
+  statusCooldownUntil?: string | null;
+  disabledReason?: string | null;
+  disabledMessage?: string | null;
+  now?: Date;
+}): AccountExecutionGate {
+  if (!input.enabled) {
+    return {
+      canExecute: false,
+      reason: "account_disabled",
+      message: "Account disabled",
+      recoveredFromExpiredCooldown: false
+    };
+  }
+
+  const runtimeStatus = input.runtimeStatus ?? "normal";
+  const unavailable = accountUnavailableReason({
+    runtimeStatus,
+    statusReason: input.statusReason,
+    statusMessage: input.statusMessage,
+    statusCooldownUntil: input.statusCooldownUntil,
+    now: input.now
+  });
+  if (unavailable) {
+    return {
+      canExecute: false,
+      reason: unavailable.reason,
+      message: unavailable.message,
+      recoveredFromExpiredCooldown: false
+    };
+  }
+
+  const recoverableExpired = runtimeStatus === "cooling_down" || runtimeStatus === "rate_limited";
+  if (!input.available && !recoverableExpired) {
+    return {
+      canExecute: false,
+      reason: input.disabledReason ?? "account_unavailable",
+      message: input.disabledMessage ?? input.disabledReason ?? "Account unavailable",
+      recoveredFromExpiredCooldown: false
+    };
+  }
+
+  return {
+    canExecute: true,
+    recoveredFromExpiredCooldown: !input.available && recoverableExpired
+  };
+}
+
 export type FailureClass =
   | "auth"
   | "billing"

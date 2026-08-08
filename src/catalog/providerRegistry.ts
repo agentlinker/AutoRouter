@@ -14,6 +14,7 @@ import type {
   PlatformRuntimeState,
   ProviderRuntimeState
 } from "../state/routerState.js";
+import type { RuntimeStatus } from "../runtime/runtimeStatus.js";
 
 export interface ProviderRegistryOptions {
   isAccountCredentialAvailable?: (
@@ -67,10 +68,11 @@ function mapProvider(
   return {
     id: providerId,
     display_name: provider.display_name,
+    priority: 0,
     trust_level: normalizeTrustLevel(provider.trust_level),
     privacy_level: normalizePrivacyLevel(provider.privacy_level),
     usage_trust: normalizeUsageTrust(provider.usage_trust),
-    runtime_status: "normal",
+    runtime_status: "normal" as RuntimeStatus,
     status_reason: undefined,
     status_message: undefined,
     status_cooldown_until: null
@@ -120,19 +122,27 @@ export function buildProviderRegistry(
   const platforms: PlatformRuntimeState[] = [];
   const providers: ProviderRuntimeState[] = [];
   const endpoints: EndpointRuntimeState[] = [];
-  const accounts = Object.entries(config.accounts).map(([accountId, account]) => ({
-    id: accountId,
-    endpoint_id: account.endpoint,
-    provider_key: config.endpoints[account.endpoint]?.provider,
-    endpoint_key: account.endpoint.includes("/") ? account.endpoint.split("/").slice(1).join("/") : account.endpoint,
-    account_key: accountId.includes("/") ? accountId.split("/").pop() : accountId,
-    account_type: account.account_type,
-    enabled: account.enabled,
-    available:
-      options.isAccountCredentialAvailable?.(accountId, account) ?? isAccountAvailable(account),
-    recent_error_count: 0,
-    quota: account.quota
-  }));
+  const accounts: AccountRuntimeState[] = Object.entries(config.accounts).map(
+    ([accountId, account]) => ({
+      id: accountId,
+      endpoint_id: account.endpoint,
+      provider_key: config.endpoints[account.endpoint]?.provider,
+      endpoint_key: account.endpoint.includes("/")
+        ? account.endpoint.split("/").slice(1).join("/")
+        : account.endpoint,
+      account_key: accountId.includes("/") ? accountId.split("/").pop() : accountId,
+      account_type: account.account_type,
+      enabled: account.enabled,
+      available:
+        options.isAccountCredentialAvailable?.(accountId, account) ?? isAccountAvailable(account),
+      runtime_status: "normal" as RuntimeStatus,
+      status_reason: null,
+      status_message: null,
+      status_cooldown_until: null,
+      recent_error_count: 0,
+      quota: account.quota
+    })
+  );
 
   for (const [platformId, platformConfig] of Object.entries(config.platforms)) {
     platforms.push(mapPlatform(platformId, platformConfig));

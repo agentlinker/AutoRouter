@@ -10,6 +10,7 @@ import { HttpError } from "../../utils/httpErrors.js";
 import { PROVIDER_AUTH_FAILED_CODE, PROVIDER_AUTH_FAILED_MESSAGE } from "../../utils/providerErrors.js";
 import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
 import type { RuntimeStatusService } from "../../runtime/runtimeStatusService.js";
+import { resolveAccountExecutionGate } from "../../runtime/runtimeStatus.js";
 
 interface ResponsesRequestBody {
   model?: string;
@@ -599,7 +600,7 @@ export async function registerResponsesRoute(
         score: candidate.score,
         sticky: candidate.sticky
       })),
-      selected: selectedCandidate
+      selected: selectedCandidate && attempts.length > 0
         ? {
             route_id: selectedCandidate.routeId,
             endpoint: selectedCandidate.endpoint.id,
@@ -618,9 +619,24 @@ export async function registerResponsesRoute(
     });
 
     for (const [index, candidate] of orderedCandidates.entries()) {
-      // Auth failures disable the account mid-request; skip remaining aliases on the same account.
-      if (!candidate.account.available) {
+      // Auth failures disable the account mid-request；过期冷却只恢复本次 snapshot 的可执行性。
+      const accountGate = resolveAccountExecutionGate({
+        enabled: candidate.account.enabled,
+        available: candidate.account.available,
+        runtimeStatus: candidate.account.runtime_status ?? "normal",
+        statusReason: candidate.account.status_reason,
+        statusMessage: candidate.account.status_message,
+        statusCooldownUntil: candidate.account.status_cooldown_until,
+        disabledReason: candidate.account.disabled_reason,
+        disabledMessage: candidate.account.disabled_message
+      });
+      if (!accountGate.canExecute) {
         continue;
+      }
+      if (accountGate.recoveredFromExpiredCooldown) {
+        candidate.account.available = true;
+        candidate.account.disabled_reason = undefined;
+        candidate.account.disabled_message = undefined;
       }
 
       const accountConfig = state.config.accounts[candidate.account.id];

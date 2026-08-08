@@ -1664,4 +1664,155 @@ describe("gateway integration", () => {
     await gateway.close();
   });
 
+  it("tries an expired cooling_down account even when snapshot availability is stale", async () => {
+    vi.stubEnv("EXPIRED_API_KEY", "expired-key");
+    const pool = mockAgent.get("https://expired-cooldown.example.com");
+    pool
+      .intercept({
+        path: "/v1/chat/completions",
+        method: "POST"
+      })
+      .reply(200, {
+        id: "chatcmpl_expired_cooldown",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: "expired-model",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "expired cooldown ok"
+            },
+            finish_reason: "stop"
+          }
+        ],
+        usage: {
+          prompt_tokens: 3,
+          completion_tokens: 2,
+          total_tokens: 5
+        }
+      });
+
+    const config = loadConfig({
+      override: {
+        trace: {
+          directory: traceDirectory,
+          log_prompts: false
+        },
+        platforms: {
+          openai: {
+            protocol: "openai"
+          }
+        },
+        providers: {
+          expired: {
+            display_name: "Expired Cooldown",
+            trust_level: "medium",
+            privacy_level: "normal",
+            usage_trust: "medium"
+          }
+        },
+        endpoints: {
+          "expired-openai": {
+            provider: "expired",
+            platform: "openai",
+            adapter: "openai_compatible",
+            base_url: "https://expired-cooldown.example.com/v1",
+            capabilities: {
+              streaming: true,
+              tools: true,
+              json_mode: true
+            }
+          }
+        },
+        accounts: {
+          "expired-account": {
+            endpoint: "expired-openai",
+            account_type: "api_key",
+            credential_env: "EXPIRED_API_KEY"
+          }
+        },
+        models: {
+          "expired-model": {
+            endpoint: "expired-openai",
+            model_name: "expired-model",
+            capabilities: {
+              streaming: true,
+              tools: true,
+              json_mode: true
+            }
+          }
+        },
+        routes: {
+          auto: {
+            policy: "balanced",
+            candidates: [
+              {
+                account: "expired-account",
+                model: "expired-model"
+              }
+            ]
+          }
+        },
+        policies: {
+          balanced: {
+            min_trust_level: "medium",
+            allow_public_only_provider: false,
+            fallback_enabled: true,
+            sticky_session: false
+          }
+        }
+      }
+    });
+
+    const registry = buildProviderRegistry(config);
+    const state: RouterState = {
+      config,
+      logger: createLogger(),
+      platforms: registry.platforms,
+      providers: registry.providers,
+      endpoints: registry.endpoints,
+      accounts: registry.accounts,
+      priceTable: new PriceTable(config),
+      adapters: new AdapterRegistry(),
+      stickySessions: new StickySessionStore(),
+      traceStore: createTraceStore(traceDatabasePath)
+    };
+    const expiredAccount = state.accounts.find((account) => account.id === "expired-account");
+    expect(expiredAccount).toBeTruthy();
+    expiredAccount!.available = false;
+    expiredAccount!.runtime_status = "cooling_down";
+    expiredAccount!.status_reason = "error_cooldown";
+    expiredAccount!.status_message = "previous provider error";
+    expiredAccount!.status_cooldown_until = new Date(Date.now() - 60_000).toISOString();
+    expiredAccount!.disabled_reason = "error_cooldown";
+    expiredAccount!.disabled_message = "previous provider error";
+
+    const gateway = await createServer(state);
+    const response = await gateway.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: {
+        authorization: "Bearer test-token"
+      },
+      payload: {
+        model: "auto",
+        messages: [{ role: "user", content: "hello" }]
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().choices[0].message.content).toBe("expired cooldown ok");
+    expect(state.traceStore.latest()?.attempts).toEqual([
+      expect.objectContaining({
+        provider: "expired",
+        account: "expired-account",
+        status: "success"
+      })
+    ]);
+
+    await gateway.close();
+  });
+
 });

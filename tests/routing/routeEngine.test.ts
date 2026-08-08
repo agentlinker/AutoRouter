@@ -279,6 +279,82 @@ describe("selectRoute", () => {
     vi.unstubAllEnvs();
   });
 
+  it("prefers higher provider priority before other score factors", () => {
+    vi.stubEnv("PRIMARY_API_KEY", "primary");
+    vi.stubEnv("FALLBACK_API_KEY", "fallback");
+
+    const config = loadConfig({
+      override: {
+        providers: {
+          premium: {
+            display_name: "Premium",
+            trust_level: "high",
+            privacy_level: "normal",
+            usage_trust: "high",
+            protocol: "openai",
+            adapter: "openai_compatible",
+            base_url: "https://premium.example.com/v1",
+            accounts: [{ id: "main", credential_env: "PRIMARY_API_KEY" }],
+            models: [{ id: "gpt-5-5", model_name: "gpt-5.5" }]
+          },
+          favored: {
+            display_name: "Favored",
+            trust_level: "low",
+            privacy_level: "normal",
+            usage_trust: "low",
+            protocol: "openai",
+            adapter: "openai_compatible",
+            base_url: "https://favored.example.com/v1",
+            accounts: [{ id: "main", credential_env: "FALLBACK_API_KEY" }],
+            models: [{ id: "gpt-5-4-mini", model_name: "gpt-5.4-mini" }]
+          }
+        },
+        routes: {
+          auto: {
+            policy: "balanced",
+            candidates: [
+              { provider: "premium", account: "main", model: "gpt-5-5" },
+              { provider: "favored", account: "main", model: "gpt-5-4-mini" }
+            ]
+          }
+        },
+        policies: {
+          balanced: {
+            min_trust_level: "low",
+            fallback_enabled: true,
+            sticky_session: false
+          }
+        }
+      }
+    });
+
+    const registry = buildProviderRegistry(config);
+    const favored = registry.providers.find((provider) => provider.id === "favored");
+    if (!favored) {
+      throw new Error("favored provider missing");
+    }
+    favored.priority = 10;
+
+    const route = selectRoute(
+      config,
+      new ModelCatalog(config),
+      new PriceTable(config),
+      registry.platforms,
+      registry.providers,
+      registry.endpoints,
+      registry.accounts,
+      "auto",
+      false,
+      false,
+      10,
+      "normal"
+    );
+
+    expect(route.selected.provider.id).toBe("favored");
+
+    vi.unstubAllEnvs();
+  });
+
   it("selects different candidates for cheap and coding routes based on policy weights", () => {
     vi.stubEnv("PRIMARY_API_KEY", "primary");
     vi.stubEnv("CHEAP_API_KEY", "cheap");

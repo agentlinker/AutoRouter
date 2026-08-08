@@ -244,6 +244,60 @@ describe("cooling_down routing", () => {
     expect((await harness.routeAfterReload("demo-model")).ok).toBe(true);
   });
 
+  it("lets traffic through again after cooldown expiry without requiring reload", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-27T00:00:00.000Z"));
+    const harness = createHarness(tempDir);
+
+    harness.service.recordFailure({
+      snapshot: harness.runtimeManager.getSnapshot(),
+      providerKey: "demo",
+      modelKey: "demo-model",
+      accountId: "demo/openai/default",
+      error: transientError(502)
+    });
+
+    expect(() =>
+      selectRoute(
+        harness.runtimeManager.getSnapshot().config,
+        harness.runtimeManager.getSnapshot().modelCatalog,
+        harness.runtimeManager.getSnapshot().priceTable,
+        harness.runtimeManager.getSnapshot().platforms,
+        harness.runtimeManager.getSnapshot().providers,
+        harness.runtimeManager.getSnapshot().endpoints,
+        harness.runtimeManager.getSnapshot().accounts,
+        "demo-model",
+        false,
+        false,
+        10,
+        "normal",
+        null,
+        harness.runtimeManager.getSnapshot().modelStatuses
+      )
+    ).toThrow(HttpError);
+
+    vi.setSystemTime(new Date("2026-07-27T00:00:20.000Z"));
+
+    expect(() =>
+      selectRoute(
+        harness.runtimeManager.getSnapshot().config,
+        harness.runtimeManager.getSnapshot().modelCatalog,
+        harness.runtimeManager.getSnapshot().priceTable,
+        harness.runtimeManager.getSnapshot().platforms,
+        harness.runtimeManager.getSnapshot().providers,
+        harness.runtimeManager.getSnapshot().endpoints,
+        harness.runtimeManager.getSnapshot().accounts,
+        "demo-model",
+        false,
+        false,
+        10,
+        "normal",
+        null,
+        harness.runtimeManager.getSnapshot().modelStatuses
+      )
+    ).not.toThrow();
+  });
+
   it("clears the cooldown on the next success", async () => {
     const harness = createHarness(tempDir);
 

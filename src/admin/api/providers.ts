@@ -89,6 +89,7 @@ export interface ProviderDetails {
   provider_kind?: "official" | "relay" | "custom";
   model_availability_scope?: "shared_by_provider" | "per_account";
   enabled: boolean;
+  priority: number;
   runtime_status?: string;
   status_reason?: string | null;
   status_message?: string | null;
@@ -144,6 +145,7 @@ export interface CreateProviderPayload extends ProviderFormValues {
 
 export interface UpdateProviderPayload extends Omit<CreateProviderPayload, "provider_key"> {
   api_key?: string;
+  priority?: number;
 }
 
 export function listProviders(token: string): Promise<ProviderListResponse> {
@@ -222,6 +224,17 @@ export function setProviderEnabled(
     method: "PATCH",
     body: JSON.stringify({ enabled })
   });
+}
+
+export function promoteProviderPriority(
+  token: string,
+  providerKey: string
+): Promise<ProviderDetails> {
+  return requestJson<ProviderDetails>(
+    `/admin/api/providers/${providerKey}/promote-priority`,
+    token,
+    { method: "POST" }
+  );
 }
 
 export function updateProviderModelCapabilities(

@@ -58,6 +58,7 @@ const createProviderBodySchema = z.object({
 const patchProviderBodySchema = z.object({
   enabled: z.boolean().optional(),
   display_name: z.string().min(1).optional(),
+  priority: z.number().int().optional(),
   protocol: protocolSchema.optional(),
   base_url: z.string().url().optional(),
   endpoints: z.array(z.object({
@@ -205,6 +206,7 @@ function buildProviderInput(input: {
   privacy_level: "public_only" | "normal" | "private";
   usage_trust: "low" | "medium" | "high";
   enabled?: boolean;
+  priority?: number;
 }, endpointInputs: Array<{
   endpoint_key: string;
   protocol: "openai" | "anthropic";
@@ -219,6 +221,7 @@ function buildProviderInput(input: {
   providerKind?: "official" | "relay" | "custom";
   modelAvailabilityScope?: "shared_by_provider" | "per_account";
   enabled?: boolean;
+  priority?: number;
   trustLevel: "low" | "medium" | "high";
   privacyLevel: "public_only" | "normal" | "private";
   usageTrust: "low" | "medium" | "high";
@@ -234,6 +237,7 @@ function buildProviderInput(input: {
     providerKind: input.provider_kind,
     modelAvailabilityScope: input.model_availability_scope,
     enabled: input.enabled,
+    priority: input.priority,
     trustLevel: input.trust_level,
     privacyLevel: input.privacy_level,
     usageTrust: input.usage_trust
@@ -382,6 +386,7 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
     provider_kind: details.provider.providerKind ?? "custom",
     model_availability_scope: details.provider.modelAvailabilityScope ?? "per_account",
     enabled: details.provider.enabled,
+    priority: details.provider.priority ?? 0,
     runtime_status: details.provider.runtimeStatus ?? "normal",
     status_reason: details.provider.statusReason ?? null,
     status_message: details.provider.statusMessage ?? null,
@@ -639,6 +644,7 @@ export async function registerAdminProvidersRoutes(
                   | "shared_by_provider"
                   | "per_account"
                   | undefined),
+              priority: body.priority ?? existing.provider.priority ?? 0,
               trust_level: existing.provider.trustLevel as "low" | "medium" | "high",
               privacy_level: existing.provider.privacyLevel as "public_only" | "normal" | "private",
               usage_trust: existing.provider.usageTrust as "low" | "medium" | "high",
@@ -658,6 +664,7 @@ export async function registerAdminProvidersRoutes(
       dependencies.repository.updateProvider(request.params.providerKey, {
         enabled: body.enabled,
         displayName: body.display_name,
+        priority: body.priority,
         websiteUrl: body.website_url === "" ? null : body.website_url,
         providerKind: body.provider_kind,
         modelAvailabilityScope: body.model_availability_scope
@@ -672,6 +679,18 @@ export async function registerAdminProvidersRoutes(
       }
 
       const updated = dependencies.repository.getProviderDetails(request.params.providerKey);
+      await dependencies.runtimeManager.reload();
+      return serializeProviderDetails(updated);
+    }
+  );
+
+  fastify.post<{ Params: { providerKey: string } }>(
+    "/admin/api/providers/:providerKey/promote-priority",
+    async (request) => {
+      const updated = dependencies.repository.elevateProviderPriority(request.params.providerKey);
+      if (!updated) {
+        throw new HttpError(404, "provider_not_found", "Provider not found");
+      }
       await dependencies.runtimeManager.reload();
       return serializeProviderDetails(updated);
     }

@@ -206,6 +206,7 @@ export class RuntimeConfigProjector {
         ? managed.runtimeStatus
         : "normal";
       provider.runtime_status = status as RuntimeStatus;
+      provider.priority = managed.priority ?? 0;
       provider.status_reason = managed.statusReason ?? undefined;
       provider.status_message = managed.statusMessage ?? undefined;
       provider.status_cooldown_until = managed.statusCooldownUntil ?? null;
@@ -235,7 +236,7 @@ export class RuntimeConfigProjector {
       const accountId = `${bundle.provider.providerKey}/${bundle.endpoint.endpointKey}/${accountKey}`;
       const account = registry.accounts.find((item) => item.id === accountId);
       if (account) {
-        account.provider_key = providerId;
+        account.provider_key = bundle.provider.providerKey;
         account.endpoint_key = bundle.endpoint.endpointKey;
         account.account_key = accountKey;
         account.api_key_hint = bundle.credential.keyHint ?? undefined;
@@ -243,6 +244,10 @@ export class RuntimeConfigProjector {
         const accountStatus = isRuntimeStatusValue(bundle.credential.runtimeStatus)
           ? bundle.credential.runtimeStatus
           : "normal";
+        account.runtime_status = accountStatus as RuntimeStatus;
+        account.status_reason = bundle.credential.statusReason ?? null;
+        account.status_message = bundle.credential.statusMessage ?? null;
+        account.status_cooldown_until = bundle.credential.statusCooldownUntil ?? null;
 
         if (bundle.credential.expiresAt) {
           const expiresAt = Date.parse(bundle.credential.expiresAt);

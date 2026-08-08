@@ -35,6 +35,7 @@ import {
   listProviderTemplates,
   listProviders,
   mergeCheckProvider,
+  promoteProviderPriority,
   setProviderEnabled,
   syncProvider,
   syncProviderAccount,
@@ -1443,6 +1444,10 @@ function ProviderList(props: {
         return syncProvider(props.token, input.provider.provider_key);
       }
 
+      if (input.action === "promote-priority") {
+        return promoteProviderPriority(props.token, input.provider.provider_key);
+      }
+
       if (input.action === "toggle") {
         return setProviderEnabled(
           props.token,
@@ -1473,7 +1478,15 @@ function ProviderList(props: {
 
   return (
     <div className="provider-list">
-      {props.providers.map((provider) => (
+      {[...props.providers]
+        .sort((left, right) => {
+          const priorityDelta = right.priority - left.priority;
+          if (priorityDelta !== 0) {
+            return priorityDelta;
+          }
+          return left.display_name.localeCompare(right.display_name);
+        })
+        .map((provider) => (
         <ProviderCard
           key={provider.provider_key}
           provider={provider}
@@ -1515,6 +1528,10 @@ function ProviderCard(props: {
             label={`${props.provider.display_name} 启用开关`}
             onChange={() => props.onAction("toggle")}
           />
+        </div>
+        <div className="metric">
+          <span>优先级</span>
+          <strong>{props.provider.priority}</strong>
         </div>
         <div className="metric">
           <span>调度状态</span>
@@ -1594,6 +1611,14 @@ function ProviderCard(props: {
         <button type="button" disabled={props.disabled} onClick={() => props.onAction("sync")}>
           <RefreshCw size={14} />
           同步模型
+        </button>
+        <button
+          type="button"
+          disabled={props.disabled}
+          onClick={() => props.onAction("promote-priority")}
+        >
+          <Sparkles size={14} />
+          一键高优
         </button>
         <button type="button" disabled={props.disabled} onClick={() => props.onAction("delete")}>
           <Trash2 size={14} />

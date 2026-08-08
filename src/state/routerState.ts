@@ -15,6 +15,7 @@ export interface PlatformRuntimeState {
 export interface ProviderRuntimeState {
   id: string;
   display_name: string;
+  priority?: number;
   trust_level: string;
   privacy_level: string;
   usage_trust: string;
@@ -61,6 +62,10 @@ export interface AccountRuntimeState {
   account_type: string;
   enabled: boolean;
   available: boolean;
+  runtime_status?: RuntimeStatus;
+  status_reason?: string | null;
+  status_message?: string | null;
+  status_cooldown_until?: string | null;
   disabled_reason?: string;
   disabled_message?: string;
   recent_error_count: number;
