@@ -32,6 +32,7 @@ import {
   createProviderEndpoint,
   deleteProvider,
   deleteProviderAccount,
+  getProvider,
   listProviderTemplates,
   listProviders,
   mergeCheckProvider,
@@ -44,8 +45,11 @@ import {
   updateProviderModelCapabilities,
   type CreateProviderPayload,
   type ProviderDetails,
+  type ProviderListParams,
   type ProviderModel,
+  type ProviderSortBy,
   type ProviderTemplate,
+  type SortDirection,
   type UpdateProviderPayload
 } from "../api/providers.js";
 import { AppDialog } from "../components/Dialog.js";
@@ -263,8 +267,19 @@ export function getStoredToken() {
   return localStorage.getItem(providerTokenStorageKey) ?? "";
 }
 
-function providersQueryKey(token: string) {
-  return ["providers", token] as const;
+const defaultProviderListParams: ProviderListParams = {
+  sort_by: "priority",
+  sort_dir: "desc",
+  page: 1,
+  page_size: 20
+};
+
+function providersQueryKey(token: string, params?: ProviderListParams) {
+  return params ? ["providers", token, params] as const : ["providers", token] as const;
+}
+
+function providerQueryKey(token: string, providerKey: string) {
+  return ["provider", token, providerKey] as const;
 }
 
 function useAdminToken() {
@@ -283,20 +298,29 @@ function useAdminToken() {
   return { token, saveToken, clearToken };
 }
 
-function useProviders(token: string) {
+function useProviders(token: string, params: ProviderListParams = defaultProviderListParams) {
   return useQuery({
-    queryKey: providersQueryKey(token),
-    queryFn: () => listProviders(token),
+    queryKey: providersQueryKey(token, params),
+    queryFn: () => listProviders(token, params),
     enabled: token.length > 0
   });
 }
 
 function useProvider(token: string, providerKey: string) {
-  const providersQuery = useProviders(token);
-  const provider = providersQuery.data?.data.find((item) => item.provider_key === providerKey) ?? null;
+  const providerQuery = useQuery({
+    queryKey: providerQueryKey(token, providerKey),
+    queryFn: () => getProvider(token, providerKey),
+    enabled: token.length > 0 && providerKey.length > 0
+  });
 
-  return { ...providersQuery, provider };
+  return { ...providerQuery, provider: providerQuery.data ?? null };
 }
+
+const providerSortOptions: Array<{ value: ProviderSortBy; label: string }> = [
+  { value: "priority", label: "优先级" },
+  { value: "updated_at", label: "修改时间" },
+  { value: "created_at", label: "添加时间" }
+];
 
 const navItems = [
   {
@@ -519,8 +543,12 @@ export function AdminRoot() {
 export function ProviderListPage() {
   const token = getStoredToken();
   const queryClient = useQueryClient();
-  const providersQuery = useProviders(token);
+  const [listParams, setListParams] = useState<ProviderListParams>(defaultProviderListParams);
+  const providersQuery = useProviders(token, listParams);
   const providers = providersQuery.data?.data ?? [];
+  const listMeta = providersQuery.data?.meta;
+  const totalProviders = listMeta?.total ?? providers.length;
+  const totalPages = Math.max(1, Math.ceil(totalProviders / listParams.page_size));
   const totalModels = providers.reduce((sum, provider) => sum + provider.models.length, 0);
   const availableProviders = providers.filter(isProviderAvailable).length;
   const availableModels = providers.reduce(
@@ -536,7 +564,7 @@ export function ProviderListPage() {
           <Network size={18} />
           <div>
             <span>Providers</span>
-            <strong>{providers.length}</strong>
+            <strong>{totalProviders}</strong>
             <small>可用 {availableProviders}</small>
           </div>
         </div>
@@ -555,6 +583,57 @@ export function ProviderListPage() {
           <h2>Provider 列表</h2>
         </div>
         <div className="page-actions">
+          <label className="compact-field">
+            <span>排序</span>
+            <select
+              value={listParams.sort_by}
+              onChange={(event) =>
+                setListParams((current) => ({
+                  ...current,
+                  sort_by: event.target.value as ProviderSortBy,
+                  page: 1
+                }))
+              }
+            >
+              {providerSortOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            className="ghost-action"
+            type="button"
+            onClick={() =>
+              setListParams((current) => ({
+                ...current,
+                sort_dir: current.sort_dir === "desc" ? "asc" : "desc",
+                page: 1
+              }))
+            }
+          >
+            {listParams.sort_dir === "desc" ? "降序" : "升序"}
+          </button>
+          <label className="compact-field">
+            <span>每页</span>
+            <select
+              value={listParams.page_size}
+              onChange={(event) =>
+                setListParams((current) => ({
+                  ...current,
+                  page_size: Number(event.target.value),
+                  page: 1
+                }))
+              }
+            >
+              {[10, 20, 50, 100].map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
+          </label>
           <button
             className="ghost-action"
             type="button"
@@ -575,6 +654,36 @@ export function ProviderListPage() {
         providers={providers}
         onChanged={() => void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) })}
       />
+      <div className="pagination-bar provider-pagination">
+        <span>
+          第 {listParams.page} / {totalPages} 页，共 {totalProviders} 个 Provider
+        </span>
+        <div className="page-actions">
+          <button
+            className="ghost-action small-action"
+            type="button"
+            disabled={listParams.page <= 1}
+            onClick={() =>
+              setListParams((current) => ({ ...current, page: Math.max(1, current.page - 1) }))
+            }
+          >
+            上一页
+          </button>
+          <button
+            className="ghost-action small-action"
+            type="button"
+            disabled={listParams.page >= totalPages}
+            onClick={() =>
+              setListParams((current) => ({
+                ...current,
+                page: Math.min(totalPages, current.page + 1)
+              }))
+            }
+          >
+            下一页
+          </button>
+        </div>
+      </div>
     </section>
   );
 }
@@ -622,6 +731,7 @@ export function ProviderEditPage() {
       provider={provider}
       onDone={() => {
         void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
+        void queryClient.invalidateQueries({ queryKey: providerQueryKey(token, providerKey) });
         void navigate({ to: "/providers/$providerKey", params: { providerKey } });
       }}
     />
@@ -662,6 +772,7 @@ export function ProviderDetailPage() {
     },
     onSuccess: (_result, action) => {
       void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
+      void queryClient.invalidateQueries({ queryKey: providerQueryKey(token, providerKey) });
       if (action === "delete") {
         window.location.assign("/admin/providers");
       }
@@ -683,6 +794,7 @@ export function ProviderDetailPage() {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
+      void queryClient.invalidateQueries({ queryKey: providerQueryKey(token, providerKey) });
     }
   });
   const endpointMutation = useMutation({
@@ -714,6 +826,7 @@ export function ProviderDetailPage() {
         api_key: ""
       });
       void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
+      void queryClient.invalidateQueries({ queryKey: providerQueryKey(token, providerKey) });
     },
     onError: (error) => {
       setEndpointMessage({
@@ -1478,15 +1591,7 @@ function ProviderList(props: {
 
   return (
     <div className="provider-list">
-      {[...props.providers]
-        .sort((left, right) => {
-          const priorityDelta = right.priority - left.priority;
-          if (priorityDelta !== 0) {
-            return priorityDelta;
-          }
-          return left.display_name.localeCompare(right.display_name);
-        })
-        .map((provider) => (
+      {props.providers.map((provider) => (
         <ProviderCard
           key={provider.provider_key}
           provider={provider}

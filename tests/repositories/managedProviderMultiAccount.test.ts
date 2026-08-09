@@ -337,5 +337,24 @@ describe("managed provider multi-account", () => {
     const updated = repo.elevateProviderPriority("beta");
     expect(updated?.provider.priority).toBe(4);
     expect(repo.getMaxProviderPriority()).toBe(4);
+
+    const firstPage = repo.listProviderSummariesPage({
+      sortBy: "priority",
+      sortDir: "desc",
+      page: 1,
+      pageSize: 1
+    });
+    expect(firstPage.total).toBe(2);
+    expect(firstPage.items.map((item) => item.provider.providerKey)).toEqual(["beta"]);
+    expect(firstPage.page).toBe(1);
+    expect(firstPage.pageSize).toBe(1);
+
+    const secondPage = repo.listProviderSummariesPage({
+      sortBy: "priority",
+      sortDir: "desc",
+      page: 2,
+      pageSize: 1
+    });
+    expect(secondPage.items.map((item) => item.provider.providerKey)).toEqual(["alpha"]);
   });
 });

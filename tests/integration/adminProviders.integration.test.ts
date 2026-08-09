@@ -40,6 +40,109 @@ describe("admin providers integration", () => {
     await mockAgent.close();
   });
 
+  it("lists providers with database-backed sorting and pagination metadata", async () => {
+    const config = loadConfig({
+      override: {
+        server: {
+          host: "127.0.0.1",
+          port: 8811,
+          request_timeout_ms: 120000,
+          gateway_token_env: "AUTO_ROUTER_TOKEN",
+          admin_token_env: "AUTO_ROUTER_ADMIN_TOKEN"
+        },
+        database: {
+          path: join(tempDir, "autorouter-list-sort.db")
+        },
+        trace: {
+          directory: join(tempDir, "traces-list-sort"),
+          log_prompts: false
+        },
+        routes: {},
+        providers: {},
+        endpoints: {},
+        accounts: {},
+        models: {},
+        policies: {}
+      }
+    });
+
+    const databaseClient = createDatabaseClient(config.database.path);
+    const repository = new ManagedProviderRepository(databaseClient.db);
+    const routeTraceRepository = new RouteTraceRepository(databaseClient.db);
+    const adapters = new AdapterRegistry();
+    const stickySessions = new StickySessionStore();
+    const traceStore = new TraceStore(routeTraceRepository);
+    const secretCipher = new SecretCipher(process.env.AUTO_ROUTER_MASTER_KEY);
+    const runtimeManager = new RuntimeManager({
+      baseConfig: config,
+      managedProviderRepository: repository,
+      secretCipher,
+      adapters,
+      stickySessions,
+      traceStore,
+      logger: createLogger()
+    });
+    const discoveryService = new ProviderModelDiscoveryService();
+
+    const server = await createServer(runtimeManager, {
+      managedProviderRepository: repository,
+      discoveryService,
+      secretCipher
+    });
+
+    for (const provider of [
+      { providerKey: "alpha", displayName: "Alpha", priority: 0 },
+      { providerKey: "beta", displayName: "Beta", priority: 5 }
+    ]) {
+      repository.createProviderWithEndpointBundles({
+        provider: {
+          ...provider,
+          adapterType: "openai_compatible",
+          baseUrl: `https://${provider.providerKey}.example.com/v1`
+        },
+        encryptedApiKey: secretCipher.encrypt(`${provider.providerKey}-secret`),
+        endpointBundles: [
+          {
+            endpoint: {
+              endpointKey: "default",
+              protocol: "openai",
+              adapterType: "openai_compatible",
+              baseUrl: `https://${provider.providerKey}.example.com/v1`
+            },
+            models: []
+          }
+        ]
+      });
+    }
+
+    const response = await server.inject({
+      method: "GET",
+      url: "/admin/api/providers?sort_by=priority&sort_dir=desc&page=1&page_size=1",
+      headers: {
+        authorization: "Bearer admin-token"
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      meta: {
+        total: 2,
+        page: 1,
+        page_size: 1,
+        sort_by: "priority",
+        sort_dir: "desc"
+      },
+      data: [
+        expect.objectContaining({
+          provider_key: "beta",
+          priority: 5
+        })
+      ]
+    });
+
+    await server.close();
+  });
+
   it("creates a managed provider, reloads runtime, and serves bare model requests", async () => {
     const pool = mockAgent.get("https://managed.example.com");
 

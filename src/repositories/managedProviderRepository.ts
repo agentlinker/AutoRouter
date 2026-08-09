@@ -1,5 +1,5 @@
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
 
 import {
   logicalModelsTable,
@@ -135,6 +135,25 @@ export interface ManagedProviderDetails {
   endpoints: ManagedProviderEndpointRow[];
   models: ManagedModelRow[];
   latestSync: ModelSyncRunRow | null;
+}
+
+export type ProviderListSortBy = "priority" | "created_at" | "updated_at";
+export type SortDirection = "asc" | "desc";
+
+export interface ListProviderSummariesOptions {
+  sortBy?: ProviderListSortBy;
+  sortDir?: SortDirection;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface ListProviderSummariesResult {
+  items: ManagedProviderDetails[];
+  total: number;
+  page: number;
+  pageSize: number;
+  sortBy: ProviderListSortBy;
+  sortDir: SortDirection;
 }
 
 type Db = BetterSQLite3Database<typeof schema>;
@@ -476,10 +495,50 @@ export class ManagedProviderRepository {
   }
 
   public listProviderSummaries(): ManagedProviderDetails[] {
-    const providers = this.db.select().from(managedProvidersTable).all();
-    return providers.map((provider) => this.getProviderDetails(provider.providerKey)).filter(
+    return this.listProviderSummariesPage().items;
+  }
+
+  public listProviderSummariesPage(
+    options: ListProviderSummariesOptions = {}
+  ): ListProviderSummariesResult {
+    const sortBy = options.sortBy ?? "priority";
+    const sortDir = options.sortDir ?? "desc";
+    const page = Math.max(1, Math.floor(options.page ?? 1));
+    const pageSize = Math.max(1, Math.min(200, Math.floor(options.pageSize ?? 50)));
+    const primaryColumn =
+      sortBy === "created_at"
+        ? managedProvidersTable.createdAt
+        : sortBy === "updated_at"
+          ? managedProvidersTable.updatedAt
+          : managedProvidersTable.priority;
+    const primaryOrder = sortDir === "asc" ? asc(primaryColumn) : desc(primaryColumn);
+    const secondaryOrders =
+      sortBy === "priority"
+        ? [desc(managedProvidersTable.updatedAt), asc(managedProvidersTable.providerKey)]
+        : sortBy === "updated_at"
+          ? [desc(managedProvidersTable.priority), asc(managedProvidersTable.providerKey)]
+        : [
+            desc(managedProvidersTable.priority),
+            desc(managedProvidersTable.updatedAt),
+            asc(managedProvidersTable.providerKey)
+          ];
+    const providers = this.db.select().from(managedProvidersTable)
+      .orderBy(primaryOrder, ...secondaryOrders)
+      .all();
+    const total = providers.length;
+    const offset = (page - 1) * pageSize;
+    const pageProviders = providers.slice(offset, offset + pageSize);
+    const items = pageProviders.map((provider) => this.getProviderDetails(provider.providerKey)).filter(
       (item): item is ManagedProviderDetails => item !== null
     );
+    return {
+      items,
+      total,
+      page,
+      pageSize,
+      sortBy,
+      sortDir
+    };
   }
 
   public getProviderDetails(providerKey: string): ManagedProviderDetails | null {

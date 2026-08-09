@@ -118,6 +118,23 @@ export interface ProviderDetails {
 
 export interface ProviderListResponse {
   data: ProviderDetails[];
+  meta: {
+    total: number;
+    page: number;
+    page_size: number;
+    sort_by: ProviderSortBy;
+    sort_dir: SortDirection;
+  };
+}
+
+export type ProviderSortBy = "priority" | "created_at" | "updated_at";
+export type SortDirection = "asc" | "desc";
+
+export interface ProviderListParams {
+  sort_by: ProviderSortBy;
+  sort_dir: SortDirection;
+  page: number;
+  page_size: number;
 }
 
 export interface ProviderFormValues {
@@ -148,8 +165,24 @@ export interface UpdateProviderPayload extends Omit<CreateProviderPayload, "prov
   priority?: number;
 }
 
-export function listProviders(token: string): Promise<ProviderListResponse> {
-  return requestJson<ProviderListResponse>("/admin/api/providers", token);
+export function listProviders(
+  token: string,
+  params: ProviderListParams
+): Promise<ProviderListResponse> {
+  const search = new URLSearchParams({
+    sort_by: params.sort_by,
+    sort_dir: params.sort_dir,
+    page: String(params.page),
+    page_size: String(params.page_size)
+  });
+  return requestJson<ProviderListResponse>(`/admin/api/providers?${search.toString()}`, token);
+}
+
+export function getProvider(token: string, providerKey: string): Promise<ProviderDetails> {
+  return requestJson<ProviderDetails>(
+    `/admin/api/providers/${encodeURIComponent(providerKey)}`,
+    token
+  );
 }
 
 export function createProvider(

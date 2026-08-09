@@ -73,6 +73,13 @@ const patchProviderBodySchema = z.object({
   model_availability_scope: modelAvailabilityScopeSchema.optional()
 }).strict();
 
+const providerListQuerySchema = z.object({
+  sort_by: z.enum(["priority", "created_at", "updated_at"]).default("priority"),
+  sort_dir: z.enum(["asc", "desc"]).default("desc"),
+  page: z.coerce.number().int().positive().default(1),
+  page_size: z.coerce.number().int().min(1).max(200).default(50)
+}).strict();
+
 const createAccountBodySchema = z.object({
   account_key: accountKeySchema,
   endpoint_key: endpointKeySchema.optional(),
@@ -453,9 +460,23 @@ export async function registerAdminProvidersRoutes(
     secretCipher: SecretCipher;
   }
 ) {
-  fastify.get("/admin/api/providers", async () => {
+  fastify.get<{ Querystring: unknown }>("/admin/api/providers", async (request) => {
+    const query = providerListQuerySchema.parse(request.query);
+    const result = dependencies.repository.listProviderSummariesPage({
+      sortBy: query.sort_by,
+      sortDir: query.sort_dir,
+      page: query.page,
+      pageSize: query.page_size
+    });
     return {
-      data: dependencies.repository.listProviderSummaries().map((item) => serializeProviderDetails(item))
+      data: result.items.map((item) => serializeProviderDetails(item)),
+      meta: {
+        total: result.total,
+        page: result.page,
+        page_size: result.pageSize,
+        sort_by: result.sortBy,
+        sort_dir: result.sortDir
+      }
     };
   });
 
