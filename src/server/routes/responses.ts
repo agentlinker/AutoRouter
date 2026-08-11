@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { randomUUID } from "node:crypto";
 
-import { selectRoute } from "../../routing/routeEngine.js";
+import { compareRouteCandidateOrder, selectRoute } from "../../routing/routeEngine.js";
 import { estimateResponsesContextTokens as estimateResponsesContextTokensUtil } from "../../utils/contextTokens.js";
 import { recordRouteSelectionFailure } from "./routeSelectionFailure.js";
 import { sha256 } from "../../utils/hash.js";
@@ -486,7 +486,7 @@ export async function registerResponsesRoute(
       throw error;
     }
     const orderedCandidates = routeDecision.candidates
-      .map((candidate) => {
+      .map((candidate, candidateIndex) => {
         const provider = state.providers.find((item) => item.id === candidate.provider);
         const endpoint = state.endpoints.find((item) => item.id === candidate.endpoint);
         const platform = state.platforms.find((item) => item.id === candidate.platform);
@@ -494,6 +494,7 @@ export async function registerResponsesRoute(
         const model = state.modelCatalog.resolveModel(candidate.modelId);
 
         return {
+          candidateIndex,
           routeId: candidate.routeId,
           provider,
           endpoint,
@@ -520,6 +521,7 @@ export async function registerResponsesRoute(
           modelName: string;
           score: number;
           sticky: boolean;
+          candidateIndex: number;
         } =>
           Boolean(
             candidate.provider &&
@@ -529,7 +531,7 @@ export async function registerResponsesRoute(
               candidate.model
           )
       )
-      .sort((left, right) => right.score - left.score);
+      .sort(compareRouteCandidateOrder);
 
     const attempts: Array<{
       route_id: string;

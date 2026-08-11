@@ -132,6 +132,10 @@ export interface ManagedProviderDetails {
   /** @deprecated use accounts; first/default account for backward compatibility */
   credential: ManagedCredentialRow | null;
   accounts: ManagedCredentialRow[];
+  accountModels: Array<{
+    accountId: number;
+    models: ManagedModelRow[];
+  }>;
   endpoints: ManagedProviderEndpointRow[];
   models: ManagedModelRow[];
   latestSync: ModelSyncRunRow | null;
@@ -573,13 +577,24 @@ export class ManagedProviderRepository {
       .where(eq(managedModelsTable.providerId, provider.id))
       .all();
 
+    const accountModels = accounts.map((account) => {
+      if (!this.isPerAccountScope(provider)) {
+        return { accountId: account.id, models };
+      }
+      const accountModelIds = this.listAccountModelIds(account.id);
+      return {
+        accountId: account.id,
+        models: models.filter((model) => accountModelIds.has(model.id))
+      };
+    });
+
     const latestSync = this.db.select().from(modelSyncRunsTable)
       .where(eq(modelSyncRunsTable.providerId, provider.id))
       .orderBy(desc(modelSyncRunsTable.startedAt))
       .limit(1)
       .get() ?? null;
 
-    return { provider, credential, accounts, endpoints, models, latestSync };
+    return { provider, credential, accounts, accountModels, endpoints, models, latestSync };
   }
 
   public getAccount(providerKey: string, accountKey: string): ManagedCredentialRow | null {

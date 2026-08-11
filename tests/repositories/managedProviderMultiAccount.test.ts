@@ -249,6 +249,18 @@ describe("managed provider multi-account", () => {
     expect(defaultBundle?.models.map((model) => model.modelName)).toEqual(["model-a"]);
     expect(keyBBundle?.models.map((model) => model.modelName)).toEqual(["model-b"]);
 
+    const details = repo.getProviderDetails("relay");
+    const accountModelNames = new Map(
+      details?.accounts.map((account) => [
+        account.accountKey,
+        details.accountModels
+          .find((item) => item.accountId === account.id)
+          ?.models.map((model) => model.modelName) ?? []
+      ])
+    );
+    expect(accountModelNames.get("default")).toEqual(["model-a"]);
+    expect(accountModelNames.get("key-b")).toEqual(["model-b"]);
+
     const projector = new RuntimeConfigProjector({
       baseConfig: config,
       managedProviderRepository: repo,

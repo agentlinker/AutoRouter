@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 
-import { selectRoute } from "../../routing/routeEngine.js";
+import { compareRouteCandidateOrder, selectRoute } from "../../routing/routeEngine.js";
 import { sha256 } from "../../utils/hash.js";
 import { HttpError } from "../../utils/httpErrors.js";
 import { PROVIDER_AUTH_FAILED_CODE, PROVIDER_AUTH_FAILED_MESSAGE } from "../../utils/providerErrors.js";
@@ -70,7 +70,7 @@ export async function registerChatCompletionsRoute(
     }
 
     const orderedCandidates = routeDecision.candidates
-      .map((candidate) => {
+      .map((candidate, candidateIndex) => {
         const provider = state.providers.find((item) => item.id === candidate.provider);
         const endpoint = state.endpoints.find((item) => item.id === candidate.endpoint);
         const platform = state.platforms.find((item) => item.id === candidate.platform);
@@ -78,6 +78,7 @@ export async function registerChatCompletionsRoute(
         const model = modelCatalog.resolveModel(candidate.modelId);
 
         return {
+          candidateIndex,
           routeId: candidate.routeId,
           provider,
           endpoint,
@@ -102,6 +103,7 @@ export async function registerChatCompletionsRoute(
           model: NonNullable<(typeof candidate)["model"]>;
           modelName: string;
           score: number;
+          candidateIndex: number;
         } =>
           Boolean(
             candidate.provider &&
@@ -111,7 +113,7 @@ export async function registerChatCompletionsRoute(
               candidate.model
           )
       )
-      .sort((left, right) => right.score - left.score);
+      .sort(compareRouteCandidateOrder);
     const selectedCandidateScore =
       orderedCandidates.find(
         (candidate) =>

@@ -529,6 +529,11 @@ button:disabled {
   color: var(--warning);
 }
 
+.badge.danger {
+  background: rgba(251, 113, 133, 0.12);
+  color: var(--danger);
+}
+
 .switch-control {
   display: inline-flex;
   align-items: center;
@@ -733,6 +738,53 @@ button:disabled {
   border-color: var(--line-strong);
 }
 
+.provider-key-models {
+  display: grid;
+  gap: 10px;
+}
+
+.provider-key-model-group {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.36);
+}
+
+.provider-key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.provider-key-title {
+  display: grid;
+  gap: 3px;
+  min-width: min(220px, 100%);
+}
+
+.provider-key-title strong {
+  font-size: 13px;
+}
+
+.provider-key-title code,
+.provider-key-title span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.provider-key-rows {
+  display: grid;
+  gap: 8px;
+}
+
+.provider-key-rows .provider-key-row + .provider-key-row {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
 .detail-page {
   align-content: start;
 }
@@ -830,6 +882,12 @@ button:disabled {
   border-color: rgba(248, 113, 113, 0.28);
   color: #fecaca;
   background: rgba(220, 38, 38, 0.12);
+}
+
+.model-list li.empty-model {
+  border-color: var(--line);
+  color: var(--muted);
+  background: rgba(15, 23, 42, 0.42);
 }
 
 .model-list-toggle {
@@ -1078,6 +1136,66 @@ button:disabled {
 
 .app-dialog.error {
   border-color: rgba(251, 113, 133, 0.38);
+}
+
+.provider-test-form {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.provider-test-form .primary-action {
+  justify-self: start;
+}
+
+.provider-test-result {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(2, 6, 23, 0.34);
+}
+
+.provider-test-result strong {
+  font-size: 14px;
+}
+
+.provider-test-result span,
+.provider-test-result p {
+  margin: 0;
+  font-size: 12px;
+}
+
+.provider-test-result code {
+  padding: 7px 8px;
+  border-radius: 6px;
+  background: rgba(2, 6, 23, 0.5);
+  color: #cbd5e1;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.provider-test-result span {
+  color: var(--muted);
+}
+
+.provider-test-result.success {
+  border-color: rgba(52, 211, 153, 0.3);
+}
+
+.provider-test-result.success strong {
+  color: var(--success);
+}
+
+.provider-test-result.error {
+  border-color: rgba(251, 113, 133, 0.34);
+}
+
+.provider-test-result.error strong,
+.provider-test-result.error p {
+  color: var(--danger);
 }
 
 .dialog-header {

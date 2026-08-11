@@ -148,7 +148,8 @@ export async function createServer(
       runtimeManager,
       repository: dependencies.managedProviderRepository,
       discoveryService: dependencies.discoveryService,
-      secretCipher: dependencies.secretCipher
+      secretCipher: dependencies.secretCipher,
+      runtimeStatusService: dependencies.runtimeStatusService
     });
     await registerAdminApiKeysRoutes(fastify, {
       runtimeManager,

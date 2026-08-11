@@ -1541,6 +1541,153 @@ describe("gateway integration", () => {
     await gateway.close();
   });
 
+  it("executes higher provider priority before candidate score for bare model routing", async () => {
+    const highPriorityPool = mockAgent.get("https://priority.example.com");
+    highPriorityPool
+      .intercept({
+        path: "/v1/chat/completions",
+        method: "POST"
+      })
+      .reply(200, {
+        id: "chatcmpl_priority",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: "gpt-5.6-sol",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "priority provider ok"
+            },
+            finish_reason: "stop"
+          }
+        ],
+        usage: {
+          prompt_tokens: 4,
+          completion_tokens: 3,
+          total_tokens: 7
+        }
+      });
+
+    const highScorePool = mockAgent.get("https://score.example.com");
+    highScorePool
+      .intercept({
+        path: "/v1/chat/completions",
+        method: "POST"
+      })
+      .reply(200, {
+        id: "chatcmpl_score",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: "gpt-5.6-sol",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "score provider should not run first"
+            },
+            finish_reason: "stop"
+          }
+        ],
+        usage: {
+          prompt_tokens: 4,
+          completion_tokens: 3,
+          total_tokens: 7
+        }
+      });
+
+    const config = loadConfig({
+      override: {
+        trace: {
+          directory: traceDirectory,
+          log_prompts: false
+        },
+        providers: {
+          priority: {
+            display_name: "Priority",
+            trust_level: "low",
+            privacy_level: "normal",
+            usage_trust: "low",
+            protocol: "openai",
+            adapter: "openai_compatible",
+            base_url: "https://priority.example.com/v1",
+            accounts: [{ id: "main", credential_env: "PRIMARY_API_KEY" }],
+            models: [{ id: "gpt-5-6-sol", model_name: "gpt-5.6-sol" }]
+          },
+          score: {
+            display_name: "Score",
+            trust_level: "high",
+            privacy_level: "normal",
+            usage_trust: "high",
+            protocol: "openai",
+            adapter: "openai_compatible",
+            base_url: "https://score.example.com/v1",
+            accounts: [{ id: "main", credential_env: "FALLBACK_API_KEY" }],
+            models: [{ id: "gpt-5-6-sol", model_name: "gpt-5.6-sol" }]
+          }
+        },
+        policies: {
+          balanced: {
+            min_trust_level: "low",
+            allow_public_only_provider: false,
+            fallback_enabled: true,
+            sticky_session: false
+          }
+        }
+      }
+    });
+
+    const registry = buildProviderRegistry(config);
+    const priorityProvider = registry.providers.find((provider) => provider.id === "priority");
+    if (priorityProvider) {
+      priorityProvider.priority = 5;
+    }
+    const state: RouterState = {
+      config,
+      logger: createLogger(),
+      platforms: registry.platforms,
+      providers: registry.providers,
+      endpoints: registry.endpoints,
+      accounts: registry.accounts,
+      priceTable: new PriceTable(config),
+      adapters: new AdapterRegistry(),
+      stickySessions: new StickySessionStore(),
+      traceStore: createTraceStore(traceDatabasePath)
+    };
+
+    const gateway = await createServer(state);
+    const response = await gateway.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: {
+        authorization: "Bearer test-token"
+      },
+      payload: {
+        model: "gpt-5.6-sol",
+        messages: [{ role: "user", content: "hello" }]
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().choices[0].message.content).toBe("priority provider ok");
+
+    const explain = await gateway.inject({
+      method: "GET",
+      url: "/v1/autorouter/explain/latest",
+      headers: {
+        authorization: "Bearer test-token"
+      }
+    });
+
+    expect(explain.statusCode).toBe(200);
+    expect(explain.json().selected.endpoint).toBe("priority/default");
+    expect(explain.json().attempts[0].provider).toBe("priority");
+
+    await gateway.close();
+  });
+
 
   it("returns filtered reasons when no eligible route candidate and records trace", async () => {
     vi.stubEnv("SMALL_API_KEY", "small-key");

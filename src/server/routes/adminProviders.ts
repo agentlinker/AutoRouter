@@ -16,8 +16,10 @@ import {
   accountUnavailableReason,
   isRuntimeStatusValue
 } from "../../runtime/runtimeStatus.js";
+import type { RuntimeStatusService } from "../../runtime/runtimeStatusService.js";
 import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
-import { HttpError } from "../../utils/httpErrors.js";
+import type { ManagedModelRow } from "../../db/schema.js";
+import { HttpError, isHttpError } from "../../utils/httpErrors.js";
 
 const protocolSchema = z.enum(["openai", "anthropic"]);
 const endpointAdapterSchema = z.enum(["openai_compatible", "openrouter", "anthropic"]);
@@ -78,6 +80,12 @@ const providerListQuerySchema = z.object({
   sort_dir: z.enum(["asc", "desc"]).default("desc"),
   page: z.coerce.number().int().positive().default(1),
   page_size: z.coerce.number().int().min(1).max(200).default(50)
+}).strict();
+
+const testProviderModelBodySchema = z.object({
+  account_key: accountKeySchema,
+  model_key: z.string().min(1),
+  prompt: z.string().trim().min(1).max(2000).default("Reply with OK.")
 }).strict();
 
 const createAccountBodySchema = z.object({
@@ -318,6 +326,30 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
     return null;
   }
 
+  const serializeModel = (model: ManagedModelRow) => ({
+    model_key: model.modelKey,
+    provider_model_id: model.providerModelId,
+    model_name: model.modelName,
+    context_window: model.contextWindow,
+    supports_streaming: model.supportsStreaming,
+    supports_tools: model.supportsTools,
+    supports_json_mode: model.supportsJsonMode,
+    enabled: model.enabled,
+    runtime_status: model.runtimeStatus ?? "normal",
+    status_reason: model.statusReason ?? null,
+    status_message: model.statusMessage ?? null,
+    status_source: model.statusSource ?? "system",
+    status_updated_at: model.statusUpdatedAt ?? null,
+    status_cooldown_until: model.statusCooldownUntil ?? null,
+    rate_limit_strike: model.rateLimitStrike ?? 0,
+    recent_error_count: model.recentErrorCount ?? 0,
+    endpoint_key:
+      details.endpoints.find((endpoint) => endpoint.id === model.endpointId)?.endpointKey ?? "default"
+  });
+  const accountModelsByAccountId = new Map(
+    details.accountModels.map((item) => [item.accountId, item.models] as const)
+  );
+
   const accounts = (details.accounts ?? (details.credential ? [details.credential] : [])).map((account) => {
     const endpointKey =
       details.endpoints.find((endpoint) => endpoint.id === account.endpointId)?.endpointKey ?? null;
@@ -350,7 +382,8 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
       last_error_code: account.lastErrorCode ?? null,
       last_error_message: account.lastErrorMessage ?? null,
       created_at: account.createdAt,
-      updated_at: account.updatedAt
+      updated_at: account.updatedAt,
+      models: (accountModelsByAccountId.get(account.id) ?? []).map(serializeModel)
     };
   });
 
@@ -428,26 +461,7 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
           discovered_count: details.latestSync.discoveredCount
         }
       : null,
-    models: details.models.map((model) => ({
-      model_key: model.modelKey,
-      provider_model_id: model.providerModelId,
-      model_name: model.modelName,
-      context_window: model.contextWindow,
-      supports_streaming: model.supportsStreaming,
-      supports_tools: model.supportsTools,
-      supports_json_mode: model.supportsJsonMode,
-      enabled: model.enabled,
-      runtime_status: model.runtimeStatus ?? "normal",
-      status_reason: model.statusReason ?? null,
-      status_message: model.statusMessage ?? null,
-      status_source: model.statusSource ?? "system",
-      status_updated_at: model.statusUpdatedAt ?? null,
-      status_cooldown_until: model.statusCooldownUntil ?? null,
-      rate_limit_strike: model.rateLimitStrike ?? 0,
-      recent_error_count: model.recentErrorCount ?? 0,
-      endpoint_key:
-        details.endpoints.find((endpoint) => endpoint.id === model.endpointId)?.endpointKey ?? "default"
-    }))
+    models: details.models.map(serializeModel)
   };
 }
 
@@ -458,6 +472,7 @@ export async function registerAdminProvidersRoutes(
     repository: ManagedProviderRepository;
     discoveryService: ProviderModelDiscoveryService;
     secretCipher: SecretCipher;
+    runtimeStatusService?: RuntimeStatusService;
   }
 ) {
   fastify.get<{ Querystring: unknown }>("/admin/api/providers", async (request) => {
@@ -524,6 +539,198 @@ export async function registerAdminProvidersRoutes(
     }
 
     return serializeProviderDetails(details);
+  });
+
+  fastify.post<{
+    Params: { providerKey: string };
+    Body: unknown;
+  }>("/admin/api/providers/:providerKey/test-model", async (request) => {
+    const body = testProviderModelBodySchema.parse(request.body);
+    const details = dependencies.repository.getProviderDetails(request.params.providerKey);
+    if (!details) {
+      throw new HttpError(404, "provider_not_found", "Provider not found");
+    }
+
+    const account = details.accounts.find((item) => item.accountKey === body.account_key);
+    if (!account) {
+      throw new HttpError(404, "account_not_found", "Account not found");
+    }
+
+    const model = details.models.find((item) => item.modelKey === body.model_key);
+    if (!model) {
+      throw new HttpError(404, "model_not_found", "Provider model not found");
+    }
+
+    if (details.provider.modelAvailabilityScope === "per_account") {
+      const accountModels = details.accountModels.find((item) => item.accountId === account.id);
+      if (!accountModels?.models.some((item) => item.id === model.id)) {
+        throw new HttpError(
+          400,
+          "account_model_not_available",
+          "Selected model is not available for this account"
+        );
+      }
+    }
+
+    const accountEndpoint = account.endpointId
+      ? details.endpoints.find((item) => item.id === account.endpointId)
+      : null;
+    const modelEndpoint = model.endpointId
+      ? details.endpoints.find((item) => item.id === model.endpointId)
+      : null;
+    if (
+      accountEndpoint &&
+      modelEndpoint &&
+      accountEndpoint.id !== modelEndpoint.id
+    ) {
+      throw new HttpError(
+        400,
+        "account_model_endpoint_mismatch",
+        "Selected account cannot access the model endpoint"
+      );
+    }
+
+    const endpoint =
+      modelEndpoint ??
+      accountEndpoint ??
+      details.endpoints.find((item) => item.enabled) ??
+      details.endpoints[0];
+    if (!endpoint) {
+      throw new HttpError(404, "endpoint_not_found", "Provider endpoint not found");
+    }
+
+    const snapshot = dependencies.runtimeManager.getSnapshot();
+    const adapter = snapshot.adapters.get(endpoint.adapterType as never);
+    const endpointId = `${details.provider.providerKey}/${endpoint.endpointKey}`;
+    const accountId = `${endpointId}/${account.accountKey}`;
+    const target = {
+      platform: {
+        id: endpoint.protocol,
+        protocol: endpoint.protocol
+      },
+      provider: {
+        id: details.provider.providerKey,
+        display_name: details.provider.displayName,
+        priority: details.provider.priority ?? 0,
+        trust_level: details.provider.trustLevel,
+        privacy_level: details.provider.privacyLevel,
+        usage_trust: details.provider.usageTrust,
+        runtime_status: details.provider.runtimeStatus as never
+      },
+      endpoint: {
+        id: endpointId,
+        provider_id: details.provider.providerKey,
+        platform_id: endpoint.protocol,
+        adapter: endpoint.adapterType,
+        base_url: endpoint.baseUrl,
+        enabled: endpoint.enabled,
+        capabilities: {
+          streaming: endpoint.supportsStreaming,
+          tools: endpoint.supportsTools,
+          json_mode: endpoint.supportsJsonMode
+        },
+        health: "unknown" as const,
+        recent_error_count: 0
+      },
+      account: {
+        id: accountId,
+        endpoint_id: endpointId,
+        provider_key: details.provider.providerKey,
+        endpoint_key: endpoint.endpointKey,
+        account_key: account.accountKey,
+        api_key_hint: account.keyHint ?? undefined,
+        account_type: "api_key",
+        enabled: account.enabled,
+        available: true,
+        runtime_status: account.runtimeStatus as never,
+        status_reason: account.statusReason,
+        status_message: account.statusMessage,
+        status_cooldown_until: account.statusCooldownUntil,
+        recent_error_count: account.recentErrorCount ?? 0
+      },
+      modelId: model.modelKey,
+      model: {
+        endpoint: endpointId,
+        model_name: model.modelName,
+        context_window: model.contextWindow ?? undefined,
+        capabilities: {
+          streaming: model.supportsStreaming,
+          tools: model.supportsTools,
+          json_mode: model.supportsJsonMode
+        }
+      },
+      credential: dependencies.secretCipher.decrypt(account.apiKeyEncrypted)
+    };
+
+    const startedAt = Date.now();
+    let protocol: "responses" | "chat_completions" =
+      endpoint.protocol === "openai" && adapter.responseCompletion
+        ? "responses"
+        : "chat_completions";
+
+    try {
+      const providerResponse =
+        protocol === "responses"
+          ? await adapter.responseCompletion!({
+              model: model.modelName,
+              input: body.prompt,
+              max_output_tokens: 8,
+              stream: false
+            }, target)
+          : await adapter.chatCompletion({
+              model: model.modelName,
+              messages: [{ role: "user", content: body.prompt }],
+              stream: false,
+              tools: [],
+              temperature: 0,
+              max_tokens: 8,
+              metadata: {},
+              context_tokens_est: 8
+            }, target);
+
+      dependencies.runtimeStatusService?.recordSuccess({
+        snapshot,
+        providerKey: details.provider.providerKey,
+        accountKey: account.accountKey,
+        modelKey: model.modelKey
+      });
+
+      return {
+        success: true,
+        provider_key: details.provider.providerKey,
+        account_key: account.accountKey,
+        model_key: model.modelKey,
+        model_name: model.modelName,
+        prompt: body.prompt,
+        protocol,
+        latency_ms: Date.now() - startedAt,
+        upstream_status: providerResponse.status,
+        error_code: null,
+        error_message: null
+      };
+    } catch (error) {
+      dependencies.runtimeStatusService?.recordFailure({
+        snapshot,
+        providerKey: details.provider.providerKey,
+        accountKey: account.accountKey,
+        modelKey: model.modelKey,
+        error
+      });
+
+      return {
+        success: false,
+        provider_key: details.provider.providerKey,
+        account_key: account.accountKey,
+        model_key: model.modelKey,
+        model_name: model.modelName,
+        prompt: body.prompt,
+        protocol,
+        latency_ms: Date.now() - startedAt,
+        upstream_status: isHttpError(error) ? error.statusCode : null,
+        error_code: isHttpError(error) ? error.code : "provider_test_failed",
+        error_message: error instanceof Error ? error.message : "Provider test failed"
+      };
+    }
   });
 
   fastify.post<{ Body: unknown }>("/admin/api/providers", async (request, reply) => {

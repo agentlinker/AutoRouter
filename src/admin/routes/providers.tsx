@@ -9,6 +9,7 @@ import {
   DatabaseZap,
   Edit3,
   ExternalLink,
+  FlaskConical,
   KeyRound,
   Lock,
   LogOut,
@@ -40,6 +41,7 @@ import {
   setProviderEnabled,
   syncProvider,
   syncProviderAccount,
+  testProviderModel,
   updateProvider,
   updateProviderAccount,
   updateProviderModelCapabilities,
@@ -47,6 +49,7 @@ import {
   type ProviderDetails,
   type ProviderListParams,
   type ProviderModel,
+  type ProviderModelTestResult,
   type ProviderSortBy,
   type ProviderTemplate,
   type SortDirection,
@@ -1551,6 +1554,7 @@ function ProviderList(props: {
   providers: ProviderDetails[];
   onChanged: () => void;
 }) {
+  const [testProvider, setTestProvider] = useState<ProviderDetails | null>(null);
   const mutation = useMutation({
     mutationFn: async (input: { action: string; provider: ProviderDetails }) => {
       if (input.action === "sync") {
@@ -1590,16 +1594,156 @@ function ProviderList(props: {
   }
 
   return (
-    <div className="provider-list">
-      {props.providers.map((provider) => (
-        <ProviderCard
-          key={provider.provider_key}
-          provider={provider}
-          disabled={mutation.isPending}
-          onAction={(action) => mutation.mutate({ action, provider })}
+    <>
+      <div className="provider-list">
+        {props.providers.map((provider) => (
+          <ProviderCard
+            key={provider.provider_key}
+            provider={provider}
+            disabled={mutation.isPending}
+            onAction={(action) => mutation.mutate({ action, provider })}
+            onTest={() => setTestProvider(provider)}
+          />
+        ))}
+      </div>
+      {testProvider ? (
+        <ProviderModelTestDialog
+          key={testProvider.provider_key}
+          token={props.token}
+          provider={testProvider}
+          onChanged={props.onChanged}
+          onClose={() => setTestProvider(null)}
         />
-      ))}
-    </div>
+      ) : null}
+    </>
+  );
+}
+
+function ProviderModelTestDialog(props: {
+  token: string;
+  provider: ProviderDetails;
+  onChanged: () => void;
+  onClose: () => void;
+}) {
+  const accounts = props.provider.accounts ?? [];
+  const [accountKey, setAccountKey] = useState(accounts[0]?.account_key ?? "");
+  const selectedAccount = accounts.find((account) => account.account_key === accountKey);
+  const models =
+    props.provider.model_availability_scope === "per_account"
+      ? selectedAccount?.models ?? []
+      : props.provider.models;
+  const [modelKey, setModelKey] = useState(models[0]?.model_key ?? "");
+  const [prompt, setPrompt] = useState("Reply with OK.");
+  const [result, setResult] = useState<ProviderModelTestResult | null>(null);
+  const [requestError, setRequestError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!models.some((model) => model.model_key === modelKey)) {
+      setModelKey(models[0]?.model_key ?? "");
+    }
+    setResult(null);
+    setRequestError(null);
+  }, [accountKey, modelKey, models]);
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      testProviderModel(props.token, props.provider.provider_key, {
+        account_key: accountKey,
+        model_key: modelKey,
+        prompt: prompt.trim()
+      }),
+    onSuccess: (nextResult) => {
+      setResult(nextResult);
+      setRequestError(null);
+      props.onChanged();
+    },
+    onError: (error) => {
+      setResult(null);
+      setRequestError(error instanceof Error ? error.message : "测试请求失败");
+    }
+  });
+
+  return (
+    <AppDialog
+      open
+      tone={result ? (result.success ? "success" : "error") : requestError ? "error" : "info"}
+      title={`测试模型 · ${props.provider.display_name}`}
+      confirmLabel="关闭"
+      onClose={props.onClose}
+    >
+      <div className="provider-test-form">
+        <label className="field">
+          <span>Key</span>
+          <select
+            value={accountKey}
+            disabled={mutation.isPending}
+            onChange={(event) => setAccountKey(event.target.value)}
+          >
+            {accounts.map((account) => (
+              <option key={account.account_key} value={account.account_key}>
+                {account.account_key} · {account.key_hint ?? "hidden"}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Model</span>
+          <select
+            value={modelKey}
+            disabled={mutation.isPending || models.length === 0}
+            onChange={(event) => {
+              setModelKey(event.target.value);
+              setResult(null);
+              setRequestError(null);
+            }}
+          >
+            {models.map((model) => (
+              <option key={model.model_key} value={model.model_key}>
+                {model.model_name}{model.enabled === false ? " · 已停用" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>测试内容</span>
+          <textarea
+            value={prompt}
+            rows={3}
+            maxLength={2000}
+            disabled={mutation.isPending}
+            onChange={(event) => {
+              setPrompt(event.target.value);
+              setResult(null);
+              setRequestError(null);
+            }}
+          />
+        </label>
+        <button
+          className="primary-action"
+          type="button"
+          disabled={mutation.isPending || !accountKey || !modelKey || !prompt.trim()}
+          onClick={() => mutation.mutate()}
+        >
+          <FlaskConical size={16} />
+          {mutation.isPending ? "测试中..." : "开始测试"}
+        </button>
+        {models.length === 0 ? <p className="status error">当前 Key 没有关联模型</p> : null}
+        {requestError ? <p className="status error">{requestError}</p> : null}
+        {result ? (
+          <div className={`provider-test-result ${result.success ? "success" : "error"}`}>
+            <strong>{result.success ? "模型可用" : "模型不可用"}</strong>
+            <span>
+              {result.protocol === "responses" ? "Responses" : "Chat Completions"}
+              {" · "}
+              {result.latency_ms} ms
+              {result.upstream_status ? ` · HTTP ${result.upstream_status}` : ""}
+            </span>
+            <code>{result.prompt}</code>
+            {result.error_message ? <p>{result.error_message}</p> : null}
+          </div>
+        ) : null}
+      </div>
+    </AppDialog>
   );
 }
 
@@ -1607,13 +1751,90 @@ function ProviderCard(props: {
   provider: ProviderDetails;
   disabled: boolean;
   onAction: (action: string) => void;
+  onTest: () => void;
 }) {
   const [modelsExpanded, setModelsExpanded] = useState(false);
-  const visibleModels = useMemo(
-    () => (modelsExpanded ? props.provider.models : props.provider.models.slice(0, 12)),
-    [modelsExpanded, props.provider.models]
+  const accounts = props.provider.accounts ?? [];
+  const isPerAccountModels = props.provider.model_availability_scope !== "shared_by_provider";
+  const visibleModelLimit = 12;
+  const renderModelList = (
+    models: ProviderModel[],
+    account?: NonNullable<ProviderDetails["accounts"]>[number]
+  ) => {
+    const visibleModels = modelsExpanded ? models : models.slice(0, visibleModelLimit);
+    const hiddenModelCount = Math.max(0, models.length - visibleModels.length);
+    return (
+      <ul className="model-list">
+        {visibleModels.length > 0 ? (
+          visibleModels.map((model) => {
+            const modelAvailable = account
+              ? isProviderAvailable(props.provider) &&
+                isAccountSchedulable(account) &&
+                isProviderModelAvailable(model)
+              : isProviderModelSchedulable(props.provider, model);
+            const unavailableReason = account
+              ? !isProviderAvailable(props.provider)
+                ? runtimeStatusDetail(props.provider) || "Provider 不可用"
+                : !isAccountSchedulable(account)
+                  ? runtimeStatusDetail(account) || "Key 不可调度"
+                  : providerModelUnavailableReason(props.provider, model)
+              : providerModelUnavailableReason(props.provider, model);
+
+            return (
+              <li
+                key={model.model_key}
+                className={modelAvailable ? "available" : "unavailable"}
+                title={modelAvailable ? "可用" : unavailableReason || "不可用"}
+              >
+                {model.model_name}
+              </li>
+            );
+          })
+        ) : (
+          <li className="empty-model">暂无模型</li>
+        )}
+        {hiddenModelCount > 0 ? (
+          <li>
+            <button
+              className="model-list-toggle"
+              type="button"
+              onClick={() => setModelsExpanded(true)}
+            >
+              +{hiddenModelCount}
+            </button>
+          </li>
+        ) : null}
+        {modelsExpanded && models.length > visibleModelLimit ? (
+          <li>
+            <button
+              className="model-list-toggle"
+              type="button"
+              onClick={() => setModelsExpanded(false)}
+            >
+              收起
+            </button>
+          </li>
+        ) : null}
+      </ul>
+    );
+  };
+  const renderAccountRow = (account: NonNullable<ProviderDetails["accounts"]>[number]) => (
+    <div className="provider-key-row" key={account.account_key}>
+      <div className="provider-key-title">
+        <strong>{account.account_key}</strong>
+        <code>{account.key_hint ?? "hidden"}</code>
+      </div>
+      <span className={account.enabled ? "badge success" : "badge danger"}>
+        {account.enabled ? "已启用" : "已停用"}
+      </span>
+      <span
+        className={runtimeStatusBadgeClass(account.runtime_status)}
+        title={runtimeStatusDetail(account)}
+      >
+        {runtimeStatusLabel(account.runtime_status)}
+      </span>
+    </div>
   );
-  const hiddenModelCount = Math.max(0, props.provider.models.length - visibleModels.length);
 
   return (
     <article className="provider-item">
@@ -1658,20 +1879,6 @@ function ProviderCard(props: {
           )}
         </div>
         <div className="metric">
-          <span>Endpoints</span>
-          <div className="endpoint-summary">
-            {props.provider.endpoints.length > 0 ? (
-              props.provider.endpoints.map((endpoint) => (
-                <code key={endpoint.endpoint_key}>
-                  {endpoint.endpoint_key}: {endpoint.base_url}
-                </code>
-              ))
-            ) : (
-              <code>未配置</code>
-            )}
-          </div>
-        </div>
-        <div className="metric">
           <span>Models</span>
           <strong>{props.provider.models.length}</strong>
         </div>
@@ -1684,23 +1891,8 @@ function ProviderCard(props: {
           <strong>{formatDateTime(props.provider.updated_at)}</strong>
         </div>
         <div className="metric">
-          <span>Accounts</span>
-          <strong>
-            {props.provider.account_count ?? props.provider.accounts?.length ?? 1} keys /
-            {" "}
-            {props.provider.available_account_count ??
-              props.provider.accounts?.filter(isAccountSchedulable).length ??
-              (props.provider.key_hint ? 1 : 0)}{" "}
-            available
-          </strong>
-        </div>
-        <div className="metric">
           <span>类型</span>
           <strong>{props.provider.provider_kind ?? "custom"}</strong>
-        </div>
-        <div className="metric">
-          <span>Key</span>
-          <strong>{props.provider.key_hint ?? "hidden"}</strong>
         </div>
       </div>
 
@@ -1713,6 +1905,10 @@ function ProviderCard(props: {
           <Edit3 size={14} />
           编辑
         </Link>
+        <button type="button" disabled={props.disabled} onClick={props.onTest}>
+          <FlaskConical size={14} />
+          测试模型
+        </button>
         <button type="button" disabled={props.disabled} onClick={() => props.onAction("sync")}>
           <RefreshCw size={14} />
           同步模型
@@ -1731,43 +1927,52 @@ function ProviderCard(props: {
         </button>
       </div>
 
-      <ul className="model-list">
-        {visibleModels.map((model) => (
-          <li
-            key={model.model_key}
-            className={isProviderModelSchedulable(props.provider, model) ? "available" : "unavailable"}
-            title={
-              isProviderModelSchedulable(props.provider, model)
-                ? "可用"
-                : providerModelUnavailableReason(props.provider, model) || "不可用"
-            }
-          >
-            {model.model_name}
-          </li>
-        ))}
-        {hiddenModelCount > 0 ? (
-          <li>
-            <button
-              className="model-list-toggle"
-              type="button"
-              onClick={() => setModelsExpanded(true)}
-            >
-              +{hiddenModelCount}
-            </button>
-          </li>
-        ) : null}
-        {modelsExpanded && props.provider.models.length > 12 ? (
-          <li>
-            <button
-              className="model-list-toggle"
-              type="button"
-              onClick={() => setModelsExpanded(false)}
-            >
-              收起
-            </button>
-          </li>
-        ) : null}
-      </ul>
+      <div className="provider-key-models">
+        {isPerAccountModels ? (
+          accounts.length > 0 ? (
+            accounts.map((account) => (
+              <div className="provider-key-model-group" key={account.account_key}>
+                {renderAccountRow(account)}
+                {renderModelList(account.models ?? [], account)}
+              </div>
+            ))
+          ) : (
+            <div className="provider-key-model-group">
+              <div className="provider-key-row">
+                <div className="provider-key-title">
+                  <strong>default</strong>
+                  <code>{props.provider.key_hint ?? "hidden"}</code>
+                </div>
+                <span className="badge success">已启用</span>
+                <span className={runtimeStatusBadgeClass(props.provider.runtime_status)}>
+                  {runtimeStatusLabel(props.provider.runtime_status)}
+                </span>
+              </div>
+              {renderModelList(props.provider.models)}
+            </div>
+          )
+        ) : (
+          <div className="provider-key-model-group">
+            <div className="provider-key-rows">
+              {accounts.length > 0 ? (
+                accounts.map(renderAccountRow)
+              ) : (
+                <div className="provider-key-row">
+                  <div className="provider-key-title">
+                    <strong>default</strong>
+                    <code>{props.provider.key_hint ?? "hidden"}</code>
+                  </div>
+                  <span className="badge success">已启用</span>
+                  <span className={runtimeStatusBadgeClass(props.provider.runtime_status)}>
+                    {runtimeStatusLabel(props.provider.runtime_status)}
+                  </span>
+                </div>
+              )}
+            </div>
+            {renderModelList(props.provider.models)}
+          </div>
+        )}
+      </div>
     </article>
   );
 }

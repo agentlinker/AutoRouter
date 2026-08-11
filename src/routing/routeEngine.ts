@@ -43,6 +43,29 @@ export interface CandidateEvaluation {
   sticky?: boolean;
 }
 
+export function compareRouteCandidateOrder(
+  left: {
+    provider: Pick<ProviderRuntimeState, "priority">;
+    score: number;
+    candidateIndex: number;
+  },
+  right: {
+    provider: Pick<ProviderRuntimeState, "priority">;
+    score: number;
+    candidateIndex: number;
+  }
+): number {
+  const priorityDelta = (right.provider.priority ?? 0) - (left.provider.priority ?? 0);
+  if (priorityDelta !== 0) {
+    return priorityDelta;
+  }
+  const scoreDelta = right.score - left.score;
+  if (scoreDelta !== 0) {
+    return scoreDelta;
+  }
+  return left.candidateIndex - right.candidateIndex;
+}
+
 function trustLevelScore(level: string): number {
   switch (level) {
     case "high":
@@ -469,17 +492,7 @@ export function selectRoute(
     });
   }
 
-  passed.sort((left, right) => {
-    const priorityDelta = (right.provider.priority ?? 0) - (left.provider.priority ?? 0);
-    if (priorityDelta !== 0) {
-      return priorityDelta;
-    }
-    const scoreDelta = right.score - left.score;
-    if (scoreDelta !== 0) {
-      return scoreDelta;
-    }
-    return left.candidateIndex - right.candidateIndex;
-  });
+  passed.sort(compareRouteCandidateOrder);
 
   return {
     selected: passed[0],

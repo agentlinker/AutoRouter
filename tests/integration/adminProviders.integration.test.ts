@@ -193,6 +193,18 @@ describe("admin providers integration", () => {
 
     pool
       .intercept({
+        path: "/v1/responses",
+        method: "POST"
+      })
+      .reply(200, {
+        id: "resp_model_test",
+        object: "response",
+        status: "completed",
+        output: []
+      });
+
+    pool
+      .intercept({
         path: "/v2/models",
         method: "GET"
       })
@@ -291,6 +303,33 @@ describe("admin providers integration", () => {
     expect(createResponse.statusCode).toBe(201);
     expect(createResponse.json().models).toHaveLength(1);
     expect(createResponse.json().models[0].model_name).toBe("managed-model");
+
+    const testModelResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers/managed/test-model",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        account_key: "default",
+        model_key: createResponse.json().models[0].model_key,
+        prompt: "Return exactly TEST_OK."
+      }
+    });
+
+    expect(testModelResponse.statusCode).toBe(200);
+    expect(testModelResponse.json()).toMatchObject({
+      success: true,
+      provider_key: "managed",
+      account_key: "default",
+      model_name: "managed-model",
+      prompt: "Return exactly TEST_OK.",
+      protocol: "responses",
+      upstream_status: 200,
+      error_code: null,
+      error_message: null
+    });
+    expect(testModelResponse.json().latency_ms).toBeGreaterThanOrEqual(0);
 
     const modelsResponse = await server.inject({
       method: "GET",

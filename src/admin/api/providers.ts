@@ -56,6 +56,7 @@ export interface ProviderAccount {
   last_error_message?: string | null;
   created_at: string;
   updated_at: string;
+  models?: ProviderModel[];
 }
 
 export interface ProviderTemplate {
@@ -137,6 +138,20 @@ export interface ProviderListParams {
   page_size: number;
 }
 
+export interface ProviderModelTestResult {
+  success: boolean;
+  provider_key: string;
+  account_key: string;
+  model_key: string;
+  model_name: string;
+  prompt: string;
+  protocol: "responses" | "chat_completions";
+  latency_ms: number;
+  upstream_status: number | null;
+  error_code: string | null;
+  error_message: string | null;
+}
+
 export interface ProviderFormValues {
   provider_key: string;
   display_name: string;
@@ -210,6 +225,25 @@ export function syncProvider(token: string, providerKey: string): Promise<Provid
   return requestJson<ProviderDetails>(`/admin/api/providers/${providerKey}/sync-models`, token, {
     method: "POST"
   });
+}
+
+export function testProviderModel(
+  token: string,
+  providerKey: string,
+  payload: {
+    account_key: string;
+    model_key: string;
+    prompt: string;
+  }
+): Promise<ProviderModelTestResult> {
+  return requestJson<ProviderModelTestResult>(
+    `/admin/api/providers/${encodeURIComponent(providerKey)}/test-model`,
+    token,
+    {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
+  );
 }
 
 export function createProviderEndpoint(
