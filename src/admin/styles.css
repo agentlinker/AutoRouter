@@ -973,7 +973,6 @@ button:disabled {
     minmax(220px, 1.4fr)
     minmax(96px, 0.55fr)
     minmax(112px, 0.6fr)
-    minmax(112px, 0.6fr)
     minmax(110px, 0.6fr)
     repeat(3, minmax(96px, 0.55fr));
   gap: 10px;

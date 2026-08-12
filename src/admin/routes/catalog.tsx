@@ -455,7 +455,6 @@ export function CatalogDetailPage() {
             <span>Provider 实例</span>
             <span>启用</span>
             <span>模型状态</span>
-            <span>Provider 状态</span>
             <span>Context</span>
             <span>Stream</span>
             <span>Tools</span>
@@ -546,15 +545,6 @@ function CatalogInstanceRow(props: {
         title={runtimeStatusDetail(props.instance)}
       >
         {runtimeStatusLabel(props.instance.runtime_status)}
-      </span>
-      <span
-        className={runtimeStatusBadgeClass(props.instance.provider_runtime_status)}
-        title={runtimeStatusDetail({
-          status_reason: props.instance.provider_status_reason,
-          status_message: props.instance.provider_status_message
-        })}
-      >
-        {runtimeStatusLabel(props.instance.provider_runtime_status)}
       </span>
       <input
         value={contextOverride}

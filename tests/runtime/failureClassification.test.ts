@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { classifyProviderFailure } from "../../src/runtime/runtimeStatus.js";
+import {
+  classifyProviderFailure,
+  normalizeRuntimeStatusSettings
+} from "../../src/runtime/runtimeStatus.js";
 import { HttpError } from "../../src/utils/httpErrors.js";
 import { PROVIDER_AUTH_FAILED_CODE } from "../../src/utils/providerErrors.js";
 
@@ -60,20 +63,20 @@ describe("classifyProviderFailure", () => {
       "provider_error",
       "Streaming responses request failed with status 502"
     );
-    expect(classifyProviderFailure(streaming502)).toBe("transient");
+    expect(classifyProviderFailure(streaming502)).toBe("upstream_error");
   });
 
-  it("classifies upstream 5xx, gateway and timeout failures as transient", () => {
+  it("classifies upstream 5xx, gateway and HTTP timeout failures as model-scoped errors", () => {
     for (const status of [500, 502, 503, 504, 520, 521, 522, 524, 530]) {
       expect(
         classifyProviderFailure(
           new HttpError(status, "provider_error", `Streaming responses request failed with status ${status}`)
         )
-      ).toBe("transient");
+      ).toBe("upstream_error");
     }
 
     expect(classifyProviderFailure(new HttpError(408, "provider_timeout", "timeout"))).toBe(
-      "transient"
+      "upstream_error"
     );
     expect(
       classifyProviderFailure(new HttpError(503, "provider_unreachable", "socket hang up"))
@@ -101,9 +104,19 @@ describe("classifyProviderFailure", () => {
   it("recovers the status code from the message when statusCode is missing", () => {
     expect(
       classifyProviderFailure(new Error("Streaming responses request failed with status 502"))
-    ).toBe("transient");
+    ).toBe("upstream_error");
     expect(
       classifyProviderFailure(new Error("Streaming responses request failed with status 429"))
     ).toBe("rate_limit");
+  });
+});
+
+describe("normalizeRuntimeStatusSettings", () => {
+  it("normalizes auth_disables_account", () => {
+    expect(
+      normalizeRuntimeStatusSettings({
+        auth_disables_account: false
+      }).auth_disables_account
+    ).toBe(false);
   });
 });

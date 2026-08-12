@@ -23,7 +23,13 @@ import { createLogger } from "../../src/utils/logger.js";
  * disabled|abnormal|rate_limited —— 漏掉新态会 fail-open（冷却写进 DB 但调度照样选它）。
  * 这组用例专门盯这些点：断言的是 selectRoute 的真实过滤结果，而不只是 DB 字段。
  */
-function createHarness(tempDir: string) {
+function createHarness(
+  tempDir: string,
+  options: {
+    secondAccount?: boolean;
+    modelAvailabilityScope?: "shared_by_provider" | "per_account";
+  } = {}
+) {
   const config = loadConfig({
     override: {
       database: { path: join(tempDir, "autorouter.db") },
@@ -50,7 +56,8 @@ function createHarness(tempDir: string) {
       baseUrl: "https://demo.example.com/v1",
       trustLevel: "medium",
       privacyLevel: "normal",
-      usageTrust: "medium"
+      usageTrust: "medium",
+      modelAvailabilityScope: options.modelAvailabilityScope ?? "per_account"
     },
     encryptedApiKey: secretCipher.encrypt("secret"),
     endpointBundles: [
@@ -87,6 +94,39 @@ function createHarness(tempDir: string) {
       }
     ]
   });
+  if (options.secondAccount) {
+    managedProviders.createAccount("demo", {
+      accountKey: "key-b",
+      endpointKey: "openai",
+      encryptedApiKey: secretCipher.encrypt("secret-b"),
+      apiKeyHint: "...et-b"
+    });
+    managedProviders.syncProviderModels("demo", {
+      endpointKey: "openai",
+      accountKey: "key-b",
+      status: "success",
+      models: [
+        {
+          modelKey: "demo-model",
+          providerModelId: "demo-model",
+          modelName: "demo-model",
+          contextWindow: 128000,
+          supportsStreaming: true,
+          supportsTools: true,
+          supportsJsonMode: true
+        },
+        {
+          modelKey: "demo-model-b",
+          providerModelId: "demo-model-b",
+          modelName: "demo-model-b",
+          contextWindow: 128000,
+          supportsStreaming: true,
+          supportsTools: true,
+          supportsJsonMode: true
+        }
+      ]
+    });
+  }
 
   const runtimeManager = new RuntimeManager({
     baseConfig: config,
@@ -143,6 +183,10 @@ function transientError(status = 502) {
   );
 }
 
+function unreachableError() {
+  return new HttpError(503, "provider_unreachable", "socket hang up", true);
+}
+
 describe("cooling_down routing", () => {
   let tempDir: string;
 
@@ -160,7 +204,7 @@ describe("cooling_down routing", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("cools the whole account down on the first upstream 5xx", async () => {
+  it("cools only the failing account-model down on the first upstream 5xx", async () => {
     const harness = createHarness(tempDir);
 
     harness.service.recordFailure({
@@ -172,16 +216,16 @@ describe("cooling_down routing", () => {
     });
 
     const account = harness.managedProviders.getAccount("demo", "default");
-    expect(account?.runtimeStatus).toBe("cooling_down");
-    expect(account?.statusReason).toBe("error_cooldown");
-    expect(account?.cooldownStrike).toBe(1);
-    expect(account?.statusCooldownUntil).toBeTruthy();
+    expect(account?.runtimeStatus).toBe("normal");
 
-    // 同一次请求内立刻生效：内存快照里该 account 已不可用
+    // 同一次请求内不污染整个 key。
     const live = harness.runtimeManager
       .getSnapshot()
       .accounts.find((item) => item.id === "demo/openai/default");
-    expect(live?.available).toBe(false);
+    expect(live?.available).toBe(true);
+
+    expect((await harness.routeAfterReload("demo-model")).ok).toBe(false);
+    expect((await harness.routeAfterReload("demo-model-b")).ok).toBe(true);
   });
 
   it("filters cooled-down candidates in selectRoute after a reload", async () => {
@@ -206,7 +250,7 @@ describe("cooling_down routing", () => {
     expect(routed.error.code).toBe("endpoint_unavailable");
   });
 
-  it("skips every model under the cooled-down account, not just the failing one", async () => {
+  it("keeps sibling models under the same account schedulable after a 5xx", async () => {
     const harness = createHarness(tempDir);
 
     harness.service.recordFailure({
@@ -217,12 +261,92 @@ describe("cooling_down routing", () => {
       error: transientError(530)
     });
 
-    // 节点级故障：同 account 下的另一个模型也应被跳过，不必各自再踩一次坑
+    // 上游可能透传内部渠道的 5xx，只冷却实际失败的 account-model。
     const routed = await harness.routeAfterReload("demo-model-b");
-    if (routed.ok) {
-      throw new Error("expected sibling model to be filtered by account cooldown");
-    }
-    expect(routed.error.code).toBe("endpoint_unavailable");
+    expect(routed.ok).toBe(true);
+  });
+
+  it("keeps the same model on sibling accounts schedulable after a 5xx", async () => {
+    const harness = createHarness(tempDir, { secondAccount: true });
+
+    harness.service.recordFailure({
+      snapshot: harness.runtimeManager.getSnapshot(),
+      providerKey: "demo",
+      modelKey: "demo-model",
+      accountId: "demo/openai/default",
+      error: transientError(503)
+    });
+
+    expect(
+      harness.managedProviders.getAccountModel("demo", "default", "demo-model")?.runtimeStatus
+    ).toBe("cooling_down");
+    expect(
+      harness.managedProviders.getAccountModel("demo", "key-b", "demo-model")?.runtimeStatus
+    ).toBe("normal");
+
+    const routed = await harness.routeAfterReload("demo-model");
+    expect(routed.ok).toBe(true);
+    expect(routed.decision?.selected.account.id).toBe("demo/openai/key-b");
+  });
+
+  it("keeps account-model cooldown across model discovery sync", async () => {
+    const harness = createHarness(tempDir);
+
+    harness.service.recordFailure({
+      snapshot: harness.runtimeManager.getSnapshot(),
+      providerKey: "demo",
+      modelKey: "demo-model",
+      accountId: "demo/openai/default",
+      error: transientError(503)
+    });
+    harness.managedProviders.syncProviderModels("demo", {
+      endpointKey: "openai",
+      accountKey: "default",
+      status: "success",
+      models: [
+        {
+          modelKey: "demo-model",
+          providerModelId: "demo-model",
+          modelName: "demo-model",
+          supportsStreaming: true,
+          supportsTools: true,
+          supportsJsonMode: true
+        },
+        {
+          modelKey: "demo-model-b",
+          providerModelId: "demo-model-b",
+          modelName: "demo-model-b",
+          supportsStreaming: true,
+          supportsTools: true,
+          supportsJsonMode: true
+        }
+      ]
+    });
+
+    expect(
+      harness.managedProviders.getAccountModel("demo", "default", "demo-model")?.runtimeStatus
+    ).toBe("cooling_down");
+    expect((await harness.routeAfterReload("demo-model")).ok).toBe(false);
+  });
+
+  it("uses provider-model cooldown for shared model availability", async () => {
+    const harness = createHarness(tempDir, { modelAvailabilityScope: "shared_by_provider" });
+
+    harness.service.recordFailure({
+      snapshot: harness.runtimeManager.getSnapshot(),
+      providerKey: "demo",
+      modelKey: "demo-model",
+      accountId: "demo/openai/default",
+      error: transientError(503)
+    });
+
+    expect(harness.managedProviders.getAccountModel("demo", "default", "demo-model")).toBeNull();
+    expect(
+      harness.managedProviders.getModelByProviderAndKey("demo", "demo-model")?.runtimeStatus
+    ).toBe("cooling_down");
+    expect(harness.managedProviders.getAccount("demo", "default")?.runtimeStatus).toBe("normal");
+    expect((await harness.routeAfterReload("demo-model")).ok).toBe(false);
+    expect((await harness.routeAfterReload("demo-model-b")).ok).toBe(true);
   });
 
   it("lets traffic through again once the cooldown expires", async () => {
@@ -308,9 +432,9 @@ describe("cooling_down routing", () => {
       accountId: "demo/openai/default",
       error: transientError(502)
     });
-    expect(harness.managedProviders.getAccount("demo", "default")?.runtimeStatus).toBe(
-      "cooling_down"
-    );
+    expect(
+      harness.managedProviders.getAccountModel("demo", "default", "demo-model")?.runtimeStatus
+    ).toBe("cooling_down");
 
     harness.service.recordSuccess({
       snapshot: harness.runtimeManager.getSnapshot(),
@@ -319,13 +443,13 @@ describe("cooling_down routing", () => {
       accountId: "demo/openai/default"
     });
 
-    const account = harness.managedProviders.getAccount("demo", "default");
-    expect(account?.runtimeStatus).toBe("normal");
-    expect(account?.cooldownStrike).toBe(0);
+    const model = harness.managedProviders.getAccountModel("demo", "default", "demo-model");
+    expect(model?.runtimeStatus).toBe("normal");
+    expect(model?.cooldownStrike).toBe(0);
     expect((await harness.routeAfterReload("demo-model")).ok).toBe(true);
   });
 
-  it("escalates the account cooldown ladder on repeated failures", () => {
+  it("escalates the account-model cooldown ladder on repeated upstream responses", () => {
     const harness = createHarness(tempDir);
     harness.appSettings.setRuntimeStatusSettings({ error_backoff_seconds: [10, 60] });
 
@@ -339,14 +463,18 @@ describe("cooling_down routing", () => {
       });
     }
 
-    const account = harness.managedProviders.getAccount("demo", "default");
+    const accountModel = harness.managedProviders.getAccountModel(
+      "demo",
+      "default",
+      "demo-model"
+    );
     // 阶梯只有两档，第三次越界后按默认设置循环使用最后一档而不是转永久
-    expect(account?.cooldownStrike).toBe(3);
-    expect(account?.runtimeStatus).toBe("cooling_down");
-    expect(account?.statusReason).toBe("error_cooldown");
+    expect(accountModel?.cooldownStrike).toBe(3);
+    expect(accountModel?.runtimeStatus).toBe("cooling_down");
+    expect(accountModel?.statusReason).toBe("upstream_error_cooldown");
   });
 
-  it("pins the blame on the model once it exceeds the accumulated error threshold", () => {
+  it("does not escalate repeated upstream 5xx to account or provider-model state", () => {
     const harness = createHarness(tempDir);
     harness.appSettings.setRuntimeStatusSettings({ error_threshold: 2 });
 
@@ -360,12 +488,19 @@ describe("cooling_down routing", () => {
       });
     }
 
-    const model = harness.managedProviders.getModelByProviderAndKey("demo", "demo-model");
-    expect(model?.runtimeStatus).toBe("abnormal");
-    expect(model?.statusReason).toBe("error_threshold");
-    expect(model?.recentErrorCount).toBe(2);
+    const accountModel = harness.managedProviders.getAccountModel(
+      "demo",
+      "default",
+      "demo-model"
+    );
+    expect(accountModel?.runtimeStatus).toBe("cooling_down");
+    expect(accountModel?.statusReason).toBe("upstream_error_cooldown");
+    expect(accountModel?.recentErrorCount).toBe(2);
+    expect(harness.managedProviders.getAccount("demo", "default")?.runtimeStatus).toBe("normal");
+    expect(
+      harness.managedProviders.getModelByProviderAndKey("demo", "demo-model")?.runtimeStatus
+    ).toBe("normal");
 
-    // 永久熔断不能被一次成功自动清掉
     harness.service.recordSuccess({
       snapshot: harness.runtimeManager.getSnapshot(),
       providerKey: "demo",
@@ -373,8 +508,8 @@ describe("cooling_down routing", () => {
       accountId: "demo/openai/default"
     });
     expect(
-      harness.managedProviders.getModelByProviderAndKey("demo", "demo-model")?.runtimeStatus
-    ).toBe("abnormal");
+      harness.managedProviders.getAccountModel("demo", "default", "demo-model")?.runtimeStatus
+    ).toBe("normal");
   });
 
   it("cools only the model down for 404/410 and keeps siblings schedulable", async () => {
@@ -388,7 +523,7 @@ describe("cooling_down routing", () => {
       error: new HttpError(410, "provider_error", "Streaming responses request failed with status 410")
     });
 
-    const model = harness.managedProviders.getModelByProviderAndKey("demo", "demo-model");
+    const model = harness.managedProviders.getAccountModel("demo", "default", "demo-model");
     expect(model?.runtimeStatus).toBe("cooling_down");
     expect(model?.statusReason).toBe("model_unavailable");
     expect(model?.cooldownStrike).toBe(1);
@@ -424,7 +559,7 @@ describe("cooling_down routing", () => {
     }
 
     const account = harness.managedProviders.getAccount("demo", "default");
-    const model = harness.managedProviders.getModelByProviderAndKey("demo", "demo-model");
+    const model = harness.managedProviders.getAccountModel("demo", "default", "demo-model");
     expect(account?.runtimeStatus).toBe("normal");
     expect(account?.cooldownStrike).toBe(0);
     expect(account?.recentErrorCount).toBe(0);
@@ -476,7 +611,7 @@ describe("cooling_down routing", () => {
       error: new HttpError(429, "provider_rate_limited", "Too many requests")
     });
 
-    const model = harness.managedProviders.getModelByProviderAndKey("demo", "demo-model");
+    const model = harness.managedProviders.getAccountModel("demo", "default", "demo-model");
     expect(model?.runtimeStatus).toBe("rate_limited");
     expect(model?.rateLimitStrike).toBe(1);
     expect(model?.statusCooldownUntil).toBeTruthy();
@@ -485,5 +620,23 @@ describe("cooling_down routing", () => {
 
     const routed = await harness.routeAfterReload("demo-model");
     expect(routed.ok).toBe(false);
+  });
+
+  it("keeps connection failures at account scope", async () => {
+    const harness = createHarness(tempDir);
+
+    harness.service.recordFailure({
+      snapshot: harness.runtimeManager.getSnapshot(),
+      providerKey: "demo",
+      modelKey: "demo-model",
+      accountId: "demo/openai/default",
+      error: unreachableError()
+    });
+
+    expect(harness.managedProviders.getAccount("demo", "default")?.runtimeStatus).toBe(
+      "cooling_down"
+    );
+    expect((await harness.routeAfterReload("demo-model")).ok).toBe(false);
+    expect((await harness.routeAfterReload("demo-model-b")).ok).toBe(false);
   });
 });

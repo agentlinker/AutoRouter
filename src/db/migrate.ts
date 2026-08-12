@@ -576,6 +576,18 @@ export function runMigrations(sqlite: Database.Database) {
       account_id INTEGER NOT NULL,
       managed_model_id INTEGER NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 1,
+      runtime_status TEXT NOT NULL DEFAULT 'normal',
+      status_reason TEXT,
+      status_message TEXT,
+      status_source TEXT NOT NULL DEFAULT 'system',
+      status_updated_at TEXT,
+      status_cooldown_until TEXT,
+      rate_limit_strike INTEGER NOT NULL DEFAULT 0,
+      cooldown_strike INTEGER NOT NULL DEFAULT 0,
+      recent_error_count INTEGER NOT NULL DEFAULT 0,
+      last_error_at TEXT,
+      last_error_code TEXT,
+      last_error_message TEXT,
       discovered_at TEXT NOT NULL,
       last_seen_at TEXT NOT NULL,
       FOREIGN KEY (account_id) REFERENCES managed_provider_credentials(id) ON DELETE CASCADE,
@@ -583,6 +595,29 @@ export function runMigrations(sqlite: Database.Database) {
       UNIQUE (account_id, managed_model_id)
     );
   `);
+
+  const accountModelColumns = sqlite.pragma("table_info(managed_account_models)") as Array<{
+    name: string;
+  }>;
+  const accountModelColumnDefinitions: Array<{ name: string; sql: string }> = [
+    { name: "runtime_status", sql: "ALTER TABLE managed_account_models ADD COLUMN runtime_status TEXT NOT NULL DEFAULT 'normal';" },
+    { name: "status_reason", sql: "ALTER TABLE managed_account_models ADD COLUMN status_reason TEXT;" },
+    { name: "status_message", sql: "ALTER TABLE managed_account_models ADD COLUMN status_message TEXT;" },
+    { name: "status_source", sql: "ALTER TABLE managed_account_models ADD COLUMN status_source TEXT NOT NULL DEFAULT 'system';" },
+    { name: "status_updated_at", sql: "ALTER TABLE managed_account_models ADD COLUMN status_updated_at TEXT;" },
+    { name: "status_cooldown_until", sql: "ALTER TABLE managed_account_models ADD COLUMN status_cooldown_until TEXT;" },
+    { name: "rate_limit_strike", sql: "ALTER TABLE managed_account_models ADD COLUMN rate_limit_strike INTEGER NOT NULL DEFAULT 0;" },
+    { name: "cooldown_strike", sql: "ALTER TABLE managed_account_models ADD COLUMN cooldown_strike INTEGER NOT NULL DEFAULT 0;" },
+    { name: "recent_error_count", sql: "ALTER TABLE managed_account_models ADD COLUMN recent_error_count INTEGER NOT NULL DEFAULT 0;" },
+    { name: "last_error_at", sql: "ALTER TABLE managed_account_models ADD COLUMN last_error_at TEXT;" },
+    { name: "last_error_code", sql: "ALTER TABLE managed_account_models ADD COLUMN last_error_code TEXT;" },
+    { name: "last_error_message", sql: "ALTER TABLE managed_account_models ADD COLUMN last_error_message TEXT;" }
+  ];
+  for (const definition of accountModelColumnDefinitions) {
+    if (!accountModelColumns.some((column) => column.name === definition.name)) {
+      sqlite.exec(definition.sql);
+    }
+  }
 
   // For per_account providers, seed default account model availability from existing models.
   sqlite.exec(`

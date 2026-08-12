@@ -10,6 +10,7 @@ import {
   type RuntimeStatusSettings
 } from "./runtimeStatus.js";
 import { PROVIDER_AUTH_FAILED_CODE } from "../utils/providerErrors.js";
+import { accountModelStatusKey } from "../state/routerState.js";
 
 export function parseAccountKeyFromAccountId(accountId: string | undefined | null): string {
   if (!accountId) {
@@ -99,6 +100,24 @@ export class RuntimeStatusService {
       );
     }
 
+    const accountModel = this.managedProviders.markAccountModelSuccess(
+      input.providerKey,
+      accountKey,
+      input.modelKey,
+      settings.clear_counters_on_success
+    );
+    if (accountModel) {
+      this.patchModelStatus(input.snapshot, input.providerKey, input.modelKey, {
+        runtime_status: accountModel.runtimeStatus as RuntimeStatus,
+        status_reason: accountModel.statusReason,
+        status_message: accountModel.statusMessage,
+        status_cooldown_until: accountModel.statusCooldownUntil,
+        rate_limit_strike: accountModel.rateLimitStrike,
+        recent_error_count: accountModel.recentErrorCount
+      }, accountKey);
+      return;
+    }
+
     const row = this.managedProviders.markModelSuccess(
       input.providerKey,
       input.modelKey,
@@ -157,6 +176,9 @@ export class RuntimeStatusService {
       case "model_unavailable":
         this.handleModelUnavailable(context);
         return;
+      case "upstream_error":
+        this.handleUpstreamError(context);
+        return;
       case "client_error":
         this.handleClientError(context);
         return;
@@ -168,7 +190,7 @@ export class RuntimeStatusService {
 
   /** 401/403：只禁当前 account，不牵连同 provider 的其它凭证 */
   private handleAuthFailure(context: FailureContext): void {
-    if (!context.settings.auth_disables_provider) {
+    if (!context.settings.auth_disables_account) {
       this.handleTransient(context);
       return;
     }
@@ -207,6 +229,43 @@ export class RuntimeStatusService {
 
   /** 429：维持 model 级限流阶梯 */
   private handleRateLimit(context: FailureContext): void {
+    const currentAccountModel = this.managedProviders.getAccountModel(
+      context.providerKey,
+      context.accountKey,
+      context.modelKey
+    );
+    if (currentAccountModel) {
+      const decision = nextCooldown({
+        previousStrike: currentAccountModel.rateLimitStrike,
+        ladder: context.settings.rate_limit_backoff_seconds,
+        permanentAfterFinal: context.settings.permanent_after_final_backoff
+      });
+      const row = this.managedProviders.applyAccountModelFailure(
+        context.providerKey,
+        context.accountKey,
+        context.modelKey,
+        {
+          runtimeStatus: "rate_limited",
+          reason: decision.permanent ? "rate_limited_permanent" : "rate_limited",
+          cooldownUntil: decision.cooldownUntil,
+          rateLimitStrike: decision.strike,
+          code: context.code ?? "provider_rate_limited",
+          message: context.message
+        }
+      );
+      if (row) {
+        this.patchModelStatus(context.snapshot, context.providerKey, context.modelKey, {
+          runtime_status: "rate_limited",
+          status_reason: row.statusReason,
+          status_message: row.statusMessage,
+          status_cooldown_until: row.statusCooldownUntil,
+          rate_limit_strike: row.rateLimitStrike,
+          recent_error_count: row.recentErrorCount
+        }, context.accountKey);
+      }
+      return;
+    }
+
     const current = this.managedProviders.getModelByProviderAndKey(
       context.providerKey,
       context.modelKey
@@ -241,6 +300,43 @@ export class RuntimeStatusService {
 
   /** 404/410：模型在该 provider 上不可用，与 account 无关 */
   private handleModelUnavailable(context: FailureContext): void {
+    const currentAccountModel = this.managedProviders.getAccountModel(
+      context.providerKey,
+      context.accountKey,
+      context.modelKey
+    );
+    if (currentAccountModel) {
+      const decision = nextCooldown({
+        previousStrike: currentAccountModel.cooldownStrike,
+        ladder: context.settings.model_unavailable_backoff_seconds,
+        permanentAfterFinal: false
+      });
+      const row = this.managedProviders.applyAccountModelFailure(
+        context.providerKey,
+        context.accountKey,
+        context.modelKey,
+        {
+          runtimeStatus: "cooling_down",
+          reason: "model_unavailable",
+          cooldownUntil: decision.cooldownUntil,
+          cooldownStrike: decision.strike,
+          code: context.code ?? "provider_invalid_model",
+          message: context.message
+        }
+      );
+      if (row) {
+        this.patchModelStatus(context.snapshot, context.providerKey, context.modelKey, {
+          runtime_status: row.runtimeStatus as RuntimeStatus,
+          status_reason: row.statusReason,
+          status_message: row.statusMessage,
+          status_cooldown_until: row.statusCooldownUntil,
+          rate_limit_strike: row.rateLimitStrike,
+          recent_error_count: row.recentErrorCount
+        }, context.accountKey);
+      }
+      return;
+    }
+
     const current = this.managedProviders.getModelByProviderAndKey(
       context.providerKey,
       context.modelKey
@@ -275,10 +371,79 @@ export class RuntimeStatusService {
     }
   }
 
+  /** 上游返回的 HTTP 408/5xx 可能是中转站内部渠道错误，只冷却实际失败的模型。 */
+  private handleUpstreamError(context: FailureContext): void {
+    const currentAccountModel = this.managedProviders.getAccountModel(
+      context.providerKey,
+      context.accountKey,
+      context.modelKey
+    );
+    const previousStrike = currentAccountModel?.cooldownStrike ??
+      this.managedProviders.getModelByProviderAndKey(
+        context.providerKey,
+        context.modelKey
+      )?.cooldownStrike ??
+      0;
+    const decision = nextCooldown({
+      previousStrike,
+      ladder: context.settings.error_backoff_seconds,
+      permanentAfterFinal: context.settings.error_permanent_after_final_backoff
+    });
+
+    if (currentAccountModel) {
+      const row = this.managedProviders.applyAccountModelFailure(
+        context.providerKey,
+        context.accountKey,
+        context.modelKey,
+        {
+          runtimeStatus: decision.permanent ? "abnormal" : "cooling_down",
+          reason: decision.permanent ? "upstream_error_permanent" : "upstream_error_cooldown",
+          cooldownUntil: decision.cooldownUntil,
+          cooldownStrike: decision.strike,
+          code: context.code,
+          message: context.message
+        }
+      );
+      if (row) {
+        this.patchModelStatus(context.snapshot, context.providerKey, context.modelKey, {
+          runtime_status: row.runtimeStatus as RuntimeStatus,
+          status_reason: row.statusReason,
+          status_message: row.statusMessage,
+          status_cooldown_until: row.statusCooldownUntil,
+          rate_limit_strike: row.rateLimitStrike,
+          recent_error_count: row.recentErrorCount
+        }, context.accountKey);
+      }
+      return;
+    }
+
+    const row = this.managedProviders.applyModelCooldown(
+      context.providerKey,
+      context.modelKey,
+      {
+        strike: decision.strike,
+        permanent: decision.permanent,
+        cooldownUntil: decision.cooldownUntil,
+        reason: decision.permanent ? "upstream_error_permanent" : "upstream_error_cooldown",
+        code: context.code,
+        message: context.message
+      }
+    );
+    if (row) {
+      this.patchModelStatus(context.snapshot, context.providerKey, context.modelKey, {
+        runtime_status: row.runtimeStatus as RuntimeStatus,
+        status_reason: row.statusReason,
+        status_message: row.statusMessage,
+        status_cooldown_until: row.statusCooldownUntil,
+        rate_limit_strike: row.rateLimitStrike,
+        recent_error_count: row.recentErrorCount
+      });
+    }
+  }
+
   /**
-   * 上游 5xx / 超时 / 不可达：冷却打在 account（节点）层，首次报错即生效。
+   * 无法连接上游：冷却打在 account（节点）层，首次报错即生效。
    * 同步 patch 内存快照，让当前这次请求的后续候选立刻跳过该节点下所有模型。
-   * model 侧只累加计数做兜底归因。
    */
   private handleTransient(context: FailureContext): void {
     const currentAccount = this.managedProviders.getAccount(
@@ -311,32 +476,6 @@ export class RuntimeStatusService {
       );
     }
 
-    const currentModel = this.managedProviders.getModelByProviderAndKey(
-      context.providerKey,
-      context.modelKey
-    );
-    const nextCount = (currentModel?.recentErrorCount ?? 0) + 1;
-    const abnormal = nextCount >= context.settings.error_threshold;
-    const row = this.managedProviders.applyModelOtherError(
-      context.providerKey,
-      context.modelKey,
-      {
-        recentErrorCount: nextCount,
-        abnormal,
-        code: context.code,
-        message: context.message
-      }
-    );
-    if (row) {
-      this.patchModelStatus(context.snapshot, context.providerKey, context.modelKey, {
-        runtime_status: row.runtimeStatus as RuntimeStatus,
-        status_reason: row.statusReason,
-        status_message: row.statusMessage,
-        status_cooldown_until: row.statusCooldownUntil,
-        rate_limit_strike: row.rateLimitStrike,
-        recent_error_count: row.recentErrorCount
-      });
-    }
   }
 
   /**
@@ -348,6 +487,18 @@ export class RuntimeStatusService {
       code: context.code,
       message: context.message
     });
+    const accountModel = this.managedProviders.recordAccountModelClientError(
+      context.providerKey,
+      context.accountKey,
+      context.modelKey,
+      {
+        code: context.code,
+        message: context.message
+      }
+    );
+    if (accountModel) {
+      return;
+    }
     this.managedProviders.recordModelClientError(context.providerKey, context.modelKey, {
       code: context.code,
       message: context.message
@@ -401,10 +552,10 @@ export class RuntimeStatusService {
       status_cooldown_until?: string | null;
       rate_limit_strike?: number;
       recent_error_count?: number;
-    }
+    },
+    accountKey?: string
   ) {
-    const key = `${providerKey}|${modelKey}`;
-    snapshot.modelStatuses[key] = {
+    const entry = {
       provider_key: providerKey,
       model_key: modelKey,
       runtime_status: status.runtime_status,
@@ -414,6 +565,16 @@ export class RuntimeStatusService {
       rate_limit_strike: status.rate_limit_strike ?? 0,
       recent_error_count: status.recent_error_count ?? 0
     };
+    if (accountKey) {
+      const suffix = `/${accountKey}`;
+      for (const account of snapshot.accounts) {
+        if (account.id.startsWith(`${providerKey}/`) && account.id.endsWith(suffix)) {
+          snapshot.modelStatuses[accountModelStatusKey(account.id, modelKey)] = entry;
+        }
+      }
+      return;
+    }
+    snapshot.modelStatuses[`${providerKey}|${modelKey}`] = entry;
   }
 }
 

@@ -17,11 +17,11 @@ import type { RuntimeSnapshot } from "./runtimeTypes.js";
 import {
   DEFAULT_RUNTIME_STATUS_SETTINGS,
   accountUnavailableReason,
-  isProviderSchedulable,
   isRuntimeStatusValue,
   type RuntimeStatus
 } from "./runtimeStatus.js";
 import type { AppSettingsRepository } from "../repositories/appSettingsRepository.js";
+import { accountModelStatusKey } from "../state/routerState.js";
 
 export interface RuntimeProjectorOptions {
   baseConfig: RouterConfig;
@@ -193,41 +193,16 @@ export class RuntimeConfigProjector {
     });
 
     const modelStatuses: RuntimeSnapshot["modelStatuses"] = {};
-    const providerStatusByKey = new Map(
+    const managedProviderByKey = new Map(
       managedBundles.map((bundle) => [bundle.provider.providerKey, bundle.provider] as const)
     );
 
     for (const provider of registry.providers) {
-      const managed = providerStatusByKey.get(provider.id);
+      const managed = managedProviderByKey.get(provider.id);
       if (!managed) {
         continue;
       }
-      const status = isRuntimeStatusValue(managed.runtimeStatus)
-        ? managed.runtimeStatus
-        : "normal";
-      provider.runtime_status = status as RuntimeStatus;
       provider.priority = managed.priority ?? 0;
-      provider.status_reason = managed.statusReason ?? undefined;
-      provider.status_message = managed.statusMessage ?? undefined;
-      provider.status_cooldown_until = managed.statusCooldownUntil ?? null;
-
-      const providerSchedulable = isProviderSchedulable({
-        enabled: true,
-        runtimeStatus: status,
-        statusReason: managed.statusReason,
-        statusMessage: managed.statusMessage,
-        statusCooldownUntil: managed.statusCooldownUntil
-      });
-
-      if (!providerSchedulable) {
-        for (const account of registry.accounts) {
-          if (account.id.startsWith(`${provider.id}/`)) {
-            account.available = false;
-            account.disabled_reason = managed.statusReason ?? "provider_unavailable";
-            account.disabled_message = managed.statusMessage ?? "Provider unavailable";
-          }
-        }
-      }
     }
 
     const now = new Date();
@@ -304,6 +279,31 @@ export class RuntimeConfigProjector {
             : `${bundle.provider.providerKey}/${bundle.endpoint.endpointKey}/${model.providerModelId}`;
         modelStatuses[configModelId] = statusEntry;
         modelStatuses[`${bundle.provider.providerKey}|${configModelId}`] = statusEntry;
+
+        const accountModel = this.options.managedProviderRepository.getAccountModel(
+          bundle.provider.providerKey,
+          accountKey,
+          model.modelKey
+        );
+        if (accountModel) {
+          const accountStatus = isRuntimeStatusValue(accountModel.runtimeStatus)
+            ? accountModel.runtimeStatus
+            : "normal";
+          const accountStatusEntry = {
+            provider_key: bundle.provider.providerKey,
+            model_key: model.modelKey,
+            runtime_status: accountStatus as RuntimeStatus,
+            status_reason: accountModel.statusReason,
+            status_message: accountModel.statusMessage,
+            status_cooldown_until: accountModel.statusCooldownUntil,
+            rate_limit_strike: accountModel.rateLimitStrike ?? 0,
+            recent_error_count: accountModel.recentErrorCount ?? 0
+          };
+          modelStatuses[accountModelStatusKey(accountId, model.modelKey)] = accountStatusEntry;
+          modelStatuses[accountModelStatusKey(accountId, configModelId)] = accountStatusEntry;
+          modelStatuses[accountModelStatusKey(accountId, model.providerModelId)] =
+            accountStatusEntry;
+        }
       }
     }
 

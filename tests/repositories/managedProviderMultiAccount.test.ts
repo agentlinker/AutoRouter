@@ -357,6 +357,7 @@ describe("managed provider multi-account", () => {
       pageSize: 1
     });
     expect(firstPage.total).toBe(2);
+    expect(firstPage.availableTotal).toBe(0);
     expect(firstPage.items.map((item) => item.provider.providerKey)).toEqual(["beta"]);
     expect(firstPage.page).toBe(1);
     expect(firstPage.pageSize).toBe(1);
@@ -367,6 +368,7 @@ describe("managed provider multi-account", () => {
       page: 2,
       pageSize: 1
     });
+    expect(secondPage.availableTotal).toBe(0);
     expect(secondPage.items.map((item) => item.provider.providerKey)).toEqual(["alpha"]);
   });
 });

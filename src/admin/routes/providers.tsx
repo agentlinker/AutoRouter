@@ -168,7 +168,7 @@ function isProviderAvailable(provider: ProviderDetails) {
     (provider.available_account_count ??
       provider.accounts?.filter(isAccountSchedulable).length ??
       (provider.key_hint ? 1 : 0)) > 0;
-  return provider.enabled && isRuntimeStatusSchedulable(provider) && hasSchedulableAccount;
+  return provider.enabled && hasSchedulableAccount;
 }
 
 function isProviderModelAvailable(model: {
@@ -185,8 +185,8 @@ function isProviderModelSchedulable(provider: ProviderDetails, model: ProviderMo
 }
 
 function providerModelUnavailableReason(provider: ProviderDetails, model: ProviderModel) {
-  if (!provider.enabled || !isRuntimeStatusSchedulable(provider)) {
-    return runtimeStatusDetail(provider) || "Provider 不可用";
+  if (!provider.enabled) {
+    return "Provider 已停用";
   }
   if ((provider.available_account_count ?? 0) <= 0) {
     return "没有可调度的 API Key";
@@ -553,7 +553,8 @@ export function ProviderListPage() {
   const totalProviders = listMeta?.total ?? providers.length;
   const totalPages = Math.max(1, Math.ceil(totalProviders / listParams.page_size));
   const totalModels = providers.reduce((sum, provider) => sum + provider.models.length, 0);
-  const availableProviders = providers.filter(isProviderAvailable).length;
+  const availableProviders =
+    listMeta?.available_total ?? providers.filter(isProviderAvailable).length;
   const availableModels = providers.reduce(
     (sum, provider) =>
       sum + provider.models.filter((model) => isProviderModelSchedulable(provider, model)).length,
@@ -889,15 +890,6 @@ export function ProviderDetailPage() {
               label={`${provider.display_name} 启用开关`}
               onChange={() => mutation.mutate("toggle")}
             />
-          </dd>
-          <dt>调度状态</dt>
-          <dd>
-            <span
-              className={runtimeStatusBadgeClass(provider.runtime_status)}
-              title={runtimeStatusDetail(provider)}
-            >
-              {runtimeStatusLabel(provider.runtime_status)}
-            </span>
           </dd>
           <dt>Provider 类型</dt>
           <dd>{provider.provider_kind ?? "custom"}</dd>
@@ -1774,7 +1766,9 @@ function ProviderCard(props: {
               : isProviderModelSchedulable(props.provider, model);
             const unavailableReason = account
               ? !isProviderAvailable(props.provider)
-                ? runtimeStatusDetail(props.provider) || "Provider 不可用"
+                ? !props.provider.enabled
+                  ? "Provider 已停用"
+                  : "没有可调度的 API Key"
                 : !isAccountSchedulable(account)
                   ? runtimeStatusDetail(account) || "Key 不可调度"
                   : providerModelUnavailableReason(props.provider, model)
@@ -1860,15 +1854,6 @@ function ProviderCard(props: {
           <strong>{props.provider.priority}</strong>
         </div>
         <div className="metric">
-          <span>调度状态</span>
-          <strong
-            className={runtimeStatusBadgeClass(props.provider.runtime_status)}
-            title={runtimeStatusDetail(props.provider)}
-          >
-            {runtimeStatusLabel(props.provider.runtime_status)}
-          </strong>
-        </div>
-        <div className="metric">
           <span>官网</span>
           {props.provider.website_url ? (
             <a href={props.provider.website_url} target="_blank" rel="noreferrer">
@@ -1944,9 +1929,6 @@ function ProviderCard(props: {
                   <code>{props.provider.key_hint ?? "hidden"}</code>
                 </div>
                 <span className="badge success">已启用</span>
-                <span className={runtimeStatusBadgeClass(props.provider.runtime_status)}>
-                  {runtimeStatusLabel(props.provider.runtime_status)}
-                </span>
               </div>
               {renderModelList(props.provider.models)}
             </div>
@@ -1963,9 +1945,6 @@ function ProviderCard(props: {
                     <code>{props.provider.key_hint ?? "hidden"}</code>
                   </div>
                   <span className="badge success">已启用</span>
-                  <span className={runtimeStatusBadgeClass(props.provider.runtime_status)}>
-                    {runtimeStatusLabel(props.provider.runtime_status)}
-                  </span>
                 </div>
               )}
             </div>

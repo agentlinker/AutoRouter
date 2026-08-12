@@ -153,19 +153,23 @@ describe("RuntimeStatusService", () => {
       error: new HttpError(429, "provider_rate_limited", "Too many requests")
     });
 
-    let model = harness.managedProviders.getModelByProviderAndKey("demo", "demo-model");
+    let model = harness.managedProviders.getAccountModel("demo", "default", "demo-model");
     expect(model?.runtimeStatus).toBe("rate_limited");
     expect(model?.rateLimitStrike).toBe(1);
     expect(model?.statusCooldownUntil).toBeTruthy();
-    expect(harness.runtimeManager.getSnapshot().modelStatuses["demo|demo-model"].runtime_status).toBe("rate_limited");
+    expect(
+      harness.runtimeManager.getSnapshot().modelStatuses[
+        "account:demo/openai/default|model:demo-model"
+      ]?.runtime_status
+    ).toBe("rate_limited");
 
     harness.managedProviders.setModelEnabled("demo", "demo-model", true);
-    model = harness.managedProviders.getModelByProviderAndKey("demo", "demo-model");
+    model = harness.managedProviders.getAccountModel("demo", "default", "demo-model");
     expect(model?.runtimeStatus).toBe("normal");
     expect(model?.rateLimitStrike).toBe(0);
   });
 
-  it("marks a model abnormal after the configured other-error threshold", () => {
+  it("keeps repeated upstream 5xx scoped to the account-model", () => {
     const harness = createHarness(tempDir);
     harness.appSettings.setRuntimeStatusSettings({ error_threshold: 2 });
 
@@ -178,9 +182,13 @@ describe("RuntimeStatusService", () => {
       });
     }
 
-    const model = harness.managedProviders.getModelByProviderAndKey("demo", "demo-model");
-    expect(model?.runtimeStatus).toBe("abnormal");
+    const model = harness.managedProviders.getAccountModel("demo", "default", "demo-model");
+    expect(model?.runtimeStatus).toBe("cooling_down");
     expect(model?.recentErrorCount).toBe(2);
-    expect(model?.statusReason).toBe("error_threshold");
+    expect(model?.statusReason).toBe("upstream_error_cooldown");
+    expect(harness.managedProviders.getAccount("demo", "default")?.runtimeStatus).toBe("normal");
+    expect(
+      harness.managedProviders.getModelByProviderAndKey("demo", "demo-model")?.runtimeStatus
+    ).toBe("normal");
   });
 });

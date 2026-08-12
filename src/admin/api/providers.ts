@@ -91,12 +91,6 @@ export interface ProviderDetails {
   model_availability_scope?: "shared_by_provider" | "per_account";
   enabled: boolean;
   priority: number;
-  runtime_status?: string;
-  status_reason?: string | null;
-  status_message?: string | null;
-  status_source?: string | null;
-  status_updated_at?: string | null;
-  status_cooldown_until?: string | null;
   trust_level: string;
   privacy_level: string;
   usage_trust: string;
@@ -121,6 +115,7 @@ export interface ProviderListResponse {
   data: ProviderDetails[];
   meta: {
     total: number;
+    available_total: number;
     page: number;
     page_size: number;
     sort_by: ProviderSortBy;

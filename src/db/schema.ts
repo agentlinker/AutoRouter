@@ -153,6 +153,18 @@ export const managedAccountModelsTable = sqliteTable("managed_account_models", {
   accountId: integer("account_id").notNull(),
   managedModelId: integer("managed_model_id").notNull(),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  runtimeStatus: text("runtime_status").notNull().default("normal"),
+  statusReason: text("status_reason"),
+  statusMessage: text("status_message"),
+  statusSource: text("status_source").notNull().default("system"),
+  statusUpdatedAt: text("status_updated_at"),
+  statusCooldownUntil: text("status_cooldown_until"),
+  rateLimitStrike: integer("rate_limit_strike").notNull().default(0),
+  cooldownStrike: integer("cooldown_strike").notNull().default(0),
+  recentErrorCount: integer("recent_error_count").notNull().default(0),
+  lastErrorAt: text("last_error_at"),
+  lastErrorCode: text("last_error_code"),
+  lastErrorMessage: text("last_error_message"),
   discoveredAt: text("discovered_at").notNull(),
   lastSeenAt: text("last_seen_at").notNull()
 }, (table) => ({

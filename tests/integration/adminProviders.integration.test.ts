@@ -109,11 +109,21 @@ describe("admin providers integration", () => {
               adapterType: "openai_compatible",
               baseUrl: `https://${provider.providerKey}.example.com/v1`
             },
-            models: []
+            models: [
+              {
+                modelKey: `${provider.providerKey}-model`,
+                providerModelId: `${provider.providerKey}-model`,
+                modelName: `${provider.providerKey}-model`,
+                supportsStreaming: true,
+                supportsTools: false,
+                supportsJsonMode: false
+              }
+            ]
           }
         ]
       });
     }
+    repository.updateProviderEnabled("alpha", false);
 
     const response = await server.inject({
       method: "GET",
@@ -127,6 +137,7 @@ describe("admin providers integration", () => {
     expect(response.json()).toMatchObject({
       meta: {
         total: 2,
+        available_total: 1,
         page: 1,
         page_size: 1,
         sort_by: "priority",
@@ -136,6 +147,30 @@ describe("admin providers integration", () => {
         expect.objectContaining({
           provider_key: "beta",
           priority: 5
+        })
+      ]
+    });
+
+    const secondPageResponse = await server.inject({
+      method: "GET",
+      url: "/admin/api/providers?sort_by=priority&sort_dir=desc&page=2&page_size=1",
+      headers: {
+        authorization: "Bearer admin-token"
+      }
+    });
+
+    expect(secondPageResponse.statusCode).toBe(200);
+    expect(secondPageResponse.json()).toMatchObject({
+      meta: {
+        total: 2,
+        available_total: 1,
+        page: 2,
+        page_size: 1
+      },
+      data: [
+        expect.objectContaining({
+          provider_key: "alpha",
+          enabled: false
         })
       ]
     });
@@ -303,6 +338,8 @@ describe("admin providers integration", () => {
     expect(createResponse.statusCode).toBe(201);
     expect(createResponse.json().models).toHaveLength(1);
     expect(createResponse.json().models[0].model_name).toBe("managed-model");
+    expect(createResponse.json()).not.toHaveProperty("runtime_status");
+    expect(createResponse.json()).not.toHaveProperty("status_reason");
 
     const testModelResponse = await server.inject({
       method: "POST",

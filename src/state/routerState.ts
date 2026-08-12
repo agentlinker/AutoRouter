@@ -19,10 +19,6 @@ export interface ProviderRuntimeState {
   trust_level: string;
   privacy_level: string;
   usage_trust: string;
-  runtime_status?: RuntimeStatus;
-  status_reason?: string;
-  status_message?: string;
-  status_cooldown_until?: string | null;
 }
 
 export interface ModelRuntimeStatusState {
@@ -34,6 +30,10 @@ export interface ModelRuntimeStatusState {
   status_cooldown_until?: string | null;
   rate_limit_strike: number;
   recent_error_count: number;
+}
+
+export function accountModelStatusKey(accountId: string, modelKey: string): string {
+  return `account:${accountId}|model:${modelKey}`;
 }
 
 export interface EndpointRuntimeState {

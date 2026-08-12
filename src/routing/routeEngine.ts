@@ -13,8 +13,9 @@ import type {
   PlatformRuntimeState,
   ProviderRuntimeState
 } from "../state/routerState.js";
+import { accountModelStatusKey } from "../state/routerState.js";
 import { HttpError } from "../utils/httpErrors.js";
-import { modelFilterReason, providerFilterReason, resolveAccountExecutionGate } from "../runtime/runtimeStatus.js";
+import { modelFilterReason, resolveAccountExecutionGate } from "../runtime/runtimeStatus.js";
 import type { StickyRoute } from "./stickySession.js";
 
 export interface SelectedRoute {
@@ -125,19 +126,6 @@ function canUseCandidate(
   privacyLevel: string,
   modelStatus?: ModelRuntimeStatusState | null
 ): string | null {
-  // provider.enabled is reflected via endpoint/account projection; runtime_status gates here.
-  // 统一走 providerFilterReason，冷却类状态由它按 cooldown 判定是否放行。
-  const providerReason = providerFilterReason({
-    enabled: true,
-    runtimeStatus: provider.runtime_status ?? "normal",
-    statusReason: provider.status_reason,
-    statusMessage: provider.status_message,
-    statusCooldownUntil: provider.status_cooldown_until
-  });
-  if (providerReason) {
-    return providerReason;
-  }
-
   if (modelStatus) {
     const modelReason = modelFilterReason({
       enabled: true,
@@ -384,6 +372,8 @@ export function selectRoute(
     }
 
     const modelStatus =
+      modelStatuses[accountModelStatusKey(account.id, candidate.modelId)] ??
+      modelStatuses[accountModelStatusKey(account.id, candidate.model)] ??
       modelStatuses[candidate.modelId] ??
       modelStatuses[`${provider.id}|${candidate.modelId}`] ??
       modelStatuses[`${provider.id}|${candidate.model}`] ??

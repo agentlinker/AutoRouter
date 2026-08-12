@@ -427,12 +427,6 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
     model_availability_scope: details.provider.modelAvailabilityScope ?? "per_account",
     enabled: details.provider.enabled,
     priority: details.provider.priority ?? 0,
-    runtime_status: details.provider.runtimeStatus ?? "normal",
-    status_reason: details.provider.statusReason ?? null,
-    status_message: details.provider.statusMessage ?? null,
-    status_source: details.provider.statusSource ?? "system",
-    status_updated_at: details.provider.statusUpdatedAt ?? null,
-    status_cooldown_until: details.provider.statusCooldownUntil ?? null,
     trust_level: details.provider.trustLevel,
     privacy_level: details.provider.privacyLevel,
     usage_trust: details.provider.usageTrust,
@@ -487,6 +481,7 @@ export async function registerAdminProvidersRoutes(
       data: result.items.map((item) => serializeProviderDetails(item)),
       meta: {
         total: result.total,
+        available_total: result.availableTotal,
         page: result.page,
         page_size: result.pageSize,
         sort_by: result.sortBy,
@@ -614,8 +609,7 @@ export async function registerAdminProvidersRoutes(
         priority: details.provider.priority ?? 0,
         trust_level: details.provider.trustLevel,
         privacy_level: details.provider.privacyLevel,
-        usage_trust: details.provider.usageTrust,
-        runtime_status: details.provider.runtimeStatus as never
+        usage_trust: details.provider.usageTrust
       },
       endpoint: {
         id: endpointId,

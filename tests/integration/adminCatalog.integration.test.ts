@@ -128,6 +128,12 @@ describe("admin catalog integration", () => {
       context_window: 64_000
     });
     expect(listResponse.json().data[0].instances).toHaveLength(1);
+    expect(listResponse.json().data[0].instances[0]).not.toHaveProperty(
+      "provider_runtime_status"
+    );
+    expect(listResponse.json().data[0].instances[0]).not.toHaveProperty(
+      "provider_status_reason"
+    );
 
     const patchResponse = await server.inject({
       method: "PATCH",

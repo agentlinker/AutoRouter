@@ -22,7 +22,7 @@ export interface RuntimeStatusSettings {
   /** 错误冷却走完阶梯后是否把 account 转永久 abnormal；false 时循环使用最后一档 */
   error_permanent_after_final_backoff: boolean;
   clear_counters_on_success: boolean;
-  auth_disables_provider: boolean;
+  auth_disables_account: boolean;
 }
 
 export const DEFAULT_RUNTIME_STATUS_SETTINGS: RuntimeStatusSettings = {
@@ -33,7 +33,7 @@ export const DEFAULT_RUNTIME_STATUS_SETTINGS: RuntimeStatusSettings = {
   permanent_after_final_backoff: true,
   error_permanent_after_final_backoff: false,
   clear_counters_on_success: true,
-  auth_disables_provider: true
+  auth_disables_account: true
 };
 
 export const RUNTIME_STATUS_SETTINGS_KEY = "runtime_status";
@@ -80,8 +80,8 @@ export function normalizeRuntimeStatusSettings(
       DEFAULT_RUNTIME_STATUS_SETTINGS.error_permanent_after_final_backoff,
     clear_counters_on_success:
       input?.clear_counters_on_success ?? DEFAULT_RUNTIME_STATUS_SETTINGS.clear_counters_on_success,
-    auth_disables_provider:
-      input?.auth_disables_provider ?? DEFAULT_RUNTIME_STATUS_SETTINGS.auth_disables_provider
+    auth_disables_account:
+      input?.auth_disables_account ?? DEFAULT_RUNTIME_STATUS_SETTINGS.auth_disables_account
   };
 }
 
@@ -162,59 +162,6 @@ function isCoolingDownBlocked(input: {
     return true;
   }
   return isCooldownActive(input.statusCooldownUntil, input.now);
-}
-
-export function isProviderSchedulable(input: {
-  enabled: boolean;
-  runtimeStatus: RuntimeStatus;
-  statusReason?: string | null;
-  statusMessage?: string | null;
-  statusCooldownUntil?: string | null;
-  now?: Date;
-}): boolean {
-  // 与 routeEngine 共用同一套判定，避免两处对冷却态的理解漂移
-  return providerFilterReason(input) === null;
-}
-
-export function providerFilterReason(input: {
-  enabled: boolean;
-  runtimeStatus: RuntimeStatus;
-  statusReason?: string | null;
-  statusMessage?: string | null;
-  statusCooldownUntil?: string | null;
-  now?: Date;
-}): string | null {
-  if (!input.enabled) {
-    return "provider_disabled";
-  }
-  if (input.runtimeStatus === "disabled") {
-    return input.statusMessage ?? input.statusReason ?? "provider_auth_failed";
-  }
-  if (input.runtimeStatus === "abnormal") {
-    return input.statusMessage ?? input.statusReason ?? "provider_abnormal";
-  }
-  if (input.runtimeStatus === "cooling_down") {
-    if (isCoolingDownBlocked(input)) {
-      return (
-        input.statusMessage ??
-        input.statusReason ??
-        `provider_cooling_down:${input.statusCooldownUntil}`
-      );
-    }
-    // 冷却到期 — 放行重试
-    return null;
-  }
-  // provider-level rate_limited rarely used; treat like model
-  if (input.runtimeStatus === "rate_limited") {
-    if (
-      input.statusReason === "rate_limited_permanent" ||
-      isCooldownActive(input.statusCooldownUntil, input.now)
-    ) {
-      return input.statusMessage ?? input.statusReason ?? "provider_rate_limited";
-    }
-    return null;
-  }
-  return null;
 }
 
 export function modelFilterReason(input: {
@@ -378,6 +325,7 @@ export type FailureClass =
   | "billing"
   | "rate_limit"
   | "model_unavailable"
+  | "upstream_error"
   | "transient"
   | "client_error";
 
@@ -429,16 +377,17 @@ export function classifyProviderFailure(error: unknown): FailureClass {
     return "model_unavailable";
   }
 
-  if (statusCode === 408 || (statusCode !== undefined && statusCode >= 500)) {
+  if (code === "provider_unreachable") {
     return "transient";
   }
 
   if (
-    code === "provider_unreachable" ||
     code === "provider_timeout" ||
-    code === "provider_server_error"
+    code === "provider_server_error" ||
+    statusCode === 408 ||
+    (statusCode !== undefined && statusCode >= 500)
   ) {
-    return "transient";
+    return "upstream_error";
   }
 
   if (statusCode !== undefined && statusCode >= 400) {

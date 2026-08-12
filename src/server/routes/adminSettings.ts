@@ -18,7 +18,7 @@ const runtimeStatusSettingsSchema = z.object({
   permanent_after_final_backoff: z.boolean().optional(),
   error_permanent_after_final_backoff: z.boolean().optional(),
   clear_counters_on_success: z.boolean().optional(),
-  auth_disables_provider: z.boolean().optional()
+  auth_disables_account: z.boolean().optional()
 });
 
 export async function registerAdminSettingsRoutes(
@@ -41,7 +41,7 @@ export async function registerAdminSettingsRoutes(
         {
           section_id: "runtime_status",
           label: "运行态与熔断",
-          description: "Provider/模型运行态：错误冷却阶梯、429 退避与鉴权禁用策略。",
+          description: "Account/模型运行态：错误冷却阶梯、429 退避与鉴权禁用策略。",
           items: [
             {
               key: "error_backoff_seconds",
@@ -79,9 +79,9 @@ export async function registerAdminSettingsRoutes(
               value: String(runtimeStatus.clear_counters_on_success)
             },
             {
-              key: "auth_disables_provider",
+              key: "auth_disables_account",
               label: "401/403 禁用当前 Account（API Key）",
-              value: String(runtimeStatus.auth_disables_provider)
+              value: String(runtimeStatus.auth_disables_account)
             }
           ],
           editable: true,
@@ -99,7 +99,7 @@ export async function registerAdminSettingsRoutes(
       return {
         section_id: "runtime_status",
         label: "运行态与熔断",
-        description: "Provider/模型运行态：错误阈值、429 退避与鉴权禁用策略。",
+        description: "Account/模型运行态：错误阈值、429 退避与鉴权禁用策略。",
         items: [],
         editable: true,
         values: runtimeStatus

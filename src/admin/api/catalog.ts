@@ -17,9 +17,6 @@ export interface CatalogModelInstance {
   status_cooldown_until?: string | null;
   rate_limit_strike?: number;
   recent_error_count?: number;
-  provider_runtime_status?: string;
-  provider_status_reason?: string | null;
-  provider_status_message?: string | null;
   provider_kind?: string;
   model_availability_scope?: string;
   available_accounts?: string[];

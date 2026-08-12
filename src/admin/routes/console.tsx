@@ -975,7 +975,7 @@ export function SettingsDetailPage() {
     permanent_after_final_backoff: true,
     error_permanent_after_final_backoff: false,
     clear_counters_on_success: true,
-    auth_disables_provider: true
+    auth_disables_account: true
   });
   const [dialog, setDialog] = useState<{
     title: string;
@@ -1003,7 +1003,10 @@ export function SettingsDetailPage() {
       permanent_after_final_backoff: values.permanent_after_final_backoff !== false,
       error_permanent_after_final_backoff: values.error_permanent_after_final_backoff === true,
       clear_counters_on_success: values.clear_counters_on_success !== false,
-      auth_disables_provider: values.auth_disables_provider !== false
+      auth_disables_account:
+        typeof values.auth_disables_account === "boolean"
+          ? values.auth_disables_account
+          : true
     });
   }, [query.data, sectionId]);
 
@@ -1034,7 +1037,7 @@ export function SettingsDetailPage() {
         permanent_after_final_backoff: runtimeForm.permanent_after_final_backoff,
         error_permanent_after_final_backoff: runtimeForm.error_permanent_after_final_backoff,
         clear_counters_on_success: runtimeForm.clear_counters_on_success,
-        auth_disables_provider: runtimeForm.auth_disables_provider
+        auth_disables_account: runtimeForm.auth_disables_account
       });
     },
     onSuccess: (updated) => {
@@ -1201,11 +1204,11 @@ export function SettingsDetailPage() {
             <label className="capability-toggle">
               <input
                 type="checkbox"
-                checked={runtimeForm.auth_disables_provider}
+                checked={runtimeForm.auth_disables_account}
                 onChange={(event) =>
                   setRuntimeForm((current) => ({
                     ...current,
-                    auth_disables_provider: event.target.checked
+                    auth_disables_account: event.target.checked
                   }))
                 }
               />

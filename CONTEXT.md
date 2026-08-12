@@ -25,6 +25,15 @@ _Avoid_: Account
 - 一个 **Provider** 可以拥有一个或多个 **Endpoint**
 - 一个 **Endpoint** 可以关联一个或多个 **Account**
 - 一个 **Account** 为访问一个 **Endpoint** 提供认证信息
+- 一个 **Provider-Model** 表达 Provider 共享的模型运行态
+- 一个 **Account-Model** 表达具体 Account 与 Model 组合的独立运行态
+
+**Provider** 只保留 `enabled` 作为人工总开关，不维护动态调度状态。连接健康属于
+**Endpoint**，凭证问题属于 **Account**，模型请求错误属于对应模型作用域。
+
+当 `model_availability_scope=per_account` 时，模型错误归因到 **Account-Model**；
+当 `model_availability_scope=shared_by_provider` 时，模型错误归因到
+**Provider-Model**。完整状态规则见 `docs/runtime-status.md`。
 
 ## Example dialogue
 
@@ -34,3 +43,5 @@ _Avoid_: Account
 ## Flagged ambiguities
 
 - “provider 配 apiKey” 容易和内部 **Account** 概念混淆；已解决：本地配置允许直写 `api_key`，但运行时概念仍是 **Account**。
+- “模型不可用”等同于“Key 不可用”是错误归因；HTTP `408/5xx`、`429`、`404/410`
+  默认只改变对应模型作用域，只有连接层故障、鉴权和账单问题才改变 **Account**。

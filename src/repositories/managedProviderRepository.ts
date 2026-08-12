@@ -1,5 +1,5 @@
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import { and, asc, desc, eq, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 
 import {
   logicalModelsTable,
@@ -9,6 +9,7 @@ import {
   managedProviderEndpointsTable,
   managedProvidersTable,
   modelSyncRunsTable,
+  type ManagedAccountModelRow,
   type ManagedCredentialRow,
   type ManagedModelRow,
   type ManagedProviderEndpointRow,
@@ -154,6 +155,7 @@ export interface ListProviderSummariesOptions {
 export interface ListProviderSummariesResult {
   items: ManagedProviderDetails[];
   total: number;
+  availableTotal: number;
   page: number;
   pageSize: number;
   sortBy: ProviderListSortBy;
@@ -397,13 +399,16 @@ export class ManagedProviderRepository {
   }
 
   private listAccountModelIds(accountId: number): Set<number> {
-    const rows = this.db.select().from(managedAccountModelsTable)
+    return new Set(this.listAccountModelRows(accountId).map((row) => row.managedModelId));
+  }
+
+  private listAccountModelRows(accountId: number): ManagedAccountModelRow[] {
+    return this.db.select().from(managedAccountModelsTable)
       .where(and(
         eq(managedAccountModelsTable.accountId, accountId),
         eq(managedAccountModelsTable.enabled, true)
       ))
       .all();
-    return new Set(rows.map((row) => row.managedModelId));
   }
 
   private replaceAccountModelLinks(
@@ -412,24 +417,12 @@ export class ManagedProviderRepository {
     modelIds: number[],
     now: string
   ) {
-    // Keep links for models not in this replacement set only if caller passes full set.
-    db.delete(managedAccountModelsTable)
+    db.update(managedAccountModelsTable)
+      .set({ enabled: false })
       .where(eq(managedAccountModelsTable.accountId, accountId))
       .run();
 
-    if (modelIds.length === 0) {
-      return;
-    }
-
-    db.insert(managedAccountModelsTable).values(
-      modelIds.map((managedModelId) => ({
-        accountId,
-        managedModelId,
-        enabled: true,
-        discoveredAt: now,
-        lastSeenAt: now
-      }))
-    ).run();
+    this.upsertAccountModelLinks(db, accountId, modelIds, now);
   }
 
   private upsertAccountModelLinks(
@@ -441,7 +434,8 @@ export class ManagedProviderRepository {
   ) {
     if (options?.replaceEndpointModelIds) {
       for (const managedModelId of options.replaceEndpointModelIds) {
-        db.delete(managedAccountModelsTable)
+        db.update(managedAccountModelsTable)
+          .set({ enabled: false })
           .where(and(
             eq(managedAccountModelsTable.accountId, accountId),
             eq(managedAccountModelsTable.managedModelId, managedModelId)
@@ -530,6 +524,7 @@ export class ManagedProviderRepository {
       .orderBy(primaryOrder, ...secondaryOrders)
       .all();
     const total = providers.length;
+    const availableTotal = this.countAvailableProviders();
     const offset = (page - 1) * pageSize;
     const pageProviders = providers.slice(offset, offset + pageSize);
     const items = pageProviders.map((provider) => this.getProviderDetails(provider.providerKey)).filter(
@@ -538,11 +533,139 @@ export class ManagedProviderRepository {
     return {
       items,
       total,
+      availableTotal,
       page,
       pageSize,
       sortBy,
       sortDir
     };
+  }
+
+  /**
+   * Count providers that can form at least one complete route candidate.
+   * This is deliberately one aggregate query so pagination does not load every provider bundle.
+   */
+  private countAvailableProviders(now = new Date()): number {
+    const nowValue = now.toISOString();
+    const row = this.db
+      .select({
+        count: sql<number>`count(*)`
+      })
+      .from(managedProvidersTable)
+      .where(sql`
+        ${managedProvidersTable.enabled} = 1
+        AND EXISTS (
+          SELECT 1
+          FROM managed_provider_endpoints AS endpoint
+          INNER JOIN managed_provider_credentials AS account
+            ON account.provider_id = ${managedProvidersTable.id}
+           AND account.enabled = 1
+           AND (account.endpoint_id IS NULL OR account.endpoint_id = endpoint.id)
+          INNER JOIN managed_models AS model
+            ON model.provider_id = ${managedProvidersTable.id}
+           AND model.enabled = 1
+           AND (
+             model.endpoint_id = endpoint.id
+             OR NOT EXISTS (
+               SELECT 1
+               FROM managed_models AS endpoint_model
+               WHERE endpoint_model.provider_id = ${managedProvidersTable.id}
+                 AND endpoint_model.endpoint_id = endpoint.id
+                 AND endpoint_model.enabled = 1
+             )
+           )
+          WHERE endpoint.provider_id = ${managedProvidersTable.id}
+            AND endpoint.enabled = 1
+            AND (account.expires_at IS NULL OR account.expires_at > ${nowValue})
+            AND CASE
+              WHEN account.quota_json IS NULL OR json_valid(account.quota_json) = 0 THEN 1
+              WHEN json_type(account.quota_json, '$.remaining_usd') IN ('integer', 'real')
+                THEN CAST(json_extract(account.quota_json, '$.remaining_usd') AS REAL) > 0
+              ELSE 1
+            END
+            AND account.runtime_status NOT IN ('disabled', 'abnormal')
+            AND NOT (
+              account.runtime_status = 'cooling_down'
+              AND (
+                coalesce(account.status_reason, '') GLOB '*_permanent'
+                OR (
+                  account.status_cooldown_until IS NOT NULL
+                  AND account.status_cooldown_until > ${nowValue}
+                )
+              )
+            )
+            AND NOT (
+              account.runtime_status = 'rate_limited'
+              AND (
+                account.status_reason = 'rate_limited_permanent'
+                OR (
+                  account.status_cooldown_until IS NOT NULL
+                  AND account.status_cooldown_until > ${nowValue}
+                )
+              )
+            )
+            AND (
+              (
+                ${managedProvidersTable.modelAvailabilityScope} = 'per_account'
+                AND EXISTS (
+                  SELECT 1
+                  FROM managed_account_models AS account_model
+                  WHERE account_model.account_id = account.id
+                    AND account_model.managed_model_id = model.id
+                    AND account_model.enabled = 1
+                    AND account_model.runtime_status NOT IN ('disabled', 'abnormal')
+                    AND NOT (
+                      account_model.runtime_status = 'cooling_down'
+                      AND (
+                        coalesce(account_model.status_reason, '') GLOB '*_permanent'
+                        OR (
+                          account_model.status_cooldown_until IS NOT NULL
+                          AND account_model.status_cooldown_until > ${nowValue}
+                        )
+                      )
+                    )
+                    AND NOT (
+                      account_model.runtime_status = 'rate_limited'
+                      AND (
+                        account_model.status_reason = 'rate_limited_permanent'
+                        OR (
+                          account_model.status_cooldown_until IS NOT NULL
+                          AND account_model.status_cooldown_until > ${nowValue}
+                        )
+                      )
+                    )
+                )
+              )
+              OR (
+                ${managedProvidersTable.modelAvailabilityScope} != 'per_account'
+                AND model.runtime_status NOT IN ('disabled', 'abnormal')
+                AND NOT (
+                  model.runtime_status = 'cooling_down'
+                  AND (
+                    coalesce(model.status_reason, '') GLOB '*_permanent'
+                    OR (
+                      model.status_cooldown_until IS NOT NULL
+                      AND model.status_cooldown_until > ${nowValue}
+                    )
+                  )
+                )
+                AND NOT (
+                  model.runtime_status = 'rate_limited'
+                  AND (
+                    model.status_reason = 'rate_limited_permanent'
+                    OR (
+                      model.status_cooldown_until IS NOT NULL
+                      AND model.status_cooldown_until > ${nowValue}
+                    )
+                  )
+                )
+              )
+            )
+        )
+      `)
+      .get();
+
+    return Number(row?.count ?? 0);
   }
 
   public getProviderDetails(providerKey: string): ManagedProviderDetails | null {
@@ -581,10 +704,32 @@ export class ManagedProviderRepository {
       if (!this.isPerAccountScope(provider)) {
         return { accountId: account.id, models };
       }
-      const accountModelIds = this.listAccountModelIds(account.id);
+      const accountModelRows = this.listAccountModelRows(account.id);
+      const accountModelByModelId = new Map(
+        accountModelRows.map((row) => [row.managedModelId, row] as const)
+      );
       return {
         accountId: account.id,
-        models: models.filter((model) => accountModelIds.has(model.id))
+        models: models
+          .filter((model) => accountModelByModelId.has(model.id))
+          .map((model) => {
+            const status = accountModelByModelId.get(model.id)!;
+            return {
+              ...model,
+              runtimeStatus: status.runtimeStatus,
+              statusReason: status.statusReason,
+              statusMessage: status.statusMessage,
+              statusSource: status.statusSource,
+              statusUpdatedAt: status.statusUpdatedAt,
+              statusCooldownUntil: status.statusCooldownUntil,
+              rateLimitStrike: status.rateLimitStrike,
+              cooldownStrike: status.cooldownStrike,
+              recentErrorCount: status.recentErrorCount,
+              lastErrorAt: status.lastErrorAt,
+              lastErrorCode: status.lastErrorCode,
+              lastErrorMessage: status.lastErrorMessage
+            };
+          })
       };
     });
 
@@ -1169,13 +1314,6 @@ export class ManagedProviderRepository {
       this.db.update(managedProvidersTable)
         .set({
           enabled: true,
-          runtimeStatus: "normal",
-          statusReason: null,
-          statusMessage: null,
-          statusSource: "manual",
-          statusUpdatedAt: now,
-          statusCooldownUntil: null,
-          recentErrorCount: 0,
           updatedAt: now
         })
         .where(eq(managedProvidersTable.id, existing.provider.id))
@@ -1260,17 +1398,6 @@ export class ManagedProviderRepository {
         modelAvailabilityScope: nextScope,
         enabled: input.enabled ?? existing.provider.enabled,
         priority: normalizeProviderPriority(input.priority) ?? existing.provider.priority,
-        ...(input.enabled === true
-          ? {
-              runtimeStatus: "normal",
-              statusReason: null,
-              statusMessage: null,
-              statusSource: "manual",
-              statusUpdatedAt: now,
-              statusCooldownUntil: null,
-              recentErrorCount: 0
-            }
-          : {}),
         updatedAt: now
       })
       .where(eq(managedProvidersTable.providerKey, providerKey))
@@ -1834,32 +1961,6 @@ export class ManagedProviderRepository {
       .get() ?? null;
   }
 
-
-  public markProviderAuthFailed(providerKey: string, message: string): ManagedProviderRow | null {
-    const provider = this.db.select().from(managedProvidersTable)
-      .where(eq(managedProvidersTable.providerKey, providerKey))
-      .get();
-    if (!provider) {
-      return null;
-    }
-    const now = nowIso();
-    this.db.update(managedProvidersTable)
-      .set({
-        runtimeStatus: "disabled",
-        statusReason: "auth_failed",
-        statusMessage: message || "Invalid API key",
-        statusSource: "system",
-        statusUpdatedAt: now,
-        statusCooldownUntil: null,
-        updatedAt: now
-      })
-      .where(eq(managedProvidersTable.id, provider.id))
-      .run();
-    return this.db.select().from(managedProvidersTable)
-      .where(eq(managedProvidersTable.id, provider.id))
-      .get() ?? null;
-  }
-
   public getModelByProviderAndKey(providerKey: string, modelKey: string): ManagedModelRow | null {
     const provider = this.db.select().from(managedProvidersTable)
       .where(eq(managedProvidersTable.providerKey, providerKey))
@@ -1872,6 +1973,143 @@ export class ManagedProviderRepository {
         eq(managedModelsTable.providerId, provider.id),
         eq(managedModelsTable.modelKey, modelKey)
       ))
+      .get() ?? null;
+  }
+
+  public getAccountModel(
+    providerKey: string,
+    accountKey: string,
+    modelKey: string
+  ): ManagedAccountModelRow | null {
+    const provider = this.db.select().from(managedProvidersTable)
+      .where(eq(managedProvidersTable.providerKey, providerKey))
+      .get();
+    if (!provider || !this.isPerAccountScope(provider)) {
+      return null;
+    }
+    const account = this.db.select().from(managedProviderCredentialsTable)
+      .where(and(
+        eq(managedProviderCredentialsTable.providerId, provider.id),
+        eq(managedProviderCredentialsTable.accountKey, accountKey)
+      ))
+      .get();
+    const model = this.db.select().from(managedModelsTable)
+      .where(and(
+        eq(managedModelsTable.providerId, provider.id),
+        eq(managedModelsTable.modelKey, modelKey)
+      ))
+      .get();
+    if (!account || !model) {
+      return null;
+    }
+    return this.db.select().from(managedAccountModelsTable)
+      .where(and(
+        eq(managedAccountModelsTable.accountId, account.id),
+        eq(managedAccountModelsTable.managedModelId, model.id)
+      ))
+      .get() ?? null;
+  }
+
+  public applyAccountModelFailure(
+    providerKey: string,
+    accountKey: string,
+    modelKey: string,
+    input: {
+      runtimeStatus: "rate_limited" | "cooling_down" | "abnormal";
+      reason: string;
+      cooldownUntil: string | null;
+      rateLimitStrike?: number;
+      cooldownStrike?: number;
+      code?: string;
+      message: string;
+    }
+  ): ManagedAccountModelRow | null {
+    const accountModel = this.getAccountModel(providerKey, accountKey, modelKey);
+    if (!accountModel) {
+      return null;
+    }
+    const now = nowIso();
+    this.db.update(managedAccountModelsTable)
+      .set({
+        runtimeStatus: input.runtimeStatus,
+        statusReason: input.reason,
+        statusMessage: input.message,
+        statusSource: "system",
+        statusUpdatedAt: now,
+        statusCooldownUntil: input.cooldownUntil,
+        rateLimitStrike: input.rateLimitStrike ?? accountModel.rateLimitStrike,
+        cooldownStrike: input.cooldownStrike ?? accountModel.cooldownStrike,
+        recentErrorCount: accountModel.recentErrorCount + 1,
+        lastErrorAt: now,
+        lastErrorCode: input.code ?? "provider_error",
+        lastErrorMessage: input.message
+      })
+      .where(eq(managedAccountModelsTable.id, accountModel.id))
+      .run();
+    return this.db.select().from(managedAccountModelsTable)
+      .where(eq(managedAccountModelsTable.id, accountModel.id))
+      .get() ?? null;
+  }
+
+  public markAccountModelSuccess(
+    providerKey: string,
+    accountKey: string,
+    modelKey: string,
+    clearCounters: boolean
+  ): ManagedAccountModelRow | null {
+    const accountModel = this.getAccountModel(providerKey, accountKey, modelKey);
+    if (!accountModel) {
+      return null;
+    }
+    if (
+      accountModel.runtimeStatus === "abnormal" ||
+      accountModel.runtimeStatus === "disabled" ||
+      accountModel.statusReason === "rate_limited_permanent" ||
+      accountModel.statusReason?.endsWith("_permanent")
+    ) {
+      return accountModel;
+    }
+    const now = nowIso();
+    this.db.update(managedAccountModelsTable)
+      .set({
+        runtimeStatus: "normal",
+        statusReason: null,
+        statusMessage: null,
+        statusSource: "system",
+        statusUpdatedAt: now,
+        statusCooldownUntil: null,
+        rateLimitStrike: clearCounters ? 0 : accountModel.rateLimitStrike,
+        cooldownStrike: clearCounters ? 0 : accountModel.cooldownStrike,
+        recentErrorCount: clearCounters ? 0 : accountModel.recentErrorCount
+      })
+      .where(eq(managedAccountModelsTable.id, accountModel.id))
+      .run();
+    return this.db.select().from(managedAccountModelsTable)
+      .where(eq(managedAccountModelsTable.id, accountModel.id))
+      .get() ?? null;
+  }
+
+  public recordAccountModelClientError(
+    providerKey: string,
+    accountKey: string,
+    modelKey: string,
+    input: { code?: string; message: string }
+  ): ManagedAccountModelRow | null {
+    const accountModel = this.getAccountModel(providerKey, accountKey, modelKey);
+    if (!accountModel) {
+      return null;
+    }
+    const now = nowIso();
+    this.db.update(managedAccountModelsTable)
+      .set({
+        lastErrorAt: now,
+        lastErrorCode: input.code ?? "request_invalid",
+        lastErrorMessage: input.message
+      })
+      .where(eq(managedAccountModelsTable.id, accountModel.id))
+      .run();
+    return this.db.select().from(managedAccountModelsTable)
+      .where(eq(managedAccountModelsTable.id, accountModel.id))
       .get() ?? null;
   }
 
@@ -1924,6 +2162,28 @@ export class ManagedProviderRepository {
       message: string;
     }
   ): ManagedModelRow | null {
+    return this.applyModelCooldown(providerKey, modelKey, {
+      strike: input.strike,
+      permanent: input.permanent,
+      cooldownUntil: input.cooldownUntil,
+      reason: input.permanent ? "model_unavailable_permanent" : "model_unavailable",
+      code: input.code ?? "provider_invalid_model",
+      message: input.message
+    });
+  }
+
+  public applyModelCooldown(
+    providerKey: string,
+    modelKey: string,
+    input: {
+      strike: number;
+      permanent: boolean;
+      cooldownUntil: string | null;
+      reason: string;
+      code?: string;
+      message: string;
+    }
+  ): ManagedModelRow | null {
     const model = this.getModelByProviderAndKey(providerKey, modelKey);
     if (!model) {
       return null;
@@ -1932,7 +2192,7 @@ export class ManagedProviderRepository {
     this.db.update(managedModelsTable)
       .set({
         runtimeStatus: input.permanent ? "abnormal" : "cooling_down",
-        statusReason: input.permanent ? "model_unavailable_permanent" : "model_unavailable",
+        statusReason: input.reason,
         statusMessage: input.message,
         statusSource: "system",
         statusUpdatedAt: now,
@@ -1940,7 +2200,7 @@ export class ManagedProviderRepository {
         cooldownStrike: input.strike,
         recentErrorCount: model.recentErrorCount + 1,
         lastErrorAt: now,
-        lastErrorCode: input.code ?? "provider_invalid_model",
+        lastErrorCode: input.code ?? "provider_error",
         lastErrorMessage: input.message,
         updatedAt: now
       })
@@ -2075,6 +2335,21 @@ export class ManagedProviderRepository {
           updatedAt: now
         })
         .where(eq(managedModelsTable.id, model.id))
+        .run();
+      this.db.update(managedAccountModelsTable)
+        .set({
+          enabled: true,
+          runtimeStatus: "normal",
+          statusReason: null,
+          statusMessage: null,
+          statusSource: "manual",
+          statusUpdatedAt: now,
+          statusCooldownUntil: null,
+          rateLimitStrike: 0,
+          cooldownStrike: 0,
+          recentErrorCount: 0
+        })
+        .where(eq(managedAccountModelsTable.managedModelId, model.id))
         .run();
     } else {
       this.db.update(managedModelsTable)
