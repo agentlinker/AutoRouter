@@ -133,4 +133,66 @@ describe("ModelCatalog", () => {
       ])
     });
   });
+
+  it("resolves Claude Code 1M context selectors to the base catalog model", () => {
+    const config = loadConfig({
+      override: {
+        providers: {
+          demo: {
+            display_name: "Demo",
+            trust_level: "medium",
+            privacy_level: "normal",
+            usage_trust: "medium",
+            protocol: "anthropic",
+            adapter: "anthropic",
+            base_url: "https://example.com",
+            accounts: [{ id: "main", credential_env: "DEMO_API_KEY" }],
+            models: [
+              {
+                id: "claude-opus-5",
+                model_name: "claude-opus-5",
+                context_window: 1_000_000
+              }
+            ]
+          }
+        }
+      }
+    });
+
+    const catalog = new ModelCatalog(config);
+
+    expect(catalog.resolveRequestTarget("claude-opus-5[1m]")).toMatchObject({
+      mode: "bare_model",
+      requested: "claude-opus-5[1m]",
+      normalized: "auto/claude-opus-5",
+      candidates: [
+        expect.objectContaining({
+          modelId: "demo/claude-opus-5",
+          account: "demo/main"
+        })
+      ]
+    });
+    expect(catalog.resolveRequestTarget("auto/claude-opus-5[1m]")).toMatchObject({
+      mode: "auto_model",
+      requested: "auto/claude-opus-5[1m]",
+      normalized: "auto/claude-opus-5",
+      candidates: [
+        expect.objectContaining({
+          modelId: "demo/claude-opus-5",
+          account: "demo/main"
+        })
+      ]
+    });
+    expect(catalog.resolveRequestTarget("demo/claude-opus-5[1m]")).toMatchObject({
+      mode: "provider_model",
+      requested: "demo/claude-opus-5[1m]",
+      normalized: "demo/claude-opus-5",
+      candidates: [
+        expect.objectContaining({
+          modelId: "demo/claude-opus-5",
+          account: "demo/main"
+        })
+      ]
+    });
+  });
 });

@@ -30,7 +30,9 @@ export function requireGatewayToken(
     return;
   }
 
-  const token = extractBearerToken(request.headers.authorization);
+  const apiKeyHeader = request.headers["x-api-key"];
+  const apiKey = typeof apiKeyHeader === "string" ? apiKeyHeader : null;
+  const token = extractBearerToken(request.headers.authorization) ?? apiKey;
   if (token !== expectedToken) {
     throw new HttpError(401, "unauthorized", "Missing or invalid gateway token");
   }

@@ -4,6 +4,7 @@ import { registerExplainRoute } from "./routes/explain.js";
 import { isHttpError } from "../utils/httpErrors.js";
 import { requireAdminToken, requireGatewayToken } from "./auth.js";
 import { registerChatCompletionsRoute } from "./routes/chatCompletions.js";
+import { registerAnthropicMessagesRoute } from "./routes/anthropicMessages.js";
 import { registerHealthRoute } from "./routes/health.js";
 import { registerModelsRoute } from "./routes/models.js";
 import { registerResponsesRoute } from "./routes/responses.js";
@@ -180,6 +181,7 @@ export async function createServer(
   await registerHealthRoute(fastify, runtimeManager);
   await registerModelsRoute(fastify, runtimeManager);
   await registerChatCompletionsRoute(fastify, runtimeManager, dependencies?.runtimeStatusService);
+  await registerAnthropicMessagesRoute(fastify);
   await registerResponsesRoute(fastify, runtimeManager, dependencies?.runtimeStatusService);
   await registerExplainRoute(fastify, runtimeManager.getSnapshot().traceStore);
 

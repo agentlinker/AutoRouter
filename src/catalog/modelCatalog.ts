@@ -34,6 +34,12 @@ export interface ResolvedRequestTarget {
   candidates: CandidateReference[];
 }
 
+function stripClaudeCodeContextSuffix(modelSelector: string): string {
+  return modelSelector.endsWith("[1m]")
+    ? modelSelector.slice(0, -"[1m]".length)
+    : modelSelector;
+}
+
 export class ModelCatalog {
   private readonly routes: Map<string, ResolvedRoute>;
   private readonly models: Map<string, ResolvedModelDefinition>;
@@ -99,6 +105,26 @@ export class ModelCatalog {
   }
 
   public resolveRequestTarget(modelSelector: string): ResolvedRequestTarget | null {
+    const exactTarget = this.resolveRequestTargetExact(modelSelector);
+    if (exactTarget && exactTarget.candidates.length > 0) {
+      return exactTarget;
+    }
+
+    const compatibleSelector = stripClaudeCodeContextSuffix(modelSelector);
+    if (compatibleSelector !== modelSelector) {
+      const compatibleTarget = this.resolveRequestTargetExact(compatibleSelector);
+      if (compatibleTarget) {
+        return {
+          ...compatibleTarget,
+          requested: modelSelector
+        };
+      }
+    }
+
+    return exactTarget;
+  }
+
+  private resolveRequestTargetExact(modelSelector: string): ResolvedRequestTarget | null {
     const autoScoped = this.resolveAutoScopedModel(modelSelector);
     if (autoScoped) {
       return autoScoped;
