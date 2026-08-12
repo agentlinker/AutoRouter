@@ -163,6 +163,7 @@ export interface ListProviderSummariesResult {
 }
 
 type Db = BetterSQLite3Database<typeof schema>;
+const MANAGED_MODEL_INSERT_BATCH_SIZE = 100;
 type ModelPreservedFields = Pick<
   ManagedModelRow,
   | "enabled"
@@ -365,6 +366,17 @@ export class ManagedProviderRepository {
       discoveredAt: input.now,
       updatedAt: input.now
     };
+  }
+
+  private insertManagedModels(
+    db: Db,
+    rows: Array<ReturnType<ManagedProviderRepository["buildManagedModelInsert"]>>
+  ): void {
+    for (let offset = 0; offset < rows.length; offset += MANAGED_MODEL_INSERT_BATCH_SIZE) {
+      db.insert(managedModelsTable)
+        .values(rows.slice(offset, offset + MANAGED_MODEL_INSERT_BATCH_SIZE))
+        .run();
+    }
   }
 
   private preservedFieldsByModelKey(models: ManagedModelRow[]): Map<string, ModelPreservedFields> {
@@ -906,7 +918,8 @@ export class ManagedProviderRepository {
         discoveredCount += bundle.models.length;
 
         if (bundle.models.length > 0) {
-          tx.insert(managedModelsTable).values(
+          this.insertManagedModels(
+            tx as unknown as Db,
             bundle.models.map((model) =>
               this.buildManagedModelInsert({
                 db: tx as unknown as Db,
@@ -917,7 +930,7 @@ export class ManagedProviderRepository {
                 preserved: this.preservedFieldsByModelKey(existing.models).get(model.modelKey)
               })
             )
-          ).run();
+          );
         }
       }
 
@@ -1052,7 +1065,8 @@ export class ManagedProviderRepository {
         discoveredCount += bundle.models.length;
 
         if (bundle.models.length > 0) {
-          tx.insert(managedModelsTable).values(
+          this.insertManagedModels(
+            tx as unknown as Db,
             bundle.models.map((model) =>
               this.buildManagedModelInsert({
                 db: tx as unknown as Db,
@@ -1062,7 +1076,7 @@ export class ManagedProviderRepository {
                 now
               })
             )
-          ).run();
+          );
         }
       }
 
@@ -1211,7 +1225,8 @@ export class ManagedProviderRepository {
           .run();
 
         if (input.models.length > 0) {
-          tx.insert(managedModelsTable).values(
+          this.insertManagedModels(
+            tx as unknown as Db,
             input.models.map((model) =>
               this.buildManagedModelInsert({
                 db: tx as unknown as Db,
@@ -1222,7 +1237,7 @@ export class ManagedProviderRepository {
                 preserved: preservedByModelKey.get(model.modelKey)
               })
             )
-          ).run();
+          );
         }
       }
     });

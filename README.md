@@ -1,6 +1,6 @@
 # AutoRouter
 
-`AutoRouter` is a local model routing gateway for agent clients. It exposes an OpenAI-compatible API, routes requests across configured providers and accounts, records route traces, and explains routing decisions.
+`AutoRouter` is a local model routing gateway for agent clients. It exposes OpenAI-compatible and Anthropic Messages APIs, routes requests across configured providers and accounts, records route traces, and explains routing decisions.
 
 ## Current MVP
 
@@ -8,10 +8,11 @@ The current implementation includes:
 
 - Local `POST /v1/chat/completions`
 - Local `POST /v1/responses`
+- Local `POST /v1/messages`
 - Local `GET /v1/models`
 - Local `GET /v1/autorouter/health`
 - Local `GET /v1/autorouter/explain/latest`
-- OpenAI-compatible, OpenRouter, and Ollama adapters
+- OpenAI-compatible, Anthropic, OpenRouter, and Ollama adapters
 - Sticky sessions, fallback routing, trace logging, and basic cost estimation
 
 ## Install
@@ -149,6 +150,88 @@ Expected:
 - Streaming Responses requests are proxied as upstream SSE rather than converted from chat completions
 - If every eligible endpoint lacks native Responses support, AutoRouter falls back to a best-effort Chat Completions conversion
 - Function calls and `function_call_output` are preserved on the native path; fallback conversion is only for compatibility
+
+### Claude Code
+
+Claude Code can use AutoRouter through the Anthropic Messages-compatible
+`POST /v1/messages` endpoint.
+
+Ensure the AutoRouter catalog contains the Claude model selected by Claude Code.
+For example, the current Opus 1M selection resolves as:
+
+```text
+opus[1m] -> claude-opus-5[1m] -> auto/claude-opus-5
+```
+
+The underlying logical model must therefore exist as `claude-opus-5` and have
+an appropriate context window, such as `1000000`.
+
+Configure Claude Code for the current shell:
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8811
+export ANTHROPIC_AUTH_TOKEN=dev-token
+```
+
+`ANTHROPIC_AUTH_TOKEN` must match the value of the environment variable named
+by AutoRouter's `server.gateway_token_env`, which defaults to
+`AUTO_ROUTER_TOKEN`.
+
+To persist the configuration for Claude Code, add the equivalent values to
+`~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8811",
+    "ANTHROPIC_AUTH_TOKEN": "dev-token"
+  },
+  "model": "opus[1m]"
+}
+```
+
+Start AutoRouter before starting Claude Code:
+
+```bash
+npm run dev
+```
+
+If AutoRouter is installed as the local LaunchAgent used by this repository,
+rebuild and restart it after code changes:
+
+```bash
+npm run build
+launchctl kickstart -k gui/$(id -u)/com.agentlinker.autorouter
+```
+
+Verify the integration without entering an interactive session:
+
+```bash
+claude -p --model 'opus[1m]' \
+  --output-format json \
+  'Reply with exactly OK.'
+```
+
+Expected:
+
+- The command returns `is_error: false` and `result: "OK"`.
+- Claude Code reports `canonicalModel: "claude-opus-5"`.
+- The 1M selection reports `contextWindow: 1000000`.
+- AutoRouter traces preserve the requested `claude-opus-5[1m]` selector and
+  normalize it to `auto/claude-opus-5`.
+
+The Messages compatibility layer supports:
+
+- Anthropic `system` and message content
+- `tools`, `tool_choice`, `tool_use`, and `tool_result`
+- Non-streaming Anthropic Message responses
+- Anthropic SSE response events
+- Authentication through either `Authorization: Bearer` or `x-api-key`
+
+Current streaming behavior is compatibility-oriented: AutoRouter completes the
+internal routed Chat Completions request before emitting Anthropic SSE events.
+Claude Code and tool calls work, but the first SSE event currently arrives
+after the upstream response completes rather than token by token.
 
 ### Managed Provider Endpoints
 

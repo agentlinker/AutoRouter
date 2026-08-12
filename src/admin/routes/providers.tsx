@@ -1008,7 +1008,10 @@ export function ProviderDetailPage() {
       <ProviderAccountsPanel
         token={token}
         provider={provider}
-        onChanged={() => void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) })}
+        onChanged={() => {
+          void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
+          void queryClient.invalidateQueries({ queryKey: providerQueryKey(token, providerKey) });
+        }}
       />
 
       <div className="panel detail-card">

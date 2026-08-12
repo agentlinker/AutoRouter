@@ -371,4 +371,81 @@ describe("managed provider multi-account", () => {
     expect(secondPage.availableTotal).toBe(0);
     expect(secondPage.items.map((item) => item.provider.providerKey)).toEqual(["alpha"]);
   });
+
+  it("replaces a provider with more models than one SQLite insert can bind", () => {
+    const config = loadConfig({
+      override: {
+        database: { path: join(tempDir, "autorouter.db") },
+        trace: { directory: join(tempDir, "traces"), log_prompts: false },
+        routes: {},
+        providers: {},
+        endpoints: {},
+        accounts: {},
+        models: {},
+        policies: {}
+      }
+    });
+    const db = createDatabaseClient(config.database.path);
+    const repo = new ManagedProviderRepository(db.db);
+    const cipher = new SecretCipher(process.env.AUTO_ROUTER_MASTER_KEY);
+
+    repo.createProviderWithEndpointBundles({
+      provider: {
+        providerKey: "large-catalog",
+        displayName: "Large Catalog",
+        adapterType: "openai_compatible",
+        baseUrl: "https://old.example.com/v1",
+        providerKind: "relay",
+        modelAvailabilityScope: "per_account"
+      },
+      encryptedApiKey: cipher.encrypt("large-key"),
+      endpointBundles: [
+        {
+          endpoint: {
+            endpointKey: "openai",
+            protocol: "openai",
+            adapterType: "openai_compatible",
+            baseUrl: "https://old.example.com/v1"
+          },
+          models: []
+        }
+      ]
+    });
+
+    const models = Array.from({ length: 2_200 }, (_, index) => ({
+      modelKey: `large-catalog/model-${index}`,
+      providerModelId: `model-${index}`,
+      modelName: `model-${index}`,
+      supportsStreaming: true,
+      supportsTools: false,
+      supportsJsonMode: false
+    }));
+
+    const replaced = repo.replaceProviderWithEndpointBundles({
+      providerKey: "large-catalog",
+      provider: {
+        providerKey: "large-catalog",
+        displayName: "Large Catalog",
+        adapterType: "openai_compatible",
+        baseUrl: "https://new.example.com/v1",
+        providerKind: "relay",
+        modelAvailabilityScope: "per_account"
+      },
+      endpointBundles: [
+        {
+          endpoint: {
+            endpointKey: "openai",
+            protocol: "openai",
+            adapterType: "openai_compatible",
+            baseUrl: "https://new.example.com/v1"
+          },
+          models
+        }
+      ]
+    });
+
+    expect(replaced?.provider.baseUrl).toBe("https://new.example.com/v1");
+    expect(replaced?.models).toHaveLength(2_200);
+    expect(replaced?.accountModels[0]?.models).toHaveLength(2_200);
+  });
 });
