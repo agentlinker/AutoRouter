@@ -1,6 +1,20 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
+import { randomUUID } from "node:crypto";
 
+import {
+  executeRoutedRequest,
+  streamRoutedRequest,
+  type RoutedCandidate
+} from "../../routing/executeRoutedRequest.js";
+import { normalizeChatRequest } from "../../routing/normalizeRequest.js";
+import { selectRoute } from "../../routing/routeEngine.js";
+import { StreamUsageTap } from "../../routing/streamUsageTap.js";
+import { sha256 } from "../../utils/hash.js";
 import { HttpError } from "../../utils/httpErrors.js";
+import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
+import type { RuntimeStatusService } from "../../runtime/runtimeStatusService.js";
+import type { TraceAttempt, TraceCandidate } from "../../trace/traceTypes.js";
+import { recordRouteSelectionFailure } from "./routeSelectionFailure.js";
 import type {
   ChatCompletionsRequestBody,
   ChatMessage,
@@ -325,51 +339,348 @@ function writeAnthropicStream(reply: FastifyReply, response: ReturnType<typeof t
   reply.raw.end();
 }
 
-export async function registerAnthropicMessagesRoute(fastify: FastifyInstance) {
+export async function registerAnthropicMessagesRoute(
+  fastify: FastifyInstance,
+  runtimeManager: RuntimeManagerLike,
+  runtimeStatusService?: RuntimeStatusService
+) {
   fastify.post<{ Body: AnthropicMessagesRequestBody }>("/v1/messages", async (request, reply) => {
-    const authorization =
-      request.headers.authorization ??
-      (typeof request.headers["x-api-key"] === "string"
-        ? `Bearer ${request.headers["x-api-key"]}`
-        : undefined);
-    const chatResponse = await fastify.inject({
-      method: "POST",
-      url: "/v1/chat/completions",
-      headers: {
-        ...(authorization ? { authorization } : {}),
-        "content-type": "application/json"
-      },
-      payload: toChatRequest(request.body)
+    const state = runtimeManager.getSnapshot();
+    // Anthropic 请求先转成内部 Chat Completions 形状，再走与 /v1/chat/completions
+    // 相同的路由与执行链路（不再通过 fastify.inject 复用内部 HTTP 路由）。
+    const normalizedRequest = normalizeChatRequest(toChatRequest(request.body));
+    const sessionId =
+      typeof request.headers["x-autorouter-session-id"] === "string"
+        ? request.headers["x-autorouter-session-id"]
+        : null;
+    const privacyLevel =
+      typeof normalizedRequest.metadata.privacy_level === "string"
+        ? normalizedRequest.metadata.privacy_level
+        : state.config.defaults.privacy_level;
+
+    const traceId = randomUUID();
+    const startedAt = Date.now();
+    const promptHash = sha256(JSON.stringify(normalizedRequest.messages));
+    const hasTools = normalizedRequest.tools.length > 0;
+    // 客户端要的是流式，但当前实现先取完整响应再转 Anthropic SSE
+    const clientWantsStream = request.body.stream === true;
+    // 实际执行时是否走了原生 Anthropic 直通（零转换）
+    let nativePassthrough = false;
+
+    let routeDecision;
+    try {
+      routeDecision = selectRoute(
+        state.config,
+        state.modelCatalog,
+        state.priceTable,
+        state.platforms,
+        state.providers,
+        state.endpoints,
+        state.accounts,
+        normalizedRequest.model,
+        hasTools,
+        normalizedRequest.response_format !== undefined,
+        normalizedRequest.context_tokens_est,
+        privacyLevel,
+        sessionId ? state.stickySessions.get(sessionId) : null,
+        state.modelStatuses ?? {},
+        // 优先选 anthropic 协议的 endpoint，命中即可零转换直通
+        "anthropic"
+      );
+    } catch (error) {
+      recordRouteSelectionFailure(runtimeManager, error, {
+        model: normalizedRequest.model,
+        promptHash,
+        stream: clientWantsStream,
+        hasTools,
+        privacyLevel,
+        contextTokensEst: normalizedRequest.context_tokens_est,
+        sessionId,
+        policyHits: ["anthropic_inbound", "route_selection_failed"]
+      });
+      throw error;
+    }
+
+    const nativeMessagesRequest = () => ({
+      ...(request.body as unknown as Record<string, unknown>),
+      model: request.body.model
     });
 
-    const responseBody = chatResponse.json() as OpenAiChatResponse | {
-      error?: {
-        code?: string;
-        message?: string;
-      };
-    };
-    if (chatResponse.statusCode >= 400) {
-      throw new HttpError(
-        chatResponse.statusCode,
-        "error" in responseBody ? responseBody.error?.code ?? "request_error" : "request_error",
-        "error" in responseBody ? responseBody.error?.message ?? "Request failed" : "Request failed"
-      );
-    }
+    /** trace 的公共部分，直通流式与非流式两条路共用 */
+    const buildTraceBase = (
+      selected: RoutedCandidate | null,
+      attempts: TraceAttempt[],
+      fallbacks: TraceCandidate[]
+    ) => ({
+      trace_id: traceId,
+      timestamp: new Date().toISOString(),
+      session_id: sessionId,
+      request: {
+        model: request.body.model,
+        normalized_model: routeDecision.normalizedModel,
+        prompt_hash: promptHash,
+        // trace 记客户端真实意图，而不是内部转换后的 stream=false
+        stream: clientWantsStream,
+        has_tools: hasTools,
+        privacy_level: privacyLevel,
+        context_tokens_est: normalizedRequest.context_tokens_est,
+        requested_context_window: routeDecision.requestedContextWindow ?? null
+      },
+      candidates: routeDecision.candidates.map((candidate) => ({
+        route_id: candidate.routeId,
+        endpoint: candidate.endpoint,
+        platform: candidate.platform,
+        provider: candidate.provider,
+        account: candidate.account,
+        model_id: candidate.modelId,
+        model: candidate.model,
+        score: candidate.score,
+        sticky: candidate.sticky
+      })),
+      filtered: routeDecision.filtered.map((candidate) => ({
+        route_id: candidate.routeId,
+        endpoint: candidate.endpoint,
+        platform: candidate.platform,
+        provider: candidate.provider,
+        account: candidate.account,
+        model_id: candidate.modelId,
+        model: candidate.model,
+        reason: candidate.filteredReason,
+        score: candidate.score,
+        sticky: candidate.sticky
+      })),
+      selected: selected
+        ? {
+            route_id: selected.routeId,
+            endpoint: selected.endpoint.id,
+            platform: selected.platform.id,
+            provider: selected.provider.id,
+            account_hash: sha256(selected.account.id),
+            model_id: selected.modelId,
+            model: selected.model,
+            score: selected.score
+          }
+        : null,
+      attempts,
+      fallbacks,
+      feedback: null
+    });
 
-    const response = toAnthropicResponse(
-      responseBody as OpenAiChatResponse,
-      request.body.model
+    // 客户端要流式且存在原生 anthropic 候选时，直接把上游 SSE 字节透传，
+    // 拿回真实 TTFT（不再等完整响应后再合成 SSE）。
+    const hasNativeStreamCandidate = routeDecision.ordered.some((candidate) =>
+      Boolean(state.adapters.get(candidate.endpoint.adapter as never).streamMessage)
     );
-    const traceId = chatResponse.headers["x-autorouter-trace-id"];
-    const normalizedModel = chatResponse.headers["x-autorouter-normalized-model"];
-    if (traceId) {
-      reply.header("x-autorouter-trace-id", traceId);
-    }
-    if (normalizedModel) {
-      reply.header("x-autorouter-normalized-model", normalizedModel);
+
+    if (clientWantsStream && hasNativeStreamCandidate) {
+      const streamOutcome = {
+        selected: null as RoutedCandidate | null,
+        attempts: [] as TraceAttempt[],
+        fallbacks: [] as TraceCandidate[],
+        lastError: undefined as unknown,
+        sawSupportedCandidate: false,
+        partialFailure: false
+      };
+
+      const stream = streamRoutedRequest(
+        {
+          state,
+          runtimeStatusService,
+          candidates: routeDecision.ordered,
+          supportsCandidate: (_candidate, target) =>
+            Boolean(state.adapters.get(target.endpoint.adapter as never).streamMessage),
+          invokeStream: (_candidate, target) =>
+            state.adapters
+              .get(target.endpoint.adapter as never)
+              .streamMessage!(nativeMessagesRequest(), target),
+          onStreamStart: () => {
+            if (!reply.raw.headersSent) {
+              reply.raw.setHeader("content-type", "text/event-stream; charset=utf-8");
+              reply.raw.setHeader("cache-control", "no-cache");
+              reply.raw.setHeader("connection", "keep-alive");
+              reply.raw.setHeader("x-autorouter-trace-id", traceId);
+              reply.raw.setHeader("x-autorouter-normalized-model", routeDecision.normalizedModel);
+            }
+          }
+        },
+        streamOutcome
+      );
+
+      // 先透传字节，再旁路观测 usage
+      const usageTap = new StreamUsageTap();
+      for await (const event of stream) {
+        reply.raw.write(event.chunk.raw);
+        usageTap.observe(event.chunk.raw);
+      }
+      usageTap.finish();
+
+      const streamUsage = usageTap.result();
+      const streamPriceEstimate = streamOutcome.selected
+        ? state.priceTable.estimateCost(
+            streamOutcome.selected.modelId,
+            streamUsage?.prompt_tokens,
+            streamUsage?.completion_tokens
+          )
+        : null;
+
+      state.traceStore.append({
+        ...buildTraceBase(streamOutcome.selected, streamOutcome.attempts, streamOutcome.fallbacks),
+        policy_hits: [
+          "anthropic_inbound",
+          "anthropic_native",
+          "anthropic_native_stream",
+          ...(routeDecision.sawProtocolMatch ? [] : ["protocol_mismatch"]),
+          ...(sessionId ? ["session_sticky"] : []),
+          ...(streamOutcome.fallbacks.length > 0 ? ["fallback_chain"] : []),
+          ...(streamOutcome.partialFailure ? ["stream_partial_failed"] : []),
+          ...(routeDecision.contextWindowUnknown ? ["context_window_unknown"] : [])
+        ],
+        execution:
+          streamOutcome.selected && !streamOutcome.partialFailure
+            ? {
+                status: streamOutcome.fallbacks.length > 0 ? "success_with_fallback" : "success",
+                latency_ms: Date.now() - startedAt,
+                input_tokens: streamUsage?.prompt_tokens,
+                output_tokens: streamUsage?.completion_tokens,
+                total_tokens: streamUsage?.total_tokens
+              }
+            : {
+                status: "failed",
+                latency_ms: Date.now() - startedAt,
+                error:
+                  streamOutcome.lastError instanceof Error
+                    ? streamOutcome.lastError.message
+                    : "provider_request_failed"
+              },
+        cost: {
+          estimated_usd: streamPriceEstimate?.estimatedUsd ?? null,
+          actual_usd: null,
+          price_confidence: streamPriceEstimate?.confidence ?? "unknown"
+        }
+      });
+
+      if (!streamOutcome.selected) {
+        throw streamOutcome.lastError instanceof Error
+          ? streamOutcome.lastError
+          : new HttpError(503, "all_candidates_failed", "All candidates failed", true);
+      }
+
+      if (sessionId) {
+        state.stickySessions.set(sessionId, {
+          routeId: streamOutcome.selected.routeId,
+          platformId: streamOutcome.selected.platform.id,
+          providerId: streamOutcome.selected.provider.id,
+          endpointId: streamOutcome.selected.endpoint.id,
+          accountId: streamOutcome.selected.account.id,
+          modelId: streamOutcome.selected.modelId
+        });
+      }
+
+      reply.raw.end();
+      return reply;
     }
 
-    if (request.body.stream) {
+    const outcome = await executeRoutedRequest({
+      state,
+      runtimeStatusService,
+      candidates: routeDecision.ordered,
+      // adapter 支持原生 Messages 时零转换直通，否则退化为 Chat Completions 转换。
+      // 直通路径保住 thinking blocks / cache_control / tool_use 等字段。
+      invoke: (_candidate, target) => {
+        const adapter = state.adapters.get(target.endpoint.adapter as never);
+        if (adapter.messageCompletion) {
+          nativePassthrough = true;
+          return adapter.messageCompletion(nativeMessagesRequest(), target);
+        }
+
+        return adapter.chatCompletion(normalizedRequest, target);
+      }
+    });
+
+    const baseTrace = buildTraceBase(outcome.selected, outcome.attempts, outcome.fallbacks);
+
+    // nativePassthrough 在 invoke 里才确定，所以延迟到落 trace 时再取
+    const policyHits = [
+      "anthropic_inbound",
+      // 观测实际走了直通还是转换；protocol_mismatch 表示没有同协议候选可选
+      ...(nativePassthrough ? ["anthropic_native"] : []),
+      ...(routeDecision.sawProtocolMatch ? [] : ["protocol_mismatch"]),
+      ...(sessionId ? ["session_sticky"] : []),
+      ...(outcome.fallbacks.length > 0 ? ["fallback_chain"] : []),
+      ...(routeDecision.contextWindowUnknown ? ["context_window_unknown"] : [])
+    ];
+
+    if (!outcome.response || !outcome.selected) {
+      state.traceStore.append({
+        ...baseTrace,
+        policy_hits: policyHits,
+        execution: {
+          status: "failed",
+          latency_ms: Date.now() - startedAt,
+          error:
+            outcome.lastError instanceof Error
+              ? outcome.lastError.message
+              : "provider_request_failed"
+        },
+        cost: {
+          estimated_usd: null,
+          actual_usd: null,
+          price_confidence: "unknown"
+        }
+      });
+
+      throw outcome.lastError instanceof Error
+        ? outcome.lastError
+        : new HttpError(503, "all_candidates_failed", "All candidates failed", true);
+    }
+
+    const priceEstimate = state.priceTable.estimateCost(
+      outcome.selected.modelId,
+      outcome.response.usage?.prompt_tokens,
+      outcome.response.usage?.completion_tokens
+    );
+
+    if (sessionId) {
+      state.stickySessions.set(sessionId, {
+        routeId: outcome.selected.routeId,
+        platformId: outcome.selected.platform.id,
+        providerId: outcome.selected.provider.id,
+        endpointId: outcome.selected.endpoint.id,
+        accountId: outcome.selected.account.id,
+        modelId: outcome.selected.modelId
+      });
+    }
+
+    state.traceStore.append({
+      ...baseTrace,
+      policy_hits: policyHits,
+      execution: {
+        status: outcome.fallbacks.length > 0 ? "success_with_fallback" : "success",
+        latency_ms: Date.now() - startedAt,
+        input_tokens: outcome.response.usage?.prompt_tokens,
+        output_tokens: outcome.response.usage?.completion_tokens,
+        total_tokens: outcome.response.usage?.total_tokens
+      },
+      cost: {
+        estimated_usd: priceEstimate.estimatedUsd,
+        actual_usd: null,
+        price_confidence: priceEstimate.confidence
+      }
+    });
+
+    reply.header("x-autorouter-trace-id", traceId);
+    reply.header("x-autorouter-normalized-model", routeDecision.normalizedModel);
+
+    // 直通路径：上游本就是 Anthropic 响应，非流式时按字节原样返回
+    if (nativePassthrough && !clientWantsStream && outcome.response.raw !== undefined) {
+      return reply.type("application/json").send(outcome.response.raw);
+    }
+
+    const response = nativePassthrough
+      ? (outcome.response.body as ReturnType<typeof toAnthropicResponse>)
+      : toAnthropicResponse(outcome.response.body as OpenAiChatResponse, request.body.model);
+
+    if (clientWantsStream) {
       writeAnthropicStream(reply, response);
       return reply;
     }

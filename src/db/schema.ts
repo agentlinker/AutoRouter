@@ -203,6 +203,7 @@ export const routeTracesTable = sqliteTable("route_traces", {
   hasTools: integer("has_tools", { mode: "boolean" }).notNull().default(false),
   privacyLevel: text("privacy_level").notNull(),
   contextTokensEst: integer("context_tokens_est").notNull().default(0),
+  requestedContextWindow: integer("requested_context_window"),
   selectedRouteId: text("selected_route_id"),
   selectedEndpoint: text("selected_endpoint"),
   selectedPlatform: text("selected_platform"),

@@ -41,6 +41,8 @@ export interface RouteTrace {
     has_tools: boolean;
     privacy_level: string;
     context_tokens_est: number;
+    /** 调用方通过 selector 后缀显式要求的上下文窗口（如 `[1m]` → 1000000） */
+    requested_context_window?: number | null;
   };
   candidates: TraceCandidate[];
   filtered: TraceCandidate[];

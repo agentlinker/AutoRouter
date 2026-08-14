@@ -1,16 +1,23 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { randomUUID } from "node:crypto";
 
-import { compareRouteCandidateOrder, selectRoute } from "../../routing/routeEngine.js";
+import { selectRoute } from "../../routing/routeEngine.js";
+import {
+  executeRoutedRequest,
+  streamRoutedRequest,
+  type RoutedCandidate
+} from "../../routing/executeRoutedRequest.js";
+import { normalizeChatRequest } from "../../routing/normalizeRequest.js";
+import { StreamUsageTap } from "../../routing/streamUsageTap.js";
+import type { ProviderResponse, RouteTarget } from "../../providers/adapter.js";
+import type { TraceAttempt, TraceCandidate } from "../../trace/traceTypes.js";
 import { estimateResponsesContextTokens as estimateResponsesContextTokensUtil } from "../../utils/contextTokens.js";
 import { recordRouteSelectionFailure } from "./routeSelectionFailure.js";
 import { sha256 } from "../../utils/hash.js";
 import type { ChatCompletionsRequestBody, ChatMessage, ToolDefinition } from "../../routing/types.js";
 import { HttpError } from "../../utils/httpErrors.js";
-import { PROVIDER_AUTH_FAILED_CODE, PROVIDER_AUTH_FAILED_MESSAGE } from "../../utils/providerErrors.js";
 import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
 import type { RuntimeStatusService } from "../../runtime/runtimeStatusService.js";
-import { resolveAccountExecutionGate } from "../../runtime/runtimeStatus.js";
 
 interface ResponsesRequestBody {
   model?: string;
@@ -312,12 +319,18 @@ function responsesUsageToChatUsage(usage: unknown): {
   };
 }
 
+/**
+ * 所有候选都没有原生 responses 支持时的降级路径：转成 Chat Completions 执行，
+ * 再把结果转回 Responses 形状。直接走共享执行层，不再 inject 内部 HTTP 路由。
+ */
 async function fallbackResponsesViaChat(
-  fastify: FastifyInstance,
-  request: { body: ResponsesRequestBody; headers: { authorization?: string } },
+  runtimeManager: RuntimeManagerLike,
+  runtimeStatusService: RuntimeStatusService | undefined,
+  request: { body: ResponsesRequestBody },
   reply: FastifyReply
 ) {
-  const chatPayload: ChatCompletionsRequestBody = {
+  const state = runtimeManager.getSnapshot();
+  const normalizedRequest = normalizeChatRequest({
     model: request.body.model!,
     messages: responsesInputToMessages(request.body.input, request.body.instructions),
     stream: false,
@@ -326,30 +339,155 @@ async function fallbackResponsesViaChat(
     temperature: request.body.temperature,
     max_tokens: request.body.max_output_tokens,
     metadata: request.body.metadata
-  };
-
-  const chatResponse = await fastify.inject({
-    method: "POST",
-    url: "/v1/chat/completions",
-    headers: {
-      authorization: request.headers.authorization ?? ""
-    },
-    payload: chatPayload
   });
 
-  reply.status(chatResponse.statusCode);
-  for (const [key, value] of Object.entries(chatResponse.headers)) {
-    if (key.startsWith("x-autorouter-") && value !== undefined) {
-      reply.header(key, value);
-    }
+  const privacyLevel =
+    typeof normalizedRequest.metadata.privacy_level === "string"
+      ? normalizedRequest.metadata.privacy_level
+      : state.config.defaults.privacy_level;
+  const traceId = randomUUID();
+  const startedAt = Date.now();
+  const promptHash = sha256(JSON.stringify(normalizedRequest.messages));
+
+  let routeDecision;
+  try {
+    routeDecision = selectRoute(
+      state.config,
+      state.modelCatalog,
+      state.priceTable,
+      state.platforms,
+      state.providers,
+      state.endpoints,
+      state.accounts,
+      normalizedRequest.model,
+      normalizedRequest.tools.length > 0,
+      normalizedRequest.response_format !== undefined,
+      normalizedRequest.context_tokens_est,
+      privacyLevel,
+      null,
+      state.modelStatuses ?? {}
+    );
+  } catch (error) {
+    recordRouteSelectionFailure(runtimeManager, error, {
+      model: normalizedRequest.model,
+      promptHash,
+      stream: request.body.stream ?? false,
+      hasTools: normalizedRequest.tools.length > 0,
+      privacyLevel,
+      contextTokensEst: normalizedRequest.context_tokens_est,
+      sessionId: null,
+      policyHits: ["responses_via_chat", "route_selection_failed"]
+    });
+    throw error;
   }
 
-  if (chatResponse.statusCode >= 400) {
-    return JSON.parse(chatResponse.body);
+  const outcome = await executeRoutedRequest({
+    state,
+    runtimeStatusService,
+    candidates: routeDecision.ordered,
+    invoke: (_candidate, target) =>
+      state.adapters.get(target.endpoint.adapter as never).chatCompletion(normalizedRequest, target)
+  });
+
+  const priceEstimate = outcome.selected
+    ? state.priceTable.estimateCost(
+        outcome.selected.modelId,
+        outcome.response?.usage?.prompt_tokens,
+        outcome.response?.usage?.completion_tokens
+      )
+    : null;
+
+  state.traceStore.append({
+    trace_id: traceId,
+    timestamp: new Date().toISOString(),
+    session_id: null,
+    request: {
+      model: request.body.model!,
+      normalized_model: routeDecision.normalizedModel,
+      prompt_hash: promptHash,
+      stream: request.body.stream ?? false,
+      has_tools: normalizedRequest.tools.length > 0,
+      privacy_level: privacyLevel,
+      context_tokens_est: normalizedRequest.context_tokens_est,
+      requested_context_window: routeDecision.requestedContextWindow ?? null
+    },
+    candidates: routeDecision.candidates.map((candidate) => ({
+      route_id: candidate.routeId,
+      endpoint: candidate.endpoint,
+      platform: candidate.platform,
+      provider: candidate.provider,
+      account: candidate.account,
+      model_id: candidate.modelId,
+      model: candidate.model,
+      score: candidate.score,
+      sticky: candidate.sticky
+    })),
+    filtered: routeDecision.filtered.map((candidate) => ({
+      route_id: candidate.routeId,
+      endpoint: candidate.endpoint,
+      platform: candidate.platform,
+      provider: candidate.provider,
+      account: candidate.account,
+      model_id: candidate.modelId,
+      model: candidate.model,
+      reason: candidate.filteredReason,
+      score: candidate.score,
+      sticky: candidate.sticky
+    })),
+    selected: outcome.selected
+      ? {
+          route_id: outcome.selected.routeId,
+          endpoint: outcome.selected.endpoint.id,
+          platform: outcome.selected.platform.id,
+          provider: outcome.selected.provider.id,
+          account_hash: sha256(outcome.selected.account.id),
+          model_id: outcome.selected.modelId,
+          model: outcome.selected.model,
+          score: outcome.selected.score
+        }
+      : null,
+    policy_hits: [
+      "responses_via_chat",
+      ...(outcome.fallbacks.length > 0 ? ["fallback_chain"] : []),
+      ...(routeDecision.contextWindowUnknown ? ["context_window_unknown"] : [])
+    ],
+    execution: outcome.response
+      ? {
+          status: outcome.fallbacks.length > 0 ? "success_with_fallback" : "success",
+          latency_ms: Date.now() - startedAt,
+          input_tokens: outcome.response.usage?.prompt_tokens,
+          output_tokens: outcome.response.usage?.completion_tokens,
+          total_tokens: outcome.response.usage?.total_tokens
+        }
+      : {
+          status: "failed",
+          latency_ms: Date.now() - startedAt,
+          error:
+            outcome.lastError instanceof Error
+              ? outcome.lastError.message
+              : "provider_request_failed"
+        },
+    cost: {
+      estimated_usd: priceEstimate?.estimatedUsd ?? null,
+      actual_usd: null,
+      price_confidence: priceEstimate?.confidence ?? "unknown"
+    },
+    attempts: outcome.attempts,
+    fallbacks: outcome.fallbacks,
+    feedback: null
+  });
+
+  if (!outcome.response) {
+    throw outcome.lastError instanceof Error
+      ? outcome.lastError
+      : new HttpError(503, "all_candidates_failed", "All candidates failed", true);
   }
+
+  reply.header("x-autorouter-trace-id", traceId);
+  reply.header("x-autorouter-normalized-model", routeDecision.normalizedModel);
 
   const responseBody = chatToResponsesBody(
-    JSON.parse(chatResponse.body) as ChatCompletionResponseBody,
+    outcome.response.body as ChatCompletionResponseBody,
     request.body.model!
   );
 
@@ -485,86 +623,19 @@ export async function registerResponsesRoute(
       });
       throw error;
     }
-    const orderedCandidates = routeDecision.candidates
-      .map((candidate, candidateIndex) => {
-        const provider = state.providers.find((item) => item.id === candidate.provider);
-        const endpoint = state.endpoints.find((item) => item.id === candidate.endpoint);
-        const platform = state.platforms.find((item) => item.id === candidate.platform);
-        const account = state.accounts.find((item) => item.id === candidate.account);
-        const model = state.modelCatalog.resolveModel(candidate.modelId);
+    // selectRoute 已按 priority → score → candidateIndex 排好序，且带 runtime 对象引用
+    const orderedCandidates = routeDecision.ordered;
 
-        return {
-          candidateIndex,
-          routeId: candidate.routeId,
-          provider,
-          endpoint,
-          platform,
-          account,
-          modelId: candidate.modelId,
-          model,
-          modelName: candidate.model,
-          score: candidate.score ?? 0,
-          sticky: candidate.sticky ?? false
-        };
-      })
-      .filter(
-        (
-          candidate
-        ): candidate is {
-          routeId: string;
-          provider: NonNullable<(typeof candidate)["provider"]>;
-          endpoint: NonNullable<(typeof candidate)["endpoint"]>;
-          platform: NonNullable<(typeof candidate)["platform"]>;
-          account: NonNullable<(typeof candidate)["account"]>;
-          modelId: string;
-          model: NonNullable<(typeof candidate)["model"]>;
-          modelName: string;
-          score: number;
-          sticky: boolean;
-          candidateIndex: number;
-        } =>
-          Boolean(
-            candidate.provider &&
-              candidate.endpoint &&
-              candidate.platform &&
-              candidate.account &&
-              candidate.model
-          )
-      )
-      .sort(compareRouteCandidateOrder);
+    let attempts: TraceAttempt[] = [];
+    let fallbacks: TraceCandidate[] = [];
 
-    const attempts: Array<{
-      route_id: string;
-      endpoint: string;
-      platform: string;
-      provider: string;
-      account: string;
-      model_id: string;
-      model: string;
-      status: "success" | "failed";
-      error?: string;
-      retryable?: boolean;
-      latency_ms?: number;
-      first_token_ms?: number;
-      score?: number;
-      sticky?: boolean;
-    }> = [];
-    const fallbacks: Array<{
-      route_id: string;
-      endpoint: string;
-      platform: string;
-      provider: string;
-      account: string;
-      model_id: string;
-      model: string;
-      score?: number;
-      sticky?: boolean;
-    }> = [];
-
-    let providerResponse;
-    let selectedCandidate = orderedCandidates[0];
+    let providerResponse: ProviderResponse | null = null;
+    // selected 恒等于实际执行过的候选，不预设为打分最高者
+    let selectedCandidate: RoutedCandidate | null = null;
     let lastError: unknown;
     let sawNativeResponsesAdapter = false;
+    // 流式旁路观测到的 usage（上游未发 usage 时保持 undefined）
+    let streamUsage: ProviderResponse["usage"];
 
     const buildBaseTrace = () => ({
       trace_id: traceId,
@@ -577,7 +648,8 @@ export async function registerResponsesRoute(
         stream: request.body.stream ?? false,
         has_tools: Array.isArray(request.body.tools) && request.body.tools.length > 0,
         privacy_level: privacyLevel,
-        context_tokens_est: estimateResponsesContextTokens(request.body)
+        context_tokens_est: estimateResponsesContextTokens(request.body),
+        requested_context_window: routeDecision.requestedContextWindow ?? null
       },
       candidates: routeDecision.candidates.map((candidate) => ({
         route_id: candidate.routeId,
@@ -610,200 +682,137 @@ export async function registerResponsesRoute(
             provider: selectedCandidate.provider.id,
             account_hash: sha256(selectedCandidate.account.id),
             model_id: selectedCandidate.modelId,
-            model: selectedCandidate.modelName,
+            model: selectedCandidate.model,
             score: selectedCandidate.score
           }
         : null,
-      policy_hits: ["responses_native"],
+      policy_hits: [
+        "responses_native",
+        ...(routeDecision.contextWindowUnknown ? ["context_window_unknown"] : [])
+      ],
       attempts,
       fallbacks,
       feedback: null
     });
 
-    for (const [index, candidate] of orderedCandidates.entries()) {
-      // Auth failures disable the account mid-request；过期冷却只恢复本次 snapshot 的可执行性。
-      const accountGate = resolveAccountExecutionGate({
-        enabled: candidate.account.enabled,
-        available: candidate.account.available,
-        runtimeStatus: candidate.account.runtime_status ?? "normal",
-        statusReason: candidate.account.status_reason,
-        statusMessage: candidate.account.status_message,
-        statusCooldownUntil: candidate.account.status_cooldown_until,
-        disabledReason: candidate.account.disabled_reason,
-        disabledMessage: candidate.account.disabled_message
-      });
-      if (!accountGate.canExecute) {
-        continue;
+    const executionInput = {
+      state,
+      runtimeStatusService,
+      candidates: orderedCandidates,
+      // 只有实现了原生 responses 方法的 adapter 才能直通；其余候选跳过，
+      // 全部跳过时降级为 Chat Completions 转换。
+      supportsCandidate: (_candidate: RoutedCandidate, target: RouteTarget) => {
+        const adapter = state.adapters.get(target.endpoint.adapter as never);
+        return Boolean(request.body.stream ? adapter.streamResponse : adapter.responseCompletion);
       }
-      if (accountGate.recoveredFromExpiredCooldown) {
-        candidate.account.available = true;
-        candidate.account.disabled_reason = undefined;
-        candidate.account.disabled_message = undefined;
-      }
+    };
 
-      const accountConfig = state.config.accounts[candidate.account.id];
-      if (!accountConfig) {
-        lastError = new HttpError(500, "account_not_found", "Configured account missing");
-        continue;
-      }
-
-      const adapter = state.adapters.get(candidate.endpoint.adapter as never);
-      const nativeMethod = request.body.stream ? adapter.streamResponse : adapter.responseCompletion;
-      if (!nativeMethod) {
-        continue;
-      }
-      sawNativeResponsesAdapter = true;
-
-      const credential = state.credentialStore.resolve(candidate.account.id, accountConfig);
-      const target = {
-        platform: candidate.platform,
-        provider: candidate.provider,
-        endpoint: candidate.endpoint,
-        account: candidate.account,
-        modelId: candidate.modelId,
-        model: candidate.model,
-        credential
+    if (request.body.stream) {
+      const outcome = {
+        selected: null as RoutedCandidate | null,
+        attempts: [] as TraceAttempt[],
+        fallbacks: [] as TraceCandidate[],
+        lastError: undefined as unknown,
+        sawSupportedCandidate: false,
+        partialFailure: false
       };
-      const attemptStartedAt = Date.now();
-      let firstTokenMs: number | undefined;
-      let wroteToClient = false;
 
-      try {
-        if (request.body.stream) {
-          if (!reply.raw.headersSent) {
-            reply.raw.setHeader("content-type", "text/event-stream; charset=utf-8");
-            reply.raw.setHeader("cache-control", "no-cache");
-            reply.raw.setHeader("connection", "keep-alive");
-            reply.raw.setHeader("x-autorouter-trace-id", traceId);
-            reply.raw.setHeader("x-autorouter-normalized-model", routeDecision.normalizedModel);
-          }
-
-          for await (const chunk of adapter.streamResponse!({
-            ...(request.body as Record<string, unknown>),
-            model: request.body.model,
-            stream: true
-          }, target)) {
-            if (firstTokenMs === undefined) {
-              firstTokenMs = Date.now() - attemptStartedAt;
+      const stream = streamRoutedRequest(
+        {
+          ...executionInput,
+          invokeStream: (_candidate, target) =>
+            state.adapters.get(target.endpoint.adapter as never).streamResponse!(
+              {
+                ...(request.body as Record<string, unknown>),
+                model: request.body.model!,
+                stream: true
+              },
+              target
+            ),
+          onStreamStart: () => {
+            if (!reply.raw.headersSent) {
+              reply.raw.setHeader("content-type", "text/event-stream; charset=utf-8");
+              reply.raw.setHeader("cache-control", "no-cache");
+              reply.raw.setHeader("connection", "keep-alive");
+              reply.raw.setHeader("x-autorouter-trace-id", traceId);
+              reply.raw.setHeader("x-autorouter-normalized-model", routeDecision.normalizedModel);
             }
-            reply.raw.write(chunk.raw);
-            wroteToClient = true;
           }
-          reply.raw.end();
-          providerResponse = { status: 200, body: null, usage: undefined };
-        } else {
-          providerResponse = await adapter.responseCompletion!({
-            ...(request.body as Record<string, unknown>),
-            model: request.body.model,
-            stream: false
-          }, target);
-          firstTokenMs = Date.now() - attemptStartedAt;
-        }
+        },
+        outcome
+      );
 
-        const latencyMs = Date.now() - attemptStartedAt;
-        attempts.push({
-          route_id: candidate.routeId,
-          endpoint: candidate.endpoint.id,
-          platform: candidate.platform.id,
-          provider: candidate.provider.id,
-          account: candidate.account.id,
-          model_id: candidate.modelId,
-          model: candidate.modelName,
-          status: "success",
-          latency_ms: latencyMs,
-          first_token_ms: firstTokenMs ?? latencyMs,
-          score: candidate.score,
-          sticky: candidate.sticky
-        });
-        selectedCandidate = candidate;
-        runtimeStatusService?.recordSuccess({
-          snapshot: state,
-          providerKey: candidate.provider.id,
-          modelKey:
-            state.modelStatuses?.[candidate.modelId]?.model_key ??
-            candidate.modelId,
-          accountId: candidate.account.id
-        });
-        break;
-      } catch (error) {
-        lastError = error;
-        candidate.endpoint.recent_error_count += 1;
-        candidate.account.recent_error_count += 1;
-        const retryable = error instanceof HttpError && error.retryable;
-
-        runtimeStatusService?.recordFailure({
-          snapshot: state,
-          providerKey: candidate.provider.id,
-          modelKey:
-            state.modelStatuses?.[candidate.modelId]?.model_key ??
-            candidate.modelId,
-          accountId: candidate.account.id,
-          error
-        });
-
-        attempts.push({
-          route_id: candidate.routeId,
-          endpoint: candidate.endpoint.id,
-          platform: candidate.platform.id,
-          provider: candidate.provider.id,
-          account: candidate.account.id,
-          model_id: candidate.modelId,
-          model: candidate.modelName,
-          status: "failed",
-          error: error instanceof Error ? error.message : "provider_responses_failed",
-          retryable,
-          latency_ms: Date.now() - attemptStartedAt,
-          first_token_ms: firstTokenMs,
-          score: candidate.score,
-          sticky: candidate.sticky
-        });
-
-        if (error instanceof HttpError && error.code === PROVIDER_AUTH_FAILED_CODE) {
-          candidate.account.available = false;
-          candidate.account.disabled_reason = PROVIDER_AUTH_FAILED_CODE;
-          candidate.account.disabled_message = error.message || PROVIDER_AUTH_FAILED_MESSAGE;
-        }
-
-        if (request.body.stream && wroteToClient) {
-          selectedCandidate = candidate;
-          state.traceStore.append({
-            ...buildBaseTrace(),
-            policy_hits: ["responses_native", "stream_partial_failed"],
-            execution: {
-              status: "failed",
-              latency_ms: Date.now() - startedAt,
-              error: error instanceof Error ? error.message : "provider_responses_failed"
-            },
-            cost: {
-              estimated_usd: null,
-              actual_usd: null,
-              price_confidence: "unknown"
-            }
-          });
-          reply.raw.end();
-          return reply;
-        }
-
-        // Any upstream failure should fall through to remaining candidates.
-        // retryable only describes same-candidate retry semantics, not cross-candidate fallback.
-        if (index < orderedCandidates.length - 1) {
-          fallbacks.push({
-            route_id: candidate.routeId,
-            endpoint: candidate.endpoint.id,
-            platform: candidate.platform.id,
-            provider: candidate.provider.id,
-            account: candidate.account.id,
-            model_id: candidate.modelId,
-            model: candidate.modelName,
-            score: candidate.score,
-            sticky: candidate.sticky
-          });
-        }
+      // 先透传字节，再旁路观测 usage：顺序保证观测失败不影响响应
+      const usageTap = new StreamUsageTap();
+      for await (const event of stream) {
+        reply.raw.write(event.chunk.raw);
+        usageTap.observe(event.chunk.raw);
       }
+      usageTap.finish();
+      streamUsage = usageTap.result();
+
+      selectedCandidate = outcome.selected;
+      attempts = outcome.attempts;
+      fallbacks = outcome.fallbacks;
+      lastError = outcome.lastError;
+      sawNativeResponsesAdapter = outcome.sawSupportedCandidate;
+
+      if (outcome.partialFailure) {
+        const latencyMs = Date.now() - startedAt;
+        state.traceStore.append({
+          ...buildBaseTrace(),
+          policy_hits: [
+            "responses_native",
+            "stream_partial_failed",
+            ...(routeDecision.contextWindowUnknown ? ["context_window_unknown"] : [])
+          ],
+          execution: {
+            status: "failed",
+            latency_ms: latencyMs,
+            error:
+              outcome.lastError instanceof Error
+                ? outcome.lastError.message
+                : "provider_request_failed"
+          },
+          cost: {
+            estimated_usd: null,
+            actual_usd: null,
+            price_confidence: "unknown"
+          }
+        });
+        reply.raw.end();
+        return reply;
+      }
+
+      if (outcome.selected) {
+        reply.raw.end();
+        // 响应体已按字节透传；usage 来自只读旁路，上游未发时为 undefined
+        providerResponse = { status: 200, body: null, usage: streamUsage };
+      }
+    } else {
+      const outcome = await executeRoutedRequest({
+        ...executionInput,
+        invoke: (_candidate, target) =>
+          state.adapters.get(target.endpoint.adapter as never).responseCompletion!(
+            {
+              ...(request.body as Record<string, unknown>),
+              model: request.body.model!,
+              stream: false
+            },
+            target
+          )
+      });
+
+      selectedCandidate = outcome.selected;
+      attempts = outcome.attempts;
+      fallbacks = outcome.fallbacks;
+      lastError = outcome.lastError;
+      providerResponse = outcome.response;
+      sawNativeResponsesAdapter = outcome.sawSupportedCandidate;
     }
 
     if (!sawNativeResponsesAdapter) {
-      return fallbackResponsesViaChat(fastify, request, reply);
+      return fallbackResponsesViaChat(runtimeManager, runtimeStatusService, request, reply);
     }
 
     const latencyMs = Date.now() - startedAt;
@@ -852,6 +861,12 @@ export async function registerResponsesRoute(
 
     reply.header("x-autorouter-trace-id", traceId);
     reply.header("x-autorouter-normalized-model", routeDecision.normalizedModel);
+
+    // 原生 responses 直通：有原始字节时按字节透传
+    if (providerResponse.raw !== undefined) {
+      return reply.type("application/json").send(providerResponse.raw);
+    }
+
     return providerResponse.body;
   });
 }

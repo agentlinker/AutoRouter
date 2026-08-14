@@ -32,12 +32,46 @@ export interface ResolvedRequestTarget {
   requested: string;
   normalized: string;
   candidates: CandidateReference[];
+  /**
+   * 调用方通过 selector 后缀显式要求的上下文窗口（如 `[1m]` → 1000000）。
+   * 只在实际剥离了后缀后才有值；用于 route 硬过滤，防止基础模型元数据缺失时
+   * 路由到更小上下文的候选。
+   */
+  requestedContextWindow?: number;
 }
 
-function stripClaudeCodeContextSuffix(modelSelector: string): string {
-  return modelSelector.endsWith("[1m]")
-    ? modelSelector.slice(0, -"[1m]".length)
-    : modelSelector;
+/**
+ * Claude Code 的 context selector 后缀，形如 `claude-opus-5[1m]`。
+ * `[1m]` 表示请求 1M token 上下文窗口，是合法的模型选择器后缀而非控制码。
+ * 通用解析 `[数字][k|m]?`，避免未来新增档位时再改这里。
+ */
+const CONTEXT_SUFFIX_PATTERN = /\[(\d+)([km])?\]$/i;
+
+interface ParsedContextSelector {
+  /** 去掉后缀的基础模型选择器 */
+  baseSelector: string;
+  /** 后缀声明的上下文窗口 token 数；无后缀时为 undefined */
+  requestedContextWindow?: number;
+}
+
+function parseContextSelector(modelSelector: string): ParsedContextSelector {
+  const match = CONTEXT_SUFFIX_PATTERN.exec(modelSelector);
+  if (!match) {
+    return { baseSelector: modelSelector };
+  }
+
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { baseSelector: modelSelector };
+  }
+
+  const unit = match[2]?.toLowerCase();
+  const multiplier = unit === "m" ? 1_000_000 : unit === "k" ? 1_000 : 1;
+
+  return {
+    baseSelector: modelSelector.slice(0, match.index),
+    requestedContextWindow: amount * multiplier
+  };
 }
 
 export class ModelCatalog {
@@ -105,18 +139,20 @@ export class ModelCatalog {
   }
 
   public resolveRequestTarget(modelSelector: string): ResolvedRequestTarget | null {
+    // 先按原始 selector 精确匹配：若 provider 真的暴露了带后缀的模型，不应被改写。
     const exactTarget = this.resolveRequestTargetExact(modelSelector);
     if (exactTarget && exactTarget.candidates.length > 0) {
       return exactTarget;
     }
 
-    const compatibleSelector = stripClaudeCodeContextSuffix(modelSelector);
-    if (compatibleSelector !== modelSelector) {
-      const compatibleTarget = this.resolveRequestTargetExact(compatibleSelector);
+    const { baseSelector, requestedContextWindow } = parseContextSelector(modelSelector);
+    if (baseSelector !== modelSelector) {
+      const compatibleTarget = this.resolveRequestTargetExact(baseSelector);
       if (compatibleTarget) {
         return {
           ...compatibleTarget,
-          requested: modelSelector
+          requested: modelSelector,
+          requestedContextWindow
         };
       }
     }

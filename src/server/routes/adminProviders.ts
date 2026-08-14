@@ -119,6 +119,18 @@ const createEndpointBodySchema = z.object({
   api_key: z.string().min(1).optional()
 }).strict();
 
+interface EndpointDiscoveryBundle {
+  endpoint: {
+    endpointKey: string;
+    protocol: "openai" | "anthropic";
+    adapterType: "openai_compatible" | "openrouter" | "anthropic";
+    baseUrl: string;
+    enabled?: boolean;
+  };
+  models: ManagedDiscoveredModelInput[];
+  error?: unknown;
+}
+
 const patchEndpointBodySchema = z.object({
   protocol: protocolSchema.optional(),
   adapter_type: endpointAdapterSchema.optional(),
@@ -294,6 +306,7 @@ async function discoverEndpointBundles(
   return Promise.all(
     input.endpoints.map(async (endpoint) => {
       let models: ManagedDiscoveredModelInput[];
+      let error: unknown;
       try {
         models = await discoverModelsForEndpoint(discoveryService, {
           providerKey: input.providerKey,
@@ -303,7 +316,8 @@ async function discoverEndpointBundles(
           baseUrl: endpoint.base_url,
           apiKey: input.apiKey
         });
-      } catch {
+      } catch (caught) {
+        error = caught;
         models = [];
       }
 
@@ -315,9 +329,36 @@ async function discoverEndpointBundles(
           baseUrl: endpoint.base_url,
           enabled: endpoint.enabled
         },
-        models
+        models,
+        error
       };
     })
+  );
+}
+
+function discoveryErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Provider model discovery failed";
+}
+
+function ensureProviderDiscoveryUsable(endpointBundles: EndpointDiscoveryBundle[]): void {
+  const discoveredCount = endpointBundles.reduce((sum, bundle) => sum + bundle.models.length, 0);
+  if (discoveredCount > 0) {
+    return;
+  }
+
+  const failedBundles = endpointBundles.filter((bundle) => bundle.error !== undefined);
+  if (failedBundles.length === 0) {
+    return;
+  }
+
+  const first = failedBundles[0]!;
+  throw new HttpError(
+    isHttpError(first.error) ? first.error.statusCode : 502,
+    isHttpError(first.error) ? first.error.code : "provider_discovery_failed",
+    `Provider model discovery failed for endpoint ${first.endpoint.endpointKey}: ${
+      discoveryErrorMessage(first.error)
+    }`,
+    isHttpError(first.error) ? first.error.retryable : false
   );
 }
 
@@ -759,6 +800,7 @@ export async function registerAdminProvidersRoutes(
       apiKey: body.api_key,
       endpoints: endpointInputs
     });
+    ensureProviderDiscoveryUsable(endpointBundles);
 
     const details = dependencies.repository.createProviderWithEndpointBundles({
       provider: buildProviderInput({
@@ -849,6 +891,7 @@ export async function registerAdminProvidersRoutes(
           apiKey: credentialForSync,
           endpoints: endpointInputs
         });
+        ensureProviderDiscoveryUsable(endpointBundles);
 
         const updated = dependencies.repository.replaceProviderWithEndpointBundles({
           providerKey: existing.provider.providerKey,

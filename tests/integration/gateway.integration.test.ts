@@ -692,27 +692,17 @@ describe("gateway integration", () => {
         path: "/v1/chat/completions",
         method: "POST"
       })
-      .reply(200, {
-        id: "chatcmpl_success",
-        object: "chat.completion",
-        created: Math.floor(Date.now() / 1000),
-        model: "success-model",
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: "assistant",
-              content: "success"
-            },
-            finish_reason: "stop"
-          }
-        ],
-        usage: {
-          prompt_tokens: 10,
-          completion_tokens: 5,
-          total_tokens: 15
-        }
-      });
+      .reply(
+        200,
+        // 手写原始 JSON：包含超过 2^53 的整数与 AutoRouter 未建模的字段，
+        // 用来验证网关按字节透传而非 JSON 往返
+        '{"id":9007199254740993,"object":"chat.completion",' +
+          '"model":"success-model","choices":[{"index":0,"message":' +
+          '{"role":"assistant","content":"success","reasoning_content":"thought"},' +
+          '"finish_reason":"stop"}],' +
+          '"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}',
+        { headers: { "content-type": "application/json" } }
+      );
 
     const config = loadConfig({
       override: {
@@ -826,6 +816,11 @@ describe("gateway integration", () => {
     expect(response.headers["x-autorouter-trace-id"]).toBeTruthy();
     expect(response.headers["x-autorouter-normalized-model"]).toBe("auto");
 
+    // 字节透传：大整数保持原样（JSON 往返会变成 9007199254740992），
+    // 未建模字段不被丢弃
+    expect(response.body).toContain('"id":9007199254740993');
+    expect(response.body).toContain('"reasoning_content":"thought"');
+
     const explain = await gateway.inject({
       method: "GET",
       url: "/v1/autorouter/explain/latest",
@@ -840,6 +835,10 @@ describe("gateway integration", () => {
     expect(explain.json().selected.platform).toBe("openai");
     expect(explain.json().selected.endpoint).toBe("primary-openai");
 
+    // usage 仍从解析副本记账，字节透传不影响 trace
+    expect(state.traceStore.latest()?.execution.input_tokens).toBe(10);
+    expect(state.traceStore.latest()?.execution.output_tokens).toBe(5);
+
     await gateway.close();
   });
 
@@ -852,7 +851,10 @@ describe("gateway integration", () => {
       })
       .reply(
         200,
-        "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n",
+        // 末尾带 usage 的 chunk，模拟上游响应 stream_options.include_usage
+        "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+          "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":4,\"total_tokens\":13}}\n\n" +
+          "data: [DONE]\n\n",
         {
           headers: {
             "content-type": "text/event-stream"
@@ -964,6 +966,15 @@ describe("gateway integration", () => {
     expect(response.body).toContain("data:");
     expect(response.body).toContain("[DONE]");
     expect(response.headers["x-autorouter-normalized-model"]).toBe("auto");
+
+    // 上游 SSE 字节原样透传，包含末尾那个带 usage 的 chunk
+    expect(response.body).toContain('"usage":{"prompt_tokens":9');
+
+    // 流式 usage 由只读旁路记入 trace（此前流式请求恒为空）
+    const streamTrace = state.traceStore.latest();
+    expect(streamTrace?.execution.input_tokens).toBe(9);
+    expect(streamTrace?.execution.output_tokens).toBe(4);
+    expect(streamTrace?.execution.total_tokens).toBe(13);
 
     await gateway.close();
   });

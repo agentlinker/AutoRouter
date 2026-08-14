@@ -181,7 +181,7 @@ export async function createServer(
   await registerHealthRoute(fastify, runtimeManager);
   await registerModelsRoute(fastify, runtimeManager);
   await registerChatCompletionsRoute(fastify, runtimeManager, dependencies?.runtimeStatusService);
-  await registerAnthropicMessagesRoute(fastify);
+  await registerAnthropicMessagesRoute(fastify, runtimeManager, dependencies?.runtimeStatusService);
   await registerResponsesRoute(fastify, runtimeManager, dependencies?.runtimeStatusService);
   await registerExplainRoute(fastify, runtimeManager.getSnapshot().traceStore);
 

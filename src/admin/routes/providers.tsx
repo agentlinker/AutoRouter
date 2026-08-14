@@ -840,6 +840,31 @@ export function ProviderDetailPage() {
     }
   });
 
+  // 中转站（New API / sub2api 等）的 OpenAI 与 Anthropic 协议共用同一个 base URL，
+  // 只是路径不同，所以可以直接复用现有 endpoint 的地址预填一个 anthropic 入口。
+  const hasAnthropicEndpoint = provider?.endpoints.some(
+    (endpoint) => endpoint.protocol === "anthropic"
+  );
+
+  const prefillAnthropicEndpoint = (baseUrl: string) => {
+    const existingKeys = new Set(provider?.endpoints.map((item) => item.endpoint_key) ?? []);
+    let endpointKey = "anthropic";
+    for (let suffix = 2; existingKeys.has(endpointKey); suffix += 1) {
+      endpointKey = `anthropic-${suffix}`;
+    }
+
+    setEndpointForm({
+      endpoint_key: endpointKey,
+      protocol: "anthropic",
+      base_url: baseUrl,
+      api_key: ""
+    });
+    setEndpointMessage({
+      text: "已按同地址预填 Anthropic 协议入口，确认后点击「添加 Endpoint」",
+      mode: "success"
+    });
+  };
+
   if (isLoading) {
     return <PageLoading />;
   }
@@ -925,12 +950,13 @@ export function ProviderDetailPage() {
           <dt>最近同步</dt>
           <dd>{provider.latest_sync?.status ?? "暂无记录"}</dd>
         </dl>
-        <div className="model-capability-table">
+        <div className="model-capability-table endpoint-table">
           <div className="model-capability-header">
             <span>Endpoint</span>
             <span>协议</span>
             <span>Adapter</span>
             <span>状态</span>
+            <span>操作</span>
           </div>
           {provider.endpoints.map((endpoint) => (
             <div className="model-capability-row" key={endpoint.endpoint_key}>
@@ -941,6 +967,24 @@ export function ProviderDetailPage() {
               <span>{endpoint.protocol}</span>
               <span>{endpoint.adapter_type}</span>
               <span>{endpoint.enabled ? "已启用" : "已停用"}</span>
+              <span>
+                {endpoint.protocol === "openai" && !hasAnthropicEndpoint ? (
+                  <button
+                    className="ghost-action"
+                    type="button"
+                    title={
+                      "同地址添加 Anthropic 协议入口。\n" +
+                      "sub2api、New API 等中转站的 OpenAI 与 Anthropic 协议共用同一个 base URL，" +
+                      "只是路径不同（/chat/completions 与 /messages），因此可直接复用当前地址。\n" +
+                      "官方源（如智谱、小米）两者地址不同，需手动填写 Anthropic 专用地址。"
+                    }
+                    onClick={() => prefillAnthropicEndpoint(endpoint.base_url)}
+                  >
+                    <Plus size={14} />
+                    加 Anthropic 入口
+                  </button>
+                ) : null}
+              </span>
             </div>
           ))}
         </div>

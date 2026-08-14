@@ -603,6 +603,89 @@ describe("admin providers integration", () => {
     await server.close();
   });
 
+  it("rejects provider creation when model discovery fails for every endpoint", async () => {
+    const pool = mockAgent.get("https://discovery-fails.example.com");
+
+    pool
+      .intercept({
+        path: "/v1/models",
+        method: "GET"
+      })
+      .reply(403, {
+        error: { message: "forbidden" }
+      });
+
+    const config = loadConfig({
+      override: {
+        server: {
+          host: "127.0.0.1",
+          port: 8811,
+          request_timeout_ms: 120000,
+          gateway_token_env: "AUTO_ROUTER_TOKEN",
+          admin_token_env: "AUTO_ROUTER_ADMIN_TOKEN"
+        },
+        database: {
+          path: join(tempDir, "autorouter-discovery-fails.db")
+        },
+        trace: {
+          directory: join(tempDir, "traces-discovery-fails"),
+          log_prompts: false
+        },
+        routes: {},
+        providers: {},
+        endpoints: {},
+        accounts: {},
+        models: {},
+        policies: {}
+      }
+    });
+
+    const databaseClient = createDatabaseClient(config.database.path);
+    const repository = new ManagedProviderRepository(databaseClient.db);
+    const routeTraceRepository = new RouteTraceRepository(databaseClient.db);
+    const adapters = new AdapterRegistry();
+    const stickySessions = new StickySessionStore();
+    const traceStore = new TraceStore(routeTraceRepository);
+    const secretCipher = new SecretCipher(process.env.AUTO_ROUTER_MASTER_KEY);
+    const runtimeManager = new RuntimeManager({
+      baseConfig: config,
+      managedProviderRepository: repository,
+      secretCipher,
+      adapters,
+      stickySessions,
+      traceStore,
+      logger: createLogger()
+    });
+    const discoveryService = new ProviderModelDiscoveryService();
+
+    const server = await createServer(runtimeManager, {
+      managedProviderRepository: repository,
+      discoveryService,
+      secretCipher
+    });
+
+    const createResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        provider_key: "discovery-fails",
+        display_name: "Discovery Fails",
+        base_url: "https://discovery-fails.example.com/v1",
+        api_key: "secret"
+      }
+    });
+
+    expect(createResponse.statusCode).toBe(403);
+    expect(createResponse.json().error.code).toBe("provider_discovery_failed");
+    expect(createResponse.json().error.message).toContain("Provider model discovery failed");
+    expect(repository.getProviderDetails("discovery-fails")).toBeNull();
+
+    await server.close();
+  });
+
   it("creates and replaces a provider with multiple endpoints", async () => {
     const pool = mockAgent.get("https://multi.example.com");
 
@@ -1071,6 +1154,120 @@ describe("admin providers integration", () => {
 
     expect(chatResponse.statusCode).toBe(200);
     expect(chatResponse.json().choices[0].message.content).toBe("anthropic create ok");
+
+    await server.close();
+  });
+
+  it("accepts a second endpoint sharing the same base_url with a different protocol", async () => {
+    // New API / sub2api 这类中转站在同一个 base URL 下同时实现两套协议：
+    // /v1/chat/completions 与 /v1/messages。Admin 的「同地址加 Anthropic 入口」
+    // 依赖后端允许 base_url 重复、仅以 endpoint_key 判冲突。
+    const pool = mockAgent.get("https://relay-dual.example.com");
+
+    pool
+      .intercept({ path: "/v1/models", method: "GET" })
+      .reply(200, {
+        data: [{ id: "gpt-relay", type: "model", display_name: "GPT Relay" }]
+      })
+      .times(2);
+
+    const config = loadConfig({
+      override: {
+        server: {
+          host: "127.0.0.1",
+          port: 8811,
+          request_timeout_ms: 120000,
+          gateway_token_env: "AUTO_ROUTER_TOKEN",
+          admin_token_env: "AUTO_ROUTER_ADMIN_TOKEN"
+        },
+        database: { path: join(tempDir, "autorouter-relay-dual.db") },
+        trace: { directory: join(tempDir, "traces-relay-dual"), log_prompts: false },
+        routes: {},
+        providers: {},
+        endpoints: {},
+        accounts: {},
+        models: {},
+        policies: {}
+      }
+    });
+
+    const databaseClient = createDatabaseClient(config.database.path);
+    const repository = new ManagedProviderRepository(databaseClient.db);
+    const traceStore = new TraceStore(new RouteTraceRepository(databaseClient.db));
+    const secretCipher = new SecretCipher(process.env.AUTO_ROUTER_MASTER_KEY);
+    const runtimeManager = new RuntimeManager({
+      baseConfig: config,
+      managedProviderRepository: repository,
+      secretCipher,
+      adapters: new AdapterRegistry(),
+      stickySessions: new StickySessionStore(),
+      traceStore,
+      logger: createLogger()
+    });
+
+    const server = await createServer(runtimeManager, {
+      managedProviderRepository: repository,
+      discoveryService: new ProviderModelDiscoveryService(),
+      secretCipher
+    });
+
+    const createResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers",
+      headers: { authorization: "Bearer admin-token" },
+      payload: {
+        provider_key: "relay-dual",
+        display_name: "Relay Dual",
+        protocol: "openai",
+        base_url: "https://relay-dual.example.com/v1",
+        api_key: "relay-secret"
+      }
+    });
+    expect(createResponse.statusCode).toBe(201);
+
+    // 关键断言：base_url 与 default endpoint 完全相同，只有协议和 key 不同
+    const addAnthropicResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers/relay-dual/endpoints",
+      headers: { authorization: "Bearer admin-token" },
+      payload: {
+        endpoint_key: "anthropic",
+        protocol: "anthropic",
+        adapter_type: "anthropic",
+        base_url: "https://relay-dual.example.com/v1"
+      }
+    });
+
+    expect(addAnthropicResponse.statusCode).toBe(201);
+    expect(addAnthropicResponse.json().endpoints).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          endpoint_key: "default",
+          protocol: "openai",
+          base_url: "https://relay-dual.example.com/v1"
+        }),
+        expect.objectContaining({
+          endpoint_key: "anthropic",
+          protocol: "anthropic",
+          adapter_type: "anthropic",
+          base_url: "https://relay-dual.example.com/v1"
+        })
+      ])
+    );
+
+    // 同 key 才冲突
+    const duplicateResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers/relay-dual/endpoints",
+      headers: { authorization: "Bearer admin-token" },
+      payload: {
+        endpoint_key: "anthropic",
+        protocol: "anthropic",
+        adapter_type: "anthropic",
+        base_url: "https://relay-dual.example.com/v1"
+      }
+    });
+    expect(duplicateResponse.statusCode).toBe(409);
 
     await server.close();
   });

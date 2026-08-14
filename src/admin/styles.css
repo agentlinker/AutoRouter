@@ -917,6 +917,12 @@ button:disabled {
   align-items: center;
 }
 
+/* endpoint 列表多一列「操作」，放同地址添加 Anthropic 入口的按钮 */
+.endpoint-table .model-capability-header,
+.endpoint-table .model-capability-row {
+  grid-template-columns: minmax(200px, 1fr) repeat(3, minmax(86px, 110px)) minmax(150px, auto);
+}
+
 .provider-model-table .model-capability-header,
 .provider-model-table .model-capability-row {
   grid-template-columns:

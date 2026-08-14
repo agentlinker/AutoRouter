@@ -356,9 +356,6 @@ function TraceDetailPanel(props: {
                     </td>
                     <td className="route-outcome-reason">
                       {item.reason ? item.reason : "—"}
-                      {item.status === "failed" && item.retryable !== null ? (
-                        <span className="table-subtext">{item.retryable ? "可回退" : "不可回退"}</span>
-                      ) : null}
                     </td>
                     <td>{item.status === "success" || item.status === "failed" ? formatLatency(item.first_token_ms) : "—"}</td>
                     <td>{item.status === "success" || item.status === "failed" ? formatLatency(item.latency_ms) : "—"}</td>

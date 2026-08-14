@@ -1,6 +1,7 @@
 import type { ModelCatalog } from "../catalog/modelCatalog.js";
 import type { PriceTable } from "../catalog/priceTable.js";
 import type {
+  ModelDefinitionConfig,
   PolicyConfig,
   PolicyThresholdsConfig,
   PolicyWeightsConfig,
@@ -27,7 +28,10 @@ export interface SelectedRoute {
   endpoint: EndpointRuntimeState;
   account: AccountRuntimeState;
   modelId: string;
+  /** 上游模型名（provider model id / model_name） */
   model: string;
+  /** 目录里解析出的完整模型定义，调用方执行时需要它构造 RouteTarget */
+  modelDefinition: ModelDefinitionConfig;
   candidateIndex: number;
 }
 
@@ -124,7 +128,8 @@ function canUseCandidate(
   requiresJson: boolean,
   requestedContextTokens: number,
   privacyLevel: string,
-  modelStatus?: ModelRuntimeStatusState | null
+  modelStatus?: ModelRuntimeStatusState | null,
+  requestedContextWindow?: number
 ): string | null {
   if (modelStatus) {
     const modelReason = modelFilterReason({
@@ -184,6 +189,16 @@ function canUseCandidate(
     return "context_window_exceeded";
   }
 
+  // 调用方通过 selector 后缀（如 `[1m]`）显式要求的窗口：只过滤明确小于要求的候选。
+  // 元数据缺失（undefined）时放过，由 policy_hits 的 context_window_unknown 观测。
+  if (
+    requestedContextWindow !== undefined &&
+    modelContextWindow !== undefined &&
+    modelContextWindow < requestedContextWindow
+  ) {
+    return "requested_context_window_not_supported";
+  }
+
   if ((thresholds.require_tools || hasTools) && !endpoint.capabilities.tools) {
     return "tool_capability_not_supported";
   }
@@ -202,6 +217,16 @@ function canUseCandidate(
   return null;
 }
 
+/**
+ * 入站协议与上游 endpoint 协议一致时的加分。
+ *
+ * 目的是让 `/v1/messages` 优先命中 anthropic endpoint（零转换透传），
+ * 同时保持「偏好」而非硬过滤：没有同协议 endpoint 时仍可用转换路径，
+ * 同协议 endpoint 熔断时仍能 fallback。取值需明显大于常规打分区间
+ * （各项权重之和量级为 1）才能稳定压过成本/健康分的差异。
+ */
+const PROTOCOL_MATCH_BONUS = 50;
+
 function evaluateCandidateScore(
   weights: PolicyWeightsConfig,
   provider: ProviderRuntimeState,
@@ -219,8 +244,11 @@ function evaluateCandidateScore(
     accountId: string;
     modelId: string;
   },
-  priceTable: PriceTable
-): { score: number; sticky: boolean } {
+  priceTable: PriceTable,
+  /** 候选 endpoint 所属 platform 的协议（protocol 定义在 platform 上） */
+  candidateProtocol?: string,
+  preferredProtocol?: string
+): { score: number; sticky: boolean; protocolMatch: boolean } {
   const sticky =
     Boolean(
       stickyRoute &&
@@ -260,6 +288,11 @@ function evaluateCandidateScore(
       ? 0
       : 1 / (1 + costEstimate.estimatedUsd * 100);
 
+  const protocolMatch =
+    preferredProtocol !== undefined &&
+    candidateProtocol !== undefined &&
+    candidateProtocol === preferredProtocol;
+
   const score =
     weights.health * healthScore +
     weights.trust * trustScore +
@@ -269,11 +302,13 @@ function evaluateCandidateScore(
     weights.tools * toolsScore +
     weights.sticky * stickyScore -
     weights.error_penalty * recentErrorPenalty -
-    weights.quota_penalty * quotaPressurePenalty;
+    weights.quota_penalty * quotaPressurePenalty +
+    (protocolMatch ? PROTOCOL_MATCH_BONUS : 0);
 
   return {
     score,
-    sticky
+    sticky,
+    protocolMatch
   };
 }
 
@@ -291,13 +326,32 @@ export function selectRoute(
   requestedContextTokens: number,
   privacyLevel: string,
   stickyRoute?: StickyRoute | null,
-  modelStatuses: Record<string, ModelRuntimeStatusState> = {}
+  modelStatuses: Record<string, ModelRuntimeStatusState> = {},
+  /**
+   * 入站协议偏好：与候选 endpoint 协议一致时加分，让同协议候选优先被选中
+   * （零转换透传）。不做硬过滤，没有同协议候选时仍走转换路径。
+   */
+  preferredProtocol?: string
 ): {
   selected: SelectedRoute;
+  /**
+   * 已按 provider priority → score → candidateIndex 排好序的完整候选列表，
+   * 字段是 runtime 对象引用。调用方直接按此顺序做 fallback，无需再排序或反查。
+   */
+  ordered: Array<SelectedRoute & { score: number; sticky: boolean }>;
   requestedModel: string;
   normalizedModel: string;
   candidates: CandidateEvaluation[];
   filtered: CandidateEvaluation[];
+  /** selector 后缀显式要求的上下文窗口，无后缀时为 undefined */
+  requestedContextWindow?: number;
+  /** 命中候选中存在元数据缺失（context_window 未知）的情况，供 policy_hits 观测 */
+  contextWindowUnknown: boolean;
+  /**
+   * 是否存在与入站协议一致的候选。false 表示只能走协议转换路径，
+   * 供 policy_hits 打 protocol_mismatch 观测。
+   */
+  sawProtocolMatch: boolean;
 } {
   const resolvedTarget = modelCatalog.resolveRequestTarget(routeId);
   if (!resolvedTarget) {
@@ -339,7 +393,9 @@ export function selectRoute(
 
   const evaluations: CandidateEvaluation[] = [];
   const filtered: CandidateEvaluation[] = [];
-  const passed: Array<SelectedRoute & { score: number }> = [];
+  const passed: Array<SelectedRoute & { score: number; sticky: boolean }> = [];
+  let contextWindowUnknown = false;
+  let sawProtocolMatch = false;
   const effectiveRouteId =
     resolvedTarget.mode === "route_alias" ? resolvedTarget.requested : config.defaults.model;
   const policy = resolvePolicy(config, effectiveRouteId);
@@ -389,7 +445,8 @@ export function selectRoute(
       requiresJson,
       requestedContextTokens,
       privacyLevel,
-      modelStatus
+      modelStatus,
+      resolvedTarget.requestedContextWindow
     );
     if (filteredReason) {
       filtered.push({
@@ -405,7 +462,7 @@ export function selectRoute(
       continue;
     }
 
-    const { score, sticky } = evaluateCandidateScore(
+    const { score, sticky, protocolMatch } = evaluateCandidateScore(
       weights,
       provider,
       endpoint,
@@ -422,8 +479,22 @@ export function selectRoute(
         accountId: account.id,
         modelId: candidate.modelId
       },
-      priceTable
+      priceTable,
+      platform.protocol,
+      preferredProtocol
     );
+
+    if (protocolMatch) {
+      sawProtocolMatch = true;
+    }
+
+    // 显式要求了窗口，但候选元数据缺失：放过但记下来，供 policy_hits 观测。
+    if (
+      resolvedTarget.requestedContextWindow !== undefined &&
+      modelDefinition.context_window === undefined
+    ) {
+      contextWindowUnknown = true;
+    }
 
     evaluations.push({
       routeId: candidate.routeId,
@@ -446,8 +517,10 @@ export function selectRoute(
       account,
       modelId: candidate.modelId,
       model: candidate.model,
+      modelDefinition,
       candidateIndex: index,
-      score
+      score,
+      sticky
     });
   }
 
@@ -486,9 +559,13 @@ export function selectRoute(
 
   return {
     selected: passed[0],
+    ordered: passed,
     requestedModel: resolvedTarget.requested,
     normalizedModel: resolvedTarget.normalized,
     candidates: evaluations,
-    filtered
+    filtered,
+    requestedContextWindow: resolvedTarget.requestedContextWindow,
+    contextWindowUnknown,
+    sawProtocolMatch
   };
 }

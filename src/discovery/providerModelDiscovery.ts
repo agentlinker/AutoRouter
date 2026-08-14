@@ -44,6 +44,19 @@ function inferSupportsTools(raw: Record<string, unknown>, modelId: string): bool
   return !isLikelyNonToolModel(modelId);
 }
 
+function extractModelData(body: unknown): unknown[] {
+  if (typeof body === "object" && body !== null && "data" in body && Array.isArray(body.data)) {
+    return body.data;
+  }
+
+  throw new HttpError(
+    502,
+    "provider_discovery_invalid_response",
+    "Provider model discovery response must contain a data array",
+    false
+  );
+}
+
 export class ProviderModelDiscoveryService {
   public async listOpenAiCompatibleModels(input: {
     providerKey: string;
@@ -77,9 +90,7 @@ export class ProviderModelDiscoveryService {
       );
     }
 
-    const data = typeof body === "object" && body !== null && "data" in body && Array.isArray(body.data)
-      ? body.data
-      : [];
+    const data = extractModelData(body);
 
     const discoveredModels: DiscoveredModel[] = [];
 
@@ -150,9 +161,7 @@ export class ProviderModelDiscoveryService {
       );
     }
 
-    const data = typeof body === "object" && body !== null && "data" in body && Array.isArray(body.data)
-      ? body.data
-      : [];
+    const data = extractModelData(body);
 
     return data.flatMap((item): DiscoveredModel[] => {
       if (typeof item !== "object" || item === null) {

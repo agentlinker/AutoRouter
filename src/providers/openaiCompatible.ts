@@ -24,6 +24,17 @@ function buildHeaders(apiKey: string | undefined): Record<string, string> {
   return headers;
 }
 
+/**
+ * 解析上游响应用于只读记账；原始文本另行透传，所以解析失败不应中断请求。
+ */
+export function parseJsonSafely(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 export class OpenAiCompatibleAdapter implements ProviderAdapter {
   public readonly type = "openai_compatible";
 
@@ -72,7 +83,8 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
       );
     }
 
-    const body = await response.body.json();
+    const raw = await response.body.text();
+    const body = parseJsonSafely(raw);
 
     if (response.statusCode >= 400) {
       const message =
@@ -112,6 +124,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     return {
       status: response.statusCode,
       body,
+      raw,
       usage:
         typeof body === "object" && body !== null && "usage" in body
           ? (body.usage as ProviderResponse["usage"])
@@ -123,19 +136,35 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     requestBody: NormalizedChatRequest,
     target: RouteTarget
   ): AsyncIterable<ProviderStreamChunk> {
-    const upstreamPayload = {
+    const basePayload = {
       ...requestBody,
       model: target.model.model_name,
       stream: true
     };
 
-    let response;
-    try {
-      response = await request(`${target.endpoint.base_url}/chat/completions`, {
+    const sendStream = (includeUsage: boolean) =>
+      request(`${target.endpoint.base_url}/chat/completions`, {
         method: "POST",
         headers: buildHeaders(target.credential),
-        body: JSON.stringify(upstreamPayload)
+        body: JSON.stringify(
+          // 请求上游在流末尾带 usage，否则流式请求记不到 token 数
+          includeUsage
+            ? { ...basePayload, stream_options: { include_usage: true } }
+            : basePayload
+        )
       });
+
+    let response;
+    try {
+      response = await sendStream(true);
+
+      // 部分 OpenAI 兼容中转站不认 stream_options，会直接 400。
+      // 这种情况去掉该字段在同一候选上重试一次：宁可丢 usage，
+      // 也不能因为记账把原本可用的上游变成失败。
+      if (response.statusCode === 400) {
+        response.body.destroy();
+        response = await sendStream(false);
+      }
     } catch (error) {
       throw new HttpError(
         503,
@@ -196,7 +225,8 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
       );
     }
 
-    const body = await response.body.json();
+    const raw = await response.body.text();
+    const body = parseJsonSafely(raw);
     if (response.statusCode >= 400) {
       const message =
         typeof body === "object" &&
@@ -227,6 +257,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     return {
       status: response.statusCode,
       body,
+      raw,
       usage:
         typeof body === "object" && body !== null && "usage" in body
           ? (body.usage as ProviderResponse["usage"])

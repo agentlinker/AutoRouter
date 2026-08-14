@@ -605,4 +605,105 @@ describe("selectRoute", () => {
     vi.unstubAllEnvs();
   });
 
+  it("filters candidates whose context window is smaller than the requested selector window", () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test");
+
+    // 目录里的模型只有 200k，但调用方通过 `[1m]` 显式要求 1M
+    const config = loadConfig({ override: buildBaseConfig() });
+    const registry = buildProviderRegistry(config);
+    const catalog = new ModelCatalog(config);
+
+    try {
+      selectRoute(
+        config,
+        catalog,
+        new PriceTable(config),
+        registry.platforms,
+        registry.providers,
+        registry.endpoints,
+        registry.accounts,
+        "anthropic/claude-sonnet-4[1m]",
+        false,
+        false,
+        10,
+        "normal"
+      );
+      throw new Error("expected selectRoute to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(HttpError);
+      const httpError = error as HttpError;
+      expect(httpError.statusCode).toBe(503);
+      expect(httpError.code).toBe("endpoint_unavailable");
+      const filtered = httpError.details?.filtered as Array<{ reason?: string }>;
+      expect(filtered[0]?.reason).toBe("requested_context_window_not_supported");
+    }
+
+    vi.unstubAllEnvs();
+  });
+
+  it("keeps candidates with unknown context window and flags them for observation", () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test");
+
+    // context_window 缺失（discovery 未取到元数据）时走宽松策略：放过但打标记
+    const override = buildBaseConfig();
+    delete (override.models["sonnet-via-openrouter"] as { context_window?: number })
+      .context_window;
+
+    const config = loadConfig({ override });
+    const registry = buildProviderRegistry(config);
+    const catalog = new ModelCatalog(config);
+
+    const route = selectRoute(
+      config,
+      catalog,
+      new PriceTable(config),
+      registry.platforms,
+      registry.providers,
+      registry.endpoints,
+      registry.accounts,
+      "anthropic/claude-sonnet-4[1m]",
+      false,
+      false,
+      10,
+      "normal"
+    );
+
+    expect(route.selected.modelId).toBe("sonnet-via-openrouter");
+    expect(route.requestedContextWindow).toBe(1_000_000);
+    expect(route.contextWindowUnknown).toBe(true);
+
+    vi.unstubAllEnvs();
+  });
+
+  it("does not flag context window observation when no selector suffix is used", () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test");
+
+    const override = buildBaseConfig();
+    delete (override.models["sonnet-via-openrouter"] as { context_window?: number })
+      .context_window;
+
+    const config = loadConfig({ override });
+    const registry = buildProviderRegistry(config);
+    const catalog = new ModelCatalog(config);
+
+    const route = selectRoute(
+      config,
+      catalog,
+      new PriceTable(config),
+      registry.platforms,
+      registry.providers,
+      registry.endpoints,
+      registry.accounts,
+      "auto",
+      false,
+      false,
+      10,
+      "normal"
+    );
+
+    expect(route.requestedContextWindow).toBeUndefined();
+    expect(route.contextWindowUnknown).toBe(false);
+
+    vi.unstubAllEnvs();
+  });
 });

@@ -30,7 +30,8 @@ function rowToTrace(row: RouteTraceRow): RouteTrace {
       stream: row.stream,
       has_tools: row.hasTools,
       privacy_level: row.privacyLevel,
-      context_tokens_est: row.contextTokensEst
+      context_tokens_est: row.contextTokensEst,
+      requested_context_window: row.requestedContextWindow
     },
     candidates: parseJson(row.candidatesJson),
     filtered: parseJson(row.filteredJson),
@@ -127,6 +128,7 @@ export class RouteTraceRepository {
       hasTools: trace.request.has_tools,
       privacyLevel: trace.request.privacy_level,
       contextTokensEst: trace.request.context_tokens_est,
+      requestedContextWindow: trace.request.requested_context_window ?? null,
       selectedRouteId: trace.selected?.route_id ?? null,
       selectedEndpoint: trace.selected?.endpoint ?? null,
       selectedPlatform: trace.selected?.platform ?? null,

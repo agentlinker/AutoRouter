@@ -6,10 +6,12 @@ import { HttpError } from "../utils/httpErrors.js";
 import type {
   HealthResult,
   ProviderAdapter,
+  ProviderMessagesRequest,
   ProviderResponse,
   ProviderStreamChunk,
   RouteTarget
 } from "./adapter.js";
+import { parseJsonSafely } from "./openaiCompatible.js";
 
 function buildHeaders(apiKey: string | undefined): Record<string, string> {
   const headers: Record<string, string> = {
@@ -47,6 +49,67 @@ function toAnthropicRequest(requestBody: NormalizedChatRequest, target: RouteTar
     stream: requestBody.stream,
     max_tokens: requestBody.max_tokens ?? 1024,
     temperature: requestBody.temperature
+  };
+}
+
+/**
+ * Anthropic 错误体 → HttpError，分类与 chatCompletion 路径保持一致。
+ */
+function toAnthropicHttpError(statusCode: number, body: unknown): HttpError {
+  const record = (body ?? {}) as Record<string, unknown>;
+  const message =
+    typeof record.error === "object" && record.error !== null && "message" in record.error
+      ? String((record.error as { message?: unknown }).message)
+      : `Anthropic request failed with status ${statusCode}`;
+
+  if (statusCode === 401 || statusCode === 403) {
+    return new HttpError(statusCode, PROVIDER_AUTH_FAILED_CODE, message, false);
+  }
+  if (statusCode === 404) {
+    return new HttpError(statusCode, "provider_invalid_model", message, true);
+  }
+  if (statusCode === 408) {
+    return new HttpError(statusCode, "provider_timeout", message, true);
+  }
+  if (statusCode === 429) {
+    return new HttpError(statusCode, "provider_rate_limited", message, true);
+  }
+  if (statusCode >= 500) {
+    return new HttpError(statusCode, "provider_server_error", message, true);
+  }
+  return new HttpError(statusCode, "request_invalid", message, false);
+}
+
+/**
+ * 只读提取 Anthropic usage 用于记账，不重建响应。
+ */
+function extractAnthropicUsage(body: unknown): ProviderResponse["usage"] {
+  if (!body || typeof body !== "object") {
+    return undefined;
+  }
+
+  const usage = (body as { usage?: unknown }).usage;
+  if (!usage || typeof usage !== "object") {
+    return undefined;
+  }
+
+  const record = usage as Record<string, unknown>;
+  const inputTokens =
+    typeof record.input_tokens === "number" ? record.input_tokens : undefined;
+  const outputTokens =
+    typeof record.output_tokens === "number" ? record.output_tokens : undefined;
+
+  if (inputTokens === undefined && outputTokens === undefined) {
+    return undefined;
+  }
+
+  return {
+    prompt_tokens: inputTokens,
+    completion_tokens: outputTokens,
+    total_tokens:
+      inputTokens !== undefined && outputTokens !== undefined
+        ? inputTokens + outputTokens
+        : undefined
   };
 }
 
@@ -213,6 +276,98 @@ export class AnthropicAdapter implements ProviderAdapter {
         "provider_error",
         `Anthropic streaming request failed with status ${response.statusCode}`,
         response.statusCode >= 500 || response.statusCode === 429
+      );
+    }
+
+    for await (const chunk of response.body) {
+      yield {
+        raw: Buffer.from(chunk).toString("utf8")
+      };
+    }
+  }
+
+  /**
+   * 原生 Anthropic Messages 直通：请求体只替换 model，响应按原始字节返回。
+   * 零协议转换，因此 thinking blocks、cache_control、tool_use、server_tool_use
+   * 等 Anthropic 独有字段全部保真。
+   */
+  public async messageCompletion(
+    requestBody: ProviderMessagesRequest,
+    target: RouteTarget
+  ): Promise<ProviderResponse> {
+    let response;
+    try {
+      response = await request(`${target.endpoint.base_url}/messages`, {
+        method: "POST",
+        headers: buildHeaders(target.credential),
+        body: JSON.stringify({
+          ...requestBody,
+          model: target.model.model_name,
+          stream: false
+        })
+      });
+    } catch (error) {
+      throw new HttpError(
+        503,
+        "provider_unreachable",
+        error instanceof Error ? error.message : "provider unreachable",
+        true
+      );
+    }
+
+    const raw = await response.body.text();
+    const body = parseJsonSafely(raw);
+    if (response.statusCode >= 400) {
+      throw toAnthropicHttpError(response.statusCode, body);
+    }
+
+    return {
+      status: response.statusCode,
+      body,
+      raw,
+      usage: extractAnthropicUsage(body)
+    };
+  }
+
+  public async *streamMessage(
+    requestBody: ProviderMessagesRequest,
+    target: RouteTarget
+  ): AsyncIterable<ProviderStreamChunk> {
+    let response;
+    try {
+      response = await request(`${target.endpoint.base_url}/messages`, {
+        method: "POST",
+        headers: buildHeaders(target.credential),
+        body: JSON.stringify({
+          ...requestBody,
+          model: target.model.model_name,
+          stream: true
+        })
+      });
+    } catch (error) {
+      throw new HttpError(
+        503,
+        "provider_unreachable",
+        error instanceof Error ? error.message : "provider unreachable",
+        true
+      );
+    }
+
+    if (response.statusCode >= 400) {
+      if (response.statusCode === 401 || response.statusCode === 403) {
+        throw new HttpError(
+          response.statusCode,
+          PROVIDER_AUTH_FAILED_CODE,
+          `Anthropic streaming request failed with status ${response.statusCode}`,
+          false
+        );
+      }
+
+      throw new HttpError(
+        response.statusCode,
+        response.statusCode === 429 ? "provider_rate_limited" : "provider_error",
+        `Anthropic streaming request failed with status ${response.statusCode}`,
+        response.statusCode >= 500 || response.statusCode === 429 || response.statusCode === 408
       );
     }
 

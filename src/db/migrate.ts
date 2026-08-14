@@ -249,7 +249,8 @@ export function runMigrations(sqlite: Database.Database) {
     { name: "feedback_at", sql: "ALTER TABLE route_traces ADD COLUMN feedback_at TEXT;" },
     { name: "training_split", sql: "ALTER TABLE route_traces ADD COLUMN training_split TEXT;" },
     { name: "tags_json", sql: "ALTER TABLE route_traces ADD COLUMN tags_json TEXT;" },
-    { name: "attempts_json", sql: "ALTER TABLE route_traces ADD COLUMN attempts_json TEXT NOT NULL DEFAULT '[]';" }
+    { name: "attempts_json", sql: "ALTER TABLE route_traces ADD COLUMN attempts_json TEXT NOT NULL DEFAULT '[]';" },
+    { name: "requested_context_window", sql: "ALTER TABLE route_traces ADD COLUMN requested_context_window INTEGER;" }
   ];
 
   for (const definition of routeTraceColumnDefinitions) {

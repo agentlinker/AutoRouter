@@ -7,7 +7,7 @@ import type {
   ProviderStreamChunk,
   RouteTarget
 } from "./adapter.js";
-import { OpenAiCompatibleAdapter } from "./openaiCompatible.js";
+import { OpenAiCompatibleAdapter, parseJsonSafely } from "./openaiCompatible.js";
 import type { NormalizedChatRequest } from "../routing/types.js";
 import { HttpError } from "../utils/httpErrors.js";
 
@@ -54,7 +54,8 @@ export class OpenRouterAdapter implements ProviderAdapter {
       );
     }
 
-    const body = await response.body.json();
+    const raw = await response.body.text();
+    const body = parseJsonSafely(raw);
     if (response.statusCode >= 400) {
       throw new HttpError(
         response.statusCode,
@@ -67,6 +68,7 @@ export class OpenRouterAdapter implements ProviderAdapter {
     return {
       status: response.statusCode,
       body,
+      raw,
       usage:
         typeof body === "object" && body !== null && "usage" in body
           ? (body.usage as ProviderResponse["usage"])

@@ -195,4 +195,46 @@ describe("ModelCatalog", () => {
       ]
     });
   });
+
+  it("exposes the requested context window parsed from the selector suffix", () => {
+    const config = loadConfig({
+      override: {
+        providers: {
+          demo: {
+            display_name: "Demo",
+            trust_level: "medium",
+            privacy_level: "normal",
+            usage_trust: "medium",
+            protocol: "anthropic",
+            adapter: "anthropic",
+            base_url: "https://example.com",
+            accounts: [{ id: "main", credential_env: "DEMO_API_KEY" }],
+            models: [
+              {
+                id: "claude-opus-5",
+                model_name: "claude-opus-5",
+                context_window: 1_000_000
+              }
+            ]
+          }
+        }
+      }
+    });
+
+    const catalog = new ModelCatalog(config);
+
+    // `[1m]` → 1000000，`[200k]` → 200000，裸数字按 token 计
+    expect(catalog.resolveRequestTarget("claude-opus-5[1m]")?.requestedContextWindow).toBe(
+      1_000_000
+    );
+    expect(catalog.resolveRequestTarget("auto/claude-opus-5[1M]")?.requestedContextWindow).toBe(
+      1_000_000
+    );
+    expect(catalog.resolveRequestTarget("demo/claude-opus-5[1m]")?.requestedContextWindow).toBe(
+      1_000_000
+    );
+
+    // 无后缀时不带该字段，避免污染既有链路
+    expect(catalog.resolveRequestTarget("claude-opus-5")?.requestedContextWindow).toBeUndefined();
+  });
 });
