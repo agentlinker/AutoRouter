@@ -156,7 +156,8 @@ h2 {
 .console-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 264px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-w, 264px) minmax(0, 1fr);
+  transition: grid-template-columns 200ms ease;
 }
 
 .sidebar {
@@ -188,6 +189,41 @@ h2 {
   margin-top: 3px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.sidebar-brand-text {
+  min-width: 0;
+}
+
+.sidebar-footer {
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.sidebar-toggle {
+  width: 100%;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 0 11px;
+  background: rgba(15, 23, 42, 0.66);
+  color: #a8b3c7;
+  cursor: pointer;
+}
+
+.sidebar-toggle:hover {
+  border-color: var(--line-strong);
+  background: rgba(14, 165, 233, 0.1);
+  color: #dbeafe;
+}
+
+/* 与 .switch-control 的焦点环保持一致 */
+.sidebar-toggle:focus-visible {
+  outline: 2px solid rgba(125, 211, 252, 0.78);
+  outline-offset: 2px;
 }
 
 .side-nav {
@@ -1344,6 +1380,82 @@ button:disabled {
 
 .settings-row {
   display: contents;
+}
+
+/* 收起态只在桌面布局生效：≤1040px 时侧边栏已变成顶部导航，另有一套规则 */
+@media (min-width: 1041px) {
+  .console-shell.sidebar-collapsed {
+    --sidebar-w: 68px;
+  }
+
+  .sidebar-collapsed .sidebar {
+    padding: 20px 10px;
+    justify-items: center;
+  }
+
+  .sidebar-collapsed .sidebar-brand {
+    padding: 0 0 14px;
+    justify-content: center;
+  }
+
+  /* 68px 宽度放不下品牌文字，直接移除而不是淡出，避免挤出换行 */
+  .sidebar-collapsed .sidebar-brand-text {
+    display: none;
+  }
+
+  .sidebar-collapsed .brand-mark {
+    width: 40px;
+    height: 40px;
+  }
+
+  .sidebar-collapsed .side-nav {
+    width: 100%;
+    justify-items: center;
+  }
+
+  .sidebar-collapsed .nav-item {
+    width: 42px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .sidebar-collapsed .nav-item span {
+    display: none;
+  }
+
+  /* 展开态是横向渐变，压到 42px 方块里会显得偏斜，收起态换成均匀底色 */
+  .sidebar-collapsed .nav-item.active {
+    background: rgba(56, 189, 248, 0.16);
+  }
+
+  .sidebar-collapsed .sidebar-footer {
+    width: 100%;
+    display: grid;
+    justify-items: center;
+  }
+
+  .sidebar-collapsed .sidebar-toggle {
+    width: 42px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .sidebar-collapsed .sidebar-toggle span {
+    display: none;
+  }
+}
+
+/* 窄屏用顶部导航，收起按钮无意义 */
+@media (max-width: 1040px) {
+  .sidebar-footer {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .console-shell {
+    transition: none;
+  }
 }
 
 @media (max-width: 1040px) {

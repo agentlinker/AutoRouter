@@ -56,6 +56,8 @@ import {
   type UpdateProviderPayload
 } from "../api/providers.js";
 import { AppDialog } from "../components/Dialog.js";
+import { Sidebar } from "../components/Sidebar.js";
+import { readSidebarCollapsed, writeSidebarCollapsed } from "../utils/sidebarCollapse.js";
 
 export const providerTokenStorageKey = "autorouter_admin_token";
 
@@ -325,7 +327,7 @@ const providerSortOptions: Array<{ value: ProviderSortBy; label: string }> = [
   { value: "created_at", label: "添加时间" }
 ];
 
-const navItems = [
+export const navItems = [
   {
     label: "Providers",
     icon: Network,
@@ -387,6 +389,8 @@ const navItems = [
 export function AdminRoot() {
   const [tokenInput, setTokenInput] = useState(getStoredToken);
   const [authError, setAuthError] = useState<string | null>(null);
+  // 惰性初始化：localStorage 只在首次挂载时读一次
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
   const { token, saveToken, clearToken } = useAdminToken();
   const queryClient = useQueryClient();
   const providersQuery = useProviders(token);
@@ -426,6 +430,14 @@ export function AdminRoot() {
     setAuthError(null);
     queryClient.removeQueries({ queryKey: ["providers"] });
     void navigate({ to: "/providers" });
+  }
+
+  function toggleSidebar() {
+    setSidebarCollapsed((current) => {
+      const next = !current;
+      writeSidebarCollapsed(next);
+      return next;
+    });
   }
 
   if (!isAuthenticated) {
@@ -484,36 +496,8 @@ export function AdminRoot() {
   }
 
   return (
-    <main className="console-shell">
-      <aside className="sidebar">
-        <div className="brand sidebar-brand">
-          <div className="brand-mark">
-            <Cpu size={21} />
-          </div>
-          <div>
-            <strong>AutoRouter</strong>
-            <span>Control Plane</span>
-          </div>
-        </div>
-
-        <nav className="side-nav" aria-label="Admin navigation">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            return (
-              <Link
-                key={item.label}
-                to={item.to}
-                className="nav-item"
-                activeProps={{ className: "nav-item active" }}
-              >
-                <Icon size={17} />
-                <span>{item.label}</span>
-              </Link>
-            );
-          })}
-        </nav>
-
-      </aside>
+    <main className={`console-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
+      <Sidebar items={navItems} collapsed={sidebarCollapsed} onToggle={toggleSidebar} />
 
       <section className="workspace">
         <header className="page-header">
