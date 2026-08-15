@@ -37,13 +37,14 @@ docs/concept-model.md
 
 The implementation already follows parts of this structure, but the config schema is still converging toward the full draft.
 
-Create your local runtime config:
+Create your local runtime configuration and environment variables:
 
 ```bash
 cp config/config.example.yaml config/config.yaml
+cp config/.env.example config/.env
 ```
 
-`config/config.yaml` is ignored by Git.
+`config/config.yaml` and `config/.env` are ignored by Git.
 
 `server.body_limit_bytes` controls the maximum HTTP request body size accepted
 by the local gateway before routing. The default is `8388608` bytes (8 MiB).

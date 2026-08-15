@@ -1,4 +1,7 @@
-import "dotenv/config";
+import { config as loadEnvironment } from "dotenv";
+import { fileURLToPath } from "node:url";
+
+loadEnvironment({ path: fileURLToPath(new URL("../config/.env", import.meta.url)) });
 
 import { createLogger } from "./utils/logger.js";
 import { loadConfig } from "./config/loadConfig.js";
