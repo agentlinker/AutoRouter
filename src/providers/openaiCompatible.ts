@@ -3,6 +3,7 @@ import { request } from "undici";
 import type { NormalizedChatRequest } from "../routing/types.js";
 import { PROVIDER_AUTH_FAILED_CODE } from "../utils/providerErrors.js";
 import { HttpError } from "../utils/httpErrors.js";
+import { mergeCustomHeaders } from "./customHeaders.js";
 import type {
   HealthResult,
   ProviderAdapter,
@@ -12,13 +13,14 @@ import type {
   RouteTarget
 } from "./adapter.js";
 
-function buildHeaders(apiKey: string | undefined): Record<string, string> {
-  const headers: Record<string, string> = {
-    "content-type": "application/json"
-  };
+function buildHeaders(target: RouteTarget): Record<string, string> {
+  const headers = mergeCustomHeaders(
+    { "content-type": "application/json" },
+    target.endpoint.custom_headers
+  );
 
-  if (apiKey) {
-    headers.authorization = `Bearer ${apiKey}`;
+  if (target.credential) {
+    headers.authorization = `Bearer ${target.credential}`;
   }
 
   return headers;
@@ -42,7 +44,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     try {
       const response = await request(`${target.endpoint.base_url}/models`, {
         method: "GET",
-        headers: buildHeaders(target.credential)
+        headers: buildHeaders(target)
       });
 
       if (response.statusCode >= 200 && response.statusCode < 400) {
@@ -71,7 +73,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     try {
       response = await request(`${target.endpoint.base_url}/chat/completions`, {
         method: "POST",
-        headers: buildHeaders(target.credential),
+        headers: buildHeaders(target),
         body: JSON.stringify(upstreamPayload)
       });
     } catch (error) {
@@ -145,7 +147,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     const sendStream = (includeUsage: boolean) =>
       request(`${target.endpoint.base_url}/chat/completions`, {
         method: "POST",
-        headers: buildHeaders(target.credential),
+        headers: buildHeaders(target),
         body: JSON.stringify(
           // 请求上游在流末尾带 usage，否则流式请求记不到 token 数
           includeUsage
@@ -213,7 +215,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     try {
       response = await request(`${target.endpoint.base_url}/responses`, {
         method: "POST",
-        headers: buildHeaders(target.credential),
+        headers: buildHeaders(target),
         body: JSON.stringify(upstreamPayload)
       });
     } catch (error) {
@@ -279,7 +281,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     try {
       response = await request(`${target.endpoint.base_url}/responses`, {
         method: "POST",
-        headers: buildHeaders(target.credential),
+        headers: buildHeaders(target),
         body: JSON.stringify(upstreamPayload)
       });
     } catch (error) {

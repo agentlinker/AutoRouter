@@ -52,7 +52,6 @@ function createHarness(
     provider: {
       providerKey: "demo",
       displayName: "Demo",
-      adapterType: "openai_compatible",
       baseUrl: "https://demo.example.com/v1",
       trustLevel: "medium",
       privacyLevel: "normal",
@@ -65,7 +64,6 @@ function createHarness(
         endpoint: {
           endpointKey: "openai",
           protocol: "openai",
-          adapterType: "openai_compatible",
           baseUrl: "https://demo.example.com/v1",
           supportsStreaming: true,
           supportsTools: true,

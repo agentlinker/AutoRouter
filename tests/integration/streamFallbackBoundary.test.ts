@@ -132,7 +132,8 @@ function createState(input: { adapter: ProviderAdapter; traceDatabasePath: strin
     accounts: registry.accounts,
     priceTable: new PriceTable(config),
     adapters: {
-      get: () => input.adapter
+      get: () => input.adapter,
+      forProtocol: () => input.adapter
     } as unknown as RouterState["adapters"],
     stickySessions: new StickySessionStore(),
     traceStore: new TraceStore(new RouteTraceRepository(databaseClient.db))

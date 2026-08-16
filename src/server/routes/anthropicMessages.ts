@@ -469,7 +469,7 @@ export async function registerAnthropicMessagesRoute(
     // 客户端要流式且存在原生 anthropic 候选时，直接把上游 SSE 字节透传，
     // 拿回真实 TTFT（不再等完整响应后再合成 SSE）。
     const hasNativeStreamCandidate = routeDecision.ordered.some((candidate) =>
-      Boolean(state.adapters.get(candidate.endpoint.adapter as never).streamMessage)
+      Boolean(state.adapters.forProtocol(candidate.platform.protocol).streamMessage)
     );
 
     if (clientWantsStream && hasNativeStreamCandidate) {
@@ -488,10 +488,10 @@ export async function registerAnthropicMessagesRoute(
           runtimeStatusService,
           candidates: routeDecision.ordered,
           supportsCandidate: (_candidate, target) =>
-            Boolean(state.adapters.get(target.endpoint.adapter as never).streamMessage),
+            Boolean(state.adapters.forProtocol(target.platform.protocol).streamMessage),
           invokeStream: (_candidate, target) =>
             state.adapters
-              .get(target.endpoint.adapter as never)
+              .forProtocol(target.platform.protocol)
               .streamMessage!(nativeMessagesRequest(), target),
           onStreamStart: () => {
             if (!reply.raw.headersSent) {
@@ -587,7 +587,7 @@ export async function registerAnthropicMessagesRoute(
       // adapter 支持原生 Messages 时零转换直通，否则退化为 Chat Completions 转换。
       // 直通路径保住 thinking blocks / cache_control / tool_use 等字段。
       invoke: (_candidate, target) => {
-        const adapter = state.adapters.get(target.endpoint.adapter as never);
+        const adapter = state.adapters.forProtocol(target.platform.protocol);
         if (adapter.messageCompletion) {
           nativePassthrough = true;
           return adapter.messageCompletion(nativeMessagesRequest(), target);

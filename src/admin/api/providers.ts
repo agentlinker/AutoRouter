@@ -23,8 +23,8 @@ export interface ProviderModel {
 export interface ProviderEndpoint {
   endpoint_key: string;
   protocol: string;
-  adapter_type: string;
   base_url: string;
+  custom_headers?: Record<string, string>;
   enabled: boolean;
   supports_streaming: boolean;
   supports_tools: boolean;
@@ -74,8 +74,8 @@ export interface ProviderTemplate {
   endpoints: Array<{
     endpoint_key: string;
     protocol: "openai" | "anthropic";
-    adapter_type: "openai_compatible" | "anthropic";
     base_url: string;
+    custom_headers?: Record<string, string>;
     enabled?: boolean;
   }>;
   notes?: string;
@@ -84,7 +84,7 @@ export interface ProviderTemplate {
 export interface ProviderDetails {
   provider_key: string;
   display_name: string;
-  adapter_type: string;
+  protocol: string;
   base_url: string;
   website_url: string | null;
   provider_kind?: "official" | "relay" | "custom";
@@ -155,6 +155,7 @@ export interface ProviderFormValues {
   api_key?: string;
   provider_kind?: "official" | "relay" | "custom";
   model_availability_scope?: "shared_by_provider" | "per_account";
+  priority?: number;
   template_id?: string;
 }
 
@@ -162,15 +163,24 @@ export interface ProviderEndpointInput {
   endpoint_key: string;
   protocol: "openai" | "anthropic";
   base_url: string;
+  custom_headers?: string | Record<string, string>;
   enabled?: boolean;
 }
 
 export interface CreateProviderPayload extends ProviderFormValues {
   protocol?: "openai" | "anthropic";
   base_url?: string;
+  accounts?: Array<{
+    account_key: string;
+    endpoint_key?: string;
+    api_key: string;
+    expires_at?: string | null;
+    quota?: ProviderAccount["quota"];
+    enabled?: boolean;
+  }>;
 }
 
-export interface UpdateProviderPayload extends Omit<CreateProviderPayload, "provider_key"> {
+export interface UpdateProviderPayload extends Partial<Omit<CreateProviderPayload, "provider_key">> {
   api_key?: string;
   priority?: number;
 }
@@ -247,8 +257,8 @@ export function createProviderEndpoint(
   payload: {
     endpoint_key: string;
     protocol: "openai" | "anthropic";
-    adapter_type: "openai_compatible" | "openrouter" | "anthropic";
     base_url: string;
+    custom_headers?: Record<string, string>;
     enabled?: boolean;
     api_key?: string;
   }
@@ -316,8 +326,14 @@ export function updateProviderModelCapabilities(
   });
 }
 
-export function listProviderTemplates(token: string): Promise<{ data: ProviderTemplate[] }> {
-  return requestJson<{ data: ProviderTemplate[] }>("/admin/api/provider-templates", token);
+export function listProviderTemplates(token: string): Promise<{
+  data: ProviderTemplate[];
+  meta?: { load_errors?: string[] };
+}> {
+  return requestJson<{ data: ProviderTemplate[]; meta?: { load_errors?: string[] } }>(
+    "/admin/api/provider-templates",
+    token
+  );
 }
 
 export function mergeCheckProvider(

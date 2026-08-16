@@ -24,13 +24,12 @@ import {
   Trash2
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useFieldArray, useForm } from "react-hook-form";
+import { useFieldArray, useForm, type Control } from "react-hook-form";
 import { z } from "zod";
 
 import {
   createProvider,
   createProviderAccount,
-  createProviderEndpoint,
   deleteProvider,
   deleteProviderAccount,
   getProvider,
@@ -57,9 +56,36 @@ import {
 } from "../api/providers.js";
 import { AppDialog } from "../components/Dialog.js";
 import { Sidebar } from "../components/Sidebar.js";
+import { providerKindLabel } from "../providerLabels.js";
 import { readSidebarCollapsed, writeSidebarCollapsed } from "../utils/sidebarCollapse.js";
 
 export const providerTokenStorageKey = "autorouter_admin_token";
+
+// Form 内部状态：custom_headers 是 key-value 数组
+interface ProviderFormData {
+  provider_key: string;
+  display_name: string;
+  endpoints: Array<{
+    endpoint_key: string;
+    protocol: "openai" | "anthropic";
+    base_url: string;
+    custom_headers?: Array<{ key: string; value: string }>;
+  }>;
+  website_url?: string;
+  api_key?: string;
+  provider_kind?: "official" | "relay" | "custom";
+  model_availability_scope?: "shared_by_provider" | "per_account";
+  priority: string;
+  template_id?: string;
+  accounts: Array<{
+    account_key: string;
+    endpoint_key: string;
+    api_key: string;
+    expires_at: string;
+    remaining_usd: string;
+    enabled: boolean;
+  }>;
+}
 
 const providerFormSchema = z.object({
   provider_key: z.string().trim().min(1, "请填写 Provider Key"),
@@ -67,7 +93,11 @@ const providerFormSchema = z.object({
   endpoints: z.array(z.object({
     endpoint_key: z.string().trim().min(1, "请填写 Endpoint Key"),
     protocol: z.enum(["openai", "anthropic"]),
-    base_url: z.string().trim().url("Base URL 必须是有效网址")
+    base_url: z.string().trim().url("Base URL 必须是有效网址"),
+    custom_headers: z.array(z.object({
+      key: z.string(),
+      value: z.string()
+    })).optional()
   }).strict()).min(1, "至少添加一个 Endpoint"),
   website_url: z
     .string()
@@ -79,8 +109,27 @@ const providerFormSchema = z.object({
   api_key: z.string().optional(),
   provider_kind: z.enum(["official", "relay", "custom"]).optional(),
   model_availability_scope: z.enum(["shared_by_provider", "per_account"]).optional(),
-  template_id: z.string().optional()
+  priority: z.string().refine((value) => value === "" || /^\d+$/.test(value), {
+    message: "优先级必须是非负整数"
+  }),
+  template_id: z.string().optional(),
+  accounts: z.array(z.object({
+    account_key: z.string(),
+    endpoint_key: z.string(),
+    api_key: z.string(),
+    expires_at: z.string(),
+    remaining_usd: z.string(),
+    enabled: z.boolean()
+  })).min(1, "至少添加一个 Account")
 }).strict();
+
+function toDatetimeLocal(value: string | null | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  const offset = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
 
 function RequiredMark() {
   return <span className="required-mark">*</span>;
@@ -731,13 +780,6 @@ export function ProviderDetailPage() {
   const { providerKey } = useParams({ from: "/providers/$providerKey" });
   const { provider, isLoading } = useProvider(token, providerKey);
   const queryClient = useQueryClient();
-  const [endpointForm, setEndpointForm] = useState({
-    endpoint_key: "",
-    protocol: "openai" as "openai" | "anthropic",
-    base_url: "",
-    api_key: ""
-  });
-  const [endpointMessage, setEndpointMessage] = useState<{ text: string; mode?: "success" | "error" } | null>(null);
   const mutation = useMutation({
     mutationFn: async (action: "sync" | "toggle" | "delete") => {
       if (!provider) {
@@ -785,70 +827,6 @@ export function ProviderDetailPage() {
       void queryClient.invalidateQueries({ queryKey: providerQueryKey(token, providerKey) });
     }
   });
-  const endpointMutation = useMutation({
-    mutationFn: async () => {
-      if (!provider) {
-        throw new Error("Provider not loaded");
-      }
-
-      const endpointKey = endpointForm.endpoint_key.trim();
-      const baseUrl = endpointForm.base_url.trim();
-      if (!endpointKey || !baseUrl) {
-        throw new Error("请填写 Endpoint Key 和 Base URL");
-      }
-
-      return createProviderEndpoint(token, provider.provider_key, {
-        endpoint_key: endpointKey,
-        protocol: endpointForm.protocol,
-        adapter_type: endpointForm.protocol === "anthropic" ? "anthropic" : "openai_compatible",
-        base_url: baseUrl,
-        api_key: endpointForm.api_key.trim() || undefined
-      });
-    },
-    onSuccess: () => {
-      setEndpointMessage({ text: "Endpoint 已添加并同步模型", mode: "success" });
-      setEndpointForm({
-        endpoint_key: "",
-        protocol: "openai",
-        base_url: "",
-        api_key: ""
-      });
-      void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
-      void queryClient.invalidateQueries({ queryKey: providerQueryKey(token, providerKey) });
-    },
-    onError: (error) => {
-      setEndpointMessage({
-        text: error instanceof Error ? error.message : "Endpoint 添加失败",
-        mode: "error"
-      });
-    }
-  });
-
-  // 中转站（New API / sub2api 等）的 OpenAI 与 Anthropic 协议共用同一个 base URL，
-  // 只是路径不同，所以可以直接复用现有 endpoint 的地址预填一个 anthropic 入口。
-  const hasAnthropicEndpoint = provider?.endpoints.some(
-    (endpoint) => endpoint.protocol === "anthropic"
-  );
-
-  const prefillAnthropicEndpoint = (baseUrl: string) => {
-    const existingKeys = new Set(provider?.endpoints.map((item) => item.endpoint_key) ?? []);
-    let endpointKey = "anthropic";
-    for (let suffix = 2; existingKeys.has(endpointKey); suffix += 1) {
-      endpointKey = `anthropic-${suffix}`;
-    }
-
-    setEndpointForm({
-      endpoint_key: endpointKey,
-      protocol: "anthropic",
-      base_url: baseUrl,
-      api_key: ""
-    });
-    setEndpointMessage({
-      text: "已按同地址预填 Anthropic 协议入口，确认后点击「添加 Endpoint」",
-      mode: "success"
-    });
-  };
-
   if (isLoading) {
     return <PageLoading />;
   }
@@ -901,7 +879,7 @@ export function ProviderDetailPage() {
             />
           </dd>
           <dt>Provider 类型</dt>
-          <dd>{provider.provider_kind ?? "custom"}</dd>
+          <dd>{providerKindLabel(provider.provider_kind)}</dd>
           <dt>模型可用性</dt>
           <dd>
             {provider.model_availability_scope === "shared_by_provider"
@@ -938,109 +916,35 @@ export function ProviderDetailPage() {
           <div className="model-capability-header">
             <span>Endpoint</span>
             <span>协议</span>
-            <span>Adapter</span>
             <span>状态</span>
-            <span>操作</span>
+            <span>自定义 Headers</span>
           </div>
           {provider.endpoints.map((endpoint) => (
             <div className="model-capability-row" key={endpoint.endpoint_key}>
               <div className="model-name-cell">
                 <strong>{endpoint.endpoint_key}</strong>
                 <code>{endpoint.base_url}</code>
+                {endpoint.custom_headers && Object.keys(endpoint.custom_headers).length > 0 ? (
+                  <small className="muted">
+                    Headers: {Object.keys(endpoint.custom_headers).join(", ")}
+                  </small>
+                ) : null}
               </div>
               <span>{endpoint.protocol}</span>
-              <span>{endpoint.adapter_type}</span>
               <span>{endpoint.enabled ? "已启用" : "已停用"}</span>
-              <span>
-                {endpoint.protocol === "openai" && !hasAnthropicEndpoint ? (
-                  <button
-                    className="ghost-action"
-                    type="button"
-                    title={
-                      "同地址添加 Anthropic 协议入口。\n" +
-                      "sub2api、New API 等中转站的 OpenAI 与 Anthropic 协议共用同一个 base URL，" +
-                      "只是路径不同（/chat/completions 与 /messages），因此可直接复用当前地址。\n" +
-                      "官方源（如智谱、小米）两者地址不同，需手动填写 Anthropic 专用地址。"
-                    }
-                    onClick={() => prefillAnthropicEndpoint(endpoint.base_url)}
-                  >
-                    <Plus size={14} />
-                    加 Anthropic 入口
-                  </button>
-                ) : null}
-              </span>
+              <span>{endpoint.custom_headers && Object.keys(endpoint.custom_headers).length > 0 ? "已配置" : "无"}</span>
             </div>
           ))}
         </div>
-        <form
-          className="form endpoint-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            endpointMutation.mutate();
+        <ProviderAccountsPanel
+          token={token}
+          provider={provider}
+          onChanged={() => {
+            void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
+            void queryClient.invalidateQueries({ queryKey: providerQueryKey(token, providerKey) });
           }}
-        >
-          <label className="field">
-            <span>Endpoint Key</span>
-            <input
-              value={endpointForm.endpoint_key}
-              placeholder="anthropic"
-              onChange={(event) =>
-                setEndpointForm((current) => ({ ...current, endpoint_key: event.target.value }))
-              }
-            />
-          </label>
-          <label className="field">
-            <span>协议</span>
-            <select
-              value={endpointForm.protocol}
-              onChange={(event) =>
-                setEndpointForm((current) => ({
-                  ...current,
-                  protocol: event.target.value as "openai" | "anthropic"
-                }))
-              }
-            >
-              <option value="openai">openai</option>
-              <option value="anthropic">anthropic</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>Base URL</span>
-            <input
-              value={endpointForm.base_url}
-              placeholder="https://example.com/v1"
-              onChange={(event) =>
-                setEndpointForm((current) => ({ ...current, base_url: event.target.value }))
-              }
-            />
-          </label>
-          <label className="field">
-            <span>API Key</span>
-            <input
-              value={endpointForm.api_key}
-              type="password"
-              placeholder="留空则复用 Provider Key"
-              onChange={(event) =>
-                setEndpointForm((current) => ({ ...current, api_key: event.target.value }))
-              }
-            />
-          </label>
-          <button className="primary-action" type="submit" disabled={endpointMutation.isPending}>
-            <Plus size={16} />
-            {endpointMutation.isPending ? "添加中..." : "添加 Endpoint"}
-          </button>
-        </form>
-        {endpointMessage ? <p className={`status ${endpointMessage.mode ?? ""}`}>{endpointMessage.text}</p> : null}
+        />
       </div>
-
-      <ProviderAccountsPanel
-        token={token}
-        provider={provider}
-        onChanged={() => {
-          void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
-          void queryClient.invalidateQueries({ queryKey: providerQueryKey(token, providerKey) });
-        }}
-      />
 
       <div className="panel detail-card">
         <h3>模型列表</h3>
@@ -1115,6 +1019,54 @@ export function ProviderDetailPage() {
   );
 }
 
+function CustomHeadersEditor(props: {
+  control: Control<ProviderFormData>;
+  endpointIndex: number;
+}) {
+  const { fields, append, remove } = useFieldArray({
+    control: props.control,
+    name: `endpoints.${props.endpointIndex}.custom_headers` as const
+  });
+
+  return (
+    <div className="field">
+      <div className="field-group-header">
+        <span>Custom Headers</span>
+        <button
+          type="button"
+          className="ghost-action small-action"
+          onClick={() => append({ key: "", value: "" })}
+        >
+          <Plus size={14} />
+          添加 Header
+        </button>
+      </div>
+      <div className="custom-headers-list">
+        {fields.map((field, index) => (
+          <div className="custom-header-row" key={field.id}>
+            <input
+              {...props.control.register(`endpoints.${props.endpointIndex}.custom_headers.${index}.key` as const)}
+              placeholder="Header 名称 (如 x-title)"
+            />
+            <input
+              {...props.control.register(`endpoints.${props.endpointIndex}.custom_headers.${index}.value` as const)}
+              placeholder="Header 值"
+            />
+            <button
+              type="button"
+              className="ghost-action small-action"
+              onClick={() => remove(index)}
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
+        ))}
+        {fields.length === 0 ? <small className="muted">暂无自定义 headers</small> : null}
+      </div>
+    </div>
+  );
+}
+
 function CapabilityToggle(props: {
   checked: boolean;
   disabled: boolean;
@@ -1157,10 +1109,10 @@ function ProviderFormPage(props: {
       protocol: string;
       base_url: string;
     }>;
-    pendingValues: CreateProviderPayload | null;
+    pendingValues: ProviderFormData | null;
   }>({ open: false, matches: [], pendingValues: null });
 
-  const form = useForm<CreateProviderPayload>({
+  const form = useForm<ProviderFormData>({
     resolver: zodResolver(providerFormSchema),
     defaultValues: {
       provider_key: "",
@@ -1169,13 +1121,24 @@ function ProviderFormPage(props: {
         {
           endpoint_key: "default",
           protocol: "openai",
-          base_url: ""
+          base_url: "",
+          custom_headers: []
         }
       ],
       website_url: "",
-      api_key: "",
+      accounts: [
+        {
+          account_key: "default",
+          endpoint_key: "",
+          api_key: "",
+          expires_at: "",
+          remaining_usd: "",
+          enabled: true
+        }
+      ],
       provider_kind: "custom",
       model_availability_scope: "per_account",
+      priority: "0",
       template_id: ""
     }
   });
@@ -1183,19 +1146,31 @@ function ProviderFormPage(props: {
     control: form.control,
     name: "endpoints"
   });
+  const {
+    fields: accountFields,
+    append: appendAccount,
+    remove: removeAccount
+  } = useFieldArray({
+    control: form.control,
+    name: "accounts"
+  });
 
   useEffect(() => {
     const nextEndpoints = props.provider?.endpoints.length
       ? props.provider.endpoints.map((endpoint, index) => ({
           endpoint_key: endpoint.endpoint_key || `endpoint-${index + 1}`,
           protocol: endpoint.protocol as "openai" | "anthropic",
-          base_url: endpoint.base_url
+          base_url: endpoint.base_url,
+          custom_headers: endpoint.custom_headers
+            ? Object.entries(endpoint.custom_headers).map(([key, value]) => ({ key, value }))
+            : []
         }))
       : [
           {
             endpoint_key: "default",
             protocol: "openai" as const,
-            base_url: ""
+            base_url: "",
+            custom_headers: []
           }
         ];
 
@@ -1204,9 +1179,28 @@ function ProviderFormPage(props: {
       display_name: props.provider?.display_name ?? "",
       endpoints: nextEndpoints,
       website_url: props.provider?.website_url ?? "",
-      api_key: "",
+      accounts: props.provider?.accounts?.length
+        ? props.provider.accounts.map((account) => ({
+            account_key: account.account_key,
+            endpoint_key: account.endpoint_key ?? "",
+            api_key: "",
+            expires_at: toDatetimeLocal(account.expires_at),
+            remaining_usd: account.quota?.remaining_usd?.toString() ?? "",
+            enabled: account.enabled
+          }))
+        : [
+            {
+              account_key: "default",
+              endpoint_key: "",
+              api_key: "",
+              expires_at: "",
+              remaining_usd: "",
+              enabled: true
+            }
+          ],
       provider_kind: props.provider?.provider_kind ?? "custom",
       model_availability_scope: props.provider?.model_availability_scope ?? "per_account",
+      priority: String(props.provider?.priority ?? 0),
       template_id: ""
     });
     setSelectedTemplateId("");
@@ -1222,36 +1216,105 @@ function ProviderFormPage(props: {
       .catch(() => setTemplates([]));
   }, [isEditing, props.token]);
 
-  async function submitProvider(values: CreateProviderPayload, options?: { skipMergeCheck?: boolean }) {
-    const normalizedEndpoints = values.endpoints.map((endpoint, index) => ({
-      endpoint_key: endpoint.endpoint_key.trim() || `endpoint-${index + 1}`,
-      protocol: endpoint.protocol,
-      base_url: endpoint.base_url.trim()
+  async function submitProvider(values: ProviderFormData, options?: { skipMergeCheck?: boolean }) {
+    const normalizedEndpoints = values.endpoints.map((endpoint, index) => {
+      let customHeaders: Record<string, string> | undefined;
+      if (endpoint.custom_headers && endpoint.custom_headers.length > 0) {
+        customHeaders = {};
+        for (const pair of endpoint.custom_headers) {
+          const trimmedKey = pair.key.trim();
+          const trimmedValue = pair.value.trim();
+          if (trimmedKey) {
+            customHeaders[trimmedKey] = trimmedValue;
+          }
+        }
+        if (Object.keys(customHeaders).length === 0) {
+          customHeaders = undefined;
+        }
+      }
+      return {
+        endpoint_key: endpoint.endpoint_key.trim() || `endpoint-${index + 1}`,
+        protocol: endpoint.protocol,
+        base_url: endpoint.base_url.trim(),
+        custom_headers: customHeaders
+      };
+    });
+    const normalizedAccounts = values.accounts.map((account) => ({
+      account_key: account.account_key.trim(),
+      endpoint_key: account.endpoint_key || undefined,
+      api_key: account.api_key.trim(),
+      expires_at: account.expires_at ? new Date(account.expires_at).toISOString() : null,
+      quota: account.remaining_usd
+        ? { remaining_usd: Number(account.remaining_usd), source: "manual" as const }
+        : undefined,
+      enabled: account.enabled
     }));
+
+    if (!isEditing && normalizedAccounts.some((account) => !account.account_key || !account.api_key)) {
+      throw new Error("请填写每个 Account 的 Account Key 和 API Key");
+    }
+
     const normalized: CreateProviderPayload = {
       provider_key: values.provider_key.trim(),
       display_name: values.display_name.trim(),
       endpoints: normalizedEndpoints,
       website_url: values.website_url?.trim() ?? "",
-      api_key: values.api_key?.trim() ?? "",
+      api_key: normalizedAccounts[0]?.api_key ?? "",
+      accounts: normalizedAccounts,
       provider_kind: values.provider_kind,
       model_availability_scope: values.model_availability_scope,
+      priority: values.priority === "" ? 0 : Number(values.priority),
       template_id: values.template_id || undefined
     };
-    if (!isEditing && !normalized.api_key) {
-      throw new Error("请填写 API Key");
-    }
 
     if (isEditing && props.provider) {
       const payload: UpdateProviderPayload = {
         display_name: normalized.display_name,
         endpoints: normalized.endpoints,
         website_url: normalized.website_url,
-        api_key: normalized.api_key || undefined,
         provider_kind: normalized.provider_kind,
-        model_availability_scope: normalized.model_availability_scope
+        model_availability_scope: normalized.model_availability_scope,
+        priority: normalized.priority
       };
-      return updateProvider(props.token, props.provider.provider_key, payload);
+      const updated = await updateProvider(props.token, props.provider.provider_key, payload);
+      const existingAccounts = new Set((props.provider.accounts ?? []).map((account) => account.account_key));
+      for (const account of normalizedAccounts) {
+        if (!account.account_key) {
+          throw new Error("请填写 Account Key");
+        }
+        if (existingAccounts.has(account.account_key)) {
+          await updateProviderAccount(props.token, props.provider.provider_key, account.account_key, {
+            endpoint_key: account.endpoint_key ?? null,
+            api_key: account.api_key || undefined,
+            expires_at: account.expires_at,
+            quota: account.quota,
+            enabled: account.enabled
+          });
+        } else {
+          if (!account.api_key) {
+            throw new Error(`新增 Account ${account.account_key} 必须填写 API Key`);
+          }
+          await createProviderAccount(props.token, props.provider.provider_key, {
+            account_key: account.account_key,
+            endpoint_key: account.endpoint_key,
+            api_key: account.api_key,
+            expires_at: account.expires_at,
+            quota: account.quota,
+            enabled: account.enabled
+          });
+        }
+      }
+      for (const existingAccount of props.provider.accounts ?? []) {
+        if (!normalizedAccounts.some((account) => account.account_key === existingAccount.account_key)) {
+          await deleteProviderAccount(props.token, props.provider.provider_key, existingAccount.account_key);
+        }
+      }
+      for (const existingAccount of props.provider.accounts ?? []) {
+        if (!normalizedAccounts.some((account) => account.account_key === existingAccount.account_key)) {
+          await deleteProviderAccount(props.token, props.provider.provider_key, existingAccount.account_key);
+        }
+      }
+      return updated;
     }
 
     if (!options?.skipMergeCheck && normalized.endpoints[0]) {
@@ -1264,7 +1327,7 @@ function ProviderFormPage(props: {
         setMergeDialog({
           open: true,
           matches: merge.matches,
-          pendingValues: normalized
+          pendingValues: values
         });
         return null;
       }
@@ -1274,7 +1337,7 @@ function ProviderFormPage(props: {
   }
 
   const mutation = useMutation({
-    mutationFn: async (values: CreateProviderPayload) => submitProvider(values),
+    mutationFn: async (values: ProviderFormData) => submitProvider(values),
     onSuccess: (result) => {
       if (!result) {
         return;
@@ -1294,7 +1357,7 @@ function ProviderFormPage(props: {
   });
 
   const forceCreateMutation = useMutation({
-    mutationFn: async (values: CreateProviderPayload) =>
+    mutationFn: async (values: ProviderFormData) =>
       submitProvider(values, { skipMergeCheck: true }),
     onSuccess: (result) => {
       if (!result) {
@@ -1361,25 +1424,9 @@ function ProviderFormPage(props: {
       </div>
 
       <form className="panel form form-card" onSubmit={form.handleSubmit((values) => mutation.mutate(values))}>
-        <label className="field">
-          <span>
-            Provider Key <RequiredMark />
-          </span>
-          <input {...form.register("provider_key")} readOnly={isEditing} placeholder="my-provider" />
-          {errors.provider_key ? <small>{errors.provider_key.message}</small> : null}
-        </label>
-
-        <label className="field">
-          <span>
-            Display Name <RequiredMark />
-          </span>
-          <input {...form.register("display_name")} placeholder="My Provider" />
-          {errors.display_name ? <small>{errors.display_name.message}</small> : null}
-        </label>
-
         {!isEditing ? (
           <label className="field">
-            <span>官方模版</span>
+            <span>Provider 模板</span>
             <select
               value={selectedTemplateId}
               onChange={(event) => {
@@ -1401,7 +1448,10 @@ function ProviderFormPage(props: {
                   template.endpoints.map((endpoint) => ({
                     endpoint_key: endpoint.endpoint_key,
                     protocol: endpoint.protocol,
-                    base_url: endpoint.base_url
+                    base_url: endpoint.base_url,
+                    custom_headers: endpoint.custom_headers
+                      ? Object.entries(endpoint.custom_headers).map(([key, value]) => ({ key, value }))
+                      : []
                   }))
                 );
               }}
@@ -1418,11 +1468,33 @@ function ProviderFormPage(props: {
         ) : null}
 
         <label className="field">
+          <span>
+            Provider Key <RequiredMark />
+          </span>
+          <input {...form.register("provider_key")} readOnly={isEditing} placeholder="my-provider" />
+          {errors.provider_key ? <small>{errors.provider_key.message}</small> : null}
+        </label>
+
+        <label className="field">
+          <span>
+            Display Name <RequiredMark />
+          </span>
+          <input {...form.register("display_name")} placeholder="My Provider" />
+          {errors.display_name ? <small>{errors.display_name.message}</small> : null}
+        </label>
+
+        <label className="field">
+          <span>官网地址</span>
+          <input {...form.register("website_url")} placeholder="https://example.com" />
+          {errors.website_url ? <small>{errors.website_url.message}</small> : null}
+        </label>
+
+        <label className="field">
           <span>Provider 类型</span>
           <select {...form.register("provider_kind")}>
-            <option value="official">official</option>
-            <option value="relay">relay</option>
-            <option value="custom">custom</option>
+            <option value="official">官方 (official)</option>
+            <option value="relay">中转站 (relay)</option>
+            <option value="custom">自定义 (custom)</option>
           </select>
         </label>
 
@@ -1432,6 +1504,19 @@ function ProviderFormPage(props: {
             <option value="shared_by_provider">按 Provider 共享</option>
             <option value="per_account">按 Account 独立</option>
           </select>
+        </label>
+
+        <label className="field">
+          <span>优先级（可选，默认 0）</span>
+          <input
+            type="number"
+            min="0"
+            step="1"
+            inputMode="numeric"
+            {...form.register("priority")}
+            placeholder="0"
+          />
+          {errors.priority ? <small>{errors.priority.message}</small> : null}
         </label>
 
         <div className="field endpoint-group">
@@ -1446,7 +1531,8 @@ function ProviderFormPage(props: {
                 append({
                   endpoint_key: `endpoint-${fields.length + 1}`,
                   protocol: "openai",
-                  base_url: ""
+                  base_url: "",
+                  custom_headers: []
                 })
               }
             >
@@ -1486,6 +1572,8 @@ function ProviderFormPage(props: {
                     {endpointErrors?.base_url ? <small>{endpointErrors.base_url.message}</small> : null}
                   </label>
 
+                  <CustomHeadersEditor control={form.control} endpointIndex={index} />
+
                   <div className="endpoint-row-actions">
                     <button
                       type="button"
@@ -1505,23 +1593,94 @@ function ProviderFormPage(props: {
           {!Array.isArray(endpointsError) && endpointsError?.message ? <small>{endpointsError.message}</small> : null}
         </div>
 
-        <label className="field">
-          <span>官网地址</span>
-          <input {...form.register("website_url")} placeholder="https://example.com" />
-          {errors.website_url ? <small>{errors.website_url.message}</small> : null}
-        </label>
-
-        <label className="field">
-          <span>
-            API Key {!isEditing ? <RequiredMark /> : null}
-          </span>
-          <input
-            {...form.register("api_key")}
-            type="password"
-            placeholder={isEditing ? "不修改可留空" : "sk-..."}
-          />
-        </label>
-
+        <div className="field account-group">
+          <div className="field-group-header">
+            <span>
+              Accounts / API Keys <RequiredMark />
+            </span>
+            <button
+              type="button"
+              className="ghost-action small-action"
+              onClick={() =>
+                appendAccount({
+                  account_key: `key-${accountFields.length + 1}`,
+                  endpoint_key: "",
+                  api_key: "",
+                  expires_at: "",
+                  remaining_usd: "",
+                  enabled: true
+                })
+              }
+            >
+              <Plus size={14} />
+              添加 Account
+            </button>
+          </div>
+          <div className="account-editor">
+            {accountFields.map((field, index) => (
+              <div className="account-editor-row" key={field.id}>
+                <label className="field">
+                  <span>Account Key</span>
+                  <input {...form.register(`accounts.${index}.account_key`)} placeholder={`key-${index + 1}`} />
+                </label>
+                <label className="field">
+                  <span>绑定 Endpoint</span>
+                  <select {...form.register(`accounts.${index}.endpoint_key`)}>
+                    <option value="">全部 Endpoint</option>
+                    {form.watch("endpoints").map((endpoint, endpointIndex) => (
+                      <option key={endpointIndex} value={endpoint.endpoint_key}>
+                        {endpoint.endpoint_key || "未命名 Endpoint"}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>API Key {isEditing ? "（留空不修改）" : ""}</span>
+                  <input
+                    type="password"
+                    {...form.register(`accounts.${index}.api_key`)}
+                    placeholder="sk-..."
+                  />
+                </label>
+                <label className="field">
+                  <span>过期时间</span>
+                  <input
+                    type="datetime-local"
+                    step="60"
+                    {...form.register(`accounts.${index}.expires_at`)}
+                    onFocus={(event) => {
+                      const input = event.currentTarget;
+                      if (typeof input.showPicker === "function") {
+                        try {
+                          input.showPicker();
+                        } catch {
+                          // 浏览器可能限制非用户手势触发，保留原生控件行为即可。
+                        }
+                      }
+                    }}
+                  />
+                </label>
+                <label className="field">
+                  <span>剩余额度 USD</span>
+                  <input {...form.register(`accounts.${index}.remaining_usd`)} placeholder="可选" />
+                </label>
+                <label className="capability-toggle">
+                  <input type="checkbox" {...form.register(`accounts.${index}.enabled`)} />
+                  <span>启用</span>
+                </label>
+                <button
+                  type="button"
+                  className="ghost-action small-action"
+                  disabled={accountFields.length === 1}
+                  onClick={() => removeAccount(index)}
+                >
+                  <Trash2 size={14} />
+                  删除
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
         <div className="form-actions">
           <button className="primary-action" type="submit" disabled={mutation.isPending}>
             {isEditing ? <Edit3 size={16} /> : <Plus size={16} />}
@@ -1626,6 +1785,8 @@ function ProviderList(props: {
             disabled={mutation.isPending}
             onAction={(action) => mutation.mutate({ action, provider })}
             onTest={() => setTestProvider(provider)}
+            token={props.token}
+            onPriorityChanged={props.onChanged}
           />
         ))}
       </div>
@@ -1775,8 +1936,27 @@ function ProviderCard(props: {
   disabled: boolean;
   onAction: (action: string) => void;
   onTest: () => void;
+  token: string;
+  onPriorityChanged: () => void;
 }) {
   const [modelsExpanded, setModelsExpanded] = useState(false);
+  const [priority, setPriority] = useState(String(props.provider.priority ?? 0));
+  const [priorityError, setPriorityError] = useState<string | null>(null);
+  const priorityMutation = useMutation({
+    mutationFn: (value: number) =>
+      updateProvider(props.token, props.provider.provider_key, { priority: value }),
+    onSuccess: () => {
+      setPriorityError(null);
+      props.onPriorityChanged();
+    },
+    onError: (error) => {
+      setPriorityError(error instanceof Error ? error.message : "优先级保存失败");
+    }
+  });
+
+  useEffect(() => {
+    setPriority(String(props.provider.priority ?? 0));
+  }, [props.provider.priority]);
   const accounts = props.provider.accounts ?? [];
   const isPerAccountModels = props.provider.model_availability_scope !== "shared_by_provider";
   const visibleModelLimit = 12;
@@ -1880,9 +2060,41 @@ function ProviderCard(props: {
             onChange={() => props.onAction("toggle")}
           />
         </div>
-        <div className="metric">
+        <div className="metric provider-priority-metric">
           <span>优先级</span>
-          <strong>{props.provider.priority}</strong>
+          <input
+            type="number"
+            min="0"
+            step="1"
+            inputMode="numeric"
+            value={priority}
+            disabled={props.disabled || priorityMutation.isPending}
+            aria-label={`${props.provider.display_name} 优先级`}
+            onChange={(event) => {
+              setPriority(event.target.value);
+              setPriorityError(null);
+            }}
+            onBlur={() => {
+              if (!/^\d+$/.test(priority)) {
+                setPriorityError("优先级必须是非负整数");
+                return;
+              }
+              const nextPriority = Number(priority);
+              if (!Number.isSafeInteger(nextPriority)) {
+                setPriorityError("优先级数值过大");
+                return;
+              }
+              if (nextPriority !== props.provider.priority) {
+                priorityMutation.mutate(nextPriority);
+              }
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.currentTarget.blur();
+              }
+            }}
+          />
+          {priorityError ? <small>{priorityError}</small> : null}
         </div>
         <div className="metric">
           <span>官网</span>
@@ -1908,7 +2120,7 @@ function ProviderCard(props: {
         </div>
         <div className="metric">
           <span>类型</span>
-          <strong>{props.provider.provider_kind ?? "custom"}</strong>
+          <strong>{providerKindLabel(props.provider.provider_kind)}</strong>
         </div>
       </div>
 
@@ -1993,51 +2205,7 @@ function ProviderAccountsPanel(props: {
   onChanged: () => void;
 }) {
   const accounts = props.provider.accounts ?? [];
-  const [form, setForm] = useState({
-    account_key: "",
-    endpoint_key: props.provider.endpoints[0]?.endpoint_key ?? "",
-    api_key: "",
-    expires_at: "",
-    remaining_usd: ""
-  });
   const [message, setMessage] = useState<{ text: string; mode?: "success" | "error" } | null>(null);
-
-  const createMutation = useMutation({
-    mutationFn: async () => {
-      if (!form.account_key.trim() || !form.api_key.trim()) {
-        throw new Error("请填写 Account Key 和 API Key");
-      }
-      return createProviderAccount(props.token, props.provider.provider_key, {
-        account_key: form.account_key.trim(),
-        endpoint_key: form.endpoint_key || undefined,
-        api_key: form.api_key.trim(),
-        expires_at: form.expires_at ? new Date(form.expires_at).toISOString() : null,
-        quota: form.remaining_usd
-          ? {
-              remaining_usd: Number(form.remaining_usd),
-              source: "manual"
-            }
-          : undefined
-      });
-    },
-    onSuccess: () => {
-      setMessage({ text: "Account 已添加", mode: "success" });
-      setForm({
-        account_key: "",
-        endpoint_key: props.provider.endpoints[0]?.endpoint_key ?? "",
-        api_key: "",
-        expires_at: "",
-        remaining_usd: ""
-      });
-      props.onChanged();
-    },
-    onError: (error) => {
-      setMessage({
-        text: error instanceof Error ? error.message : "添加 Account 失败",
-        mode: "error"
-      });
-    }
-  });
 
   const toggleMutation = useMutation({
     mutationFn: async (input: { account_key: string; enabled: boolean }) =>
@@ -2135,76 +2303,6 @@ function ProviderAccountsPanel(props: {
           </div>
         ))}
       </div>
-
-      <form
-        className="form endpoint-form"
-        onSubmit={(event) => {
-          event.preventDefault();
-          createMutation.mutate();
-        }}
-      >
-        <label className="field">
-          <span>Account Key</span>
-          <input
-            value={form.account_key}
-            placeholder="backup-1"
-            onChange={(event) =>
-              setForm((current) => ({ ...current, account_key: event.target.value }))
-            }
-          />
-        </label>
-        <label className="field">
-          <span>绑定 Endpoint</span>
-          <select
-            value={form.endpoint_key}
-            onChange={(event) =>
-              setForm((current) => ({ ...current, endpoint_key: event.target.value }))
-            }
-          >
-            <option value="">全部 Endpoint</option>
-            {props.provider.endpoints.map((endpoint) => (
-              <option key={endpoint.endpoint_key} value={endpoint.endpoint_key}>
-                {endpoint.endpoint_key}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field">
-          <span>API Key</span>
-          <input
-            type="password"
-            value={form.api_key}
-            placeholder="sk-..."
-            onChange={(event) =>
-              setForm((current) => ({ ...current, api_key: event.target.value }))
-            }
-          />
-        </label>
-        <label className="field">
-          <span>过期时间</span>
-          <input
-            type="datetime-local"
-            value={form.expires_at}
-            onChange={(event) =>
-              setForm((current) => ({ ...current, expires_at: event.target.value }))
-            }
-          />
-        </label>
-        <label className="field">
-          <span>剩余额度 USD</span>
-          <input
-            value={form.remaining_usd}
-            placeholder="可选"
-            onChange={(event) =>
-              setForm((current) => ({ ...current, remaining_usd: event.target.value }))
-            }
-          />
-        </label>
-        <button className="primary-action" type="submit" disabled={createMutation.isPending}>
-          <Plus size={16} />
-          {createMutation.isPending ? "添加中..." : "添加 Account"}
-        </button>
-      </form>
       {message ? <p className={`status ${message.mode ?? ""}`}>{message.text}</p> : null}
     </div>
   );

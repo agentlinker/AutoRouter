@@ -51,7 +51,6 @@ describe("managed provider multi-account", () => {
       provider: {
         providerKey: "demo",
         displayName: "Demo",
-        adapterType: "openai_compatible",
         baseUrl: "https://demo.example.com/v1",
         providerKind: "official",
         modelAvailabilityScope: "shared_by_provider"
@@ -63,7 +62,6 @@ describe("managed provider multi-account", () => {
           endpoint: {
             endpointKey: "openai",
             protocol: "openai",
-            adapterType: "openai_compatible",
             baseUrl: "https://demo.example.com/v1"
           },
           models: [
@@ -81,7 +79,6 @@ describe("managed provider multi-account", () => {
           endpoint: {
             endpointKey: "anthropic",
             protocol: "anthropic",
-            adapterType: "anthropic",
             baseUrl: "https://demo.example.com/anthropic"
           },
           models: []
@@ -145,7 +142,6 @@ describe("managed provider multi-account", () => {
       provider: {
         providerKey: "bigmodel",
         displayName: "智谱官方",
-        adapterType: "openai_compatible",
         baseUrl: "https://open.bigmodel.cn/api/paas/v4/"
       },
       encryptedApiKey: cipher.encrypt("secret"),
@@ -154,7 +150,6 @@ describe("managed provider multi-account", () => {
           endpoint: {
             endpointKey: "openai",
             protocol: "openai",
-            adapterType: "openai_compatible",
             baseUrl: "https://open.bigmodel.cn/api/paas/v4/"
           },
           models: []
@@ -191,7 +186,6 @@ describe("managed provider multi-account", () => {
       provider: {
         providerKey: "relay",
         displayName: "Relay",
-        adapterType: "openai_compatible",
         baseUrl: "https://relay.example.com/v1",
         providerKind: "relay",
         modelAvailabilityScope: "per_account"
@@ -203,7 +197,6 @@ describe("managed provider multi-account", () => {
           endpoint: {
             endpointKey: "openai",
             protocol: "openai",
-            adapterType: "openai_compatible",
             baseUrl: "https://relay.example.com/v1"
           },
           models: [
@@ -306,7 +299,6 @@ describe("managed provider multi-account", () => {
       provider: {
         providerKey: "alpha",
         displayName: "Alpha",
-        adapterType: "openai_compatible",
         baseUrl: "https://alpha.example.com/v1",
         priority: 3
       },
@@ -316,7 +308,6 @@ describe("managed provider multi-account", () => {
           endpoint: {
             endpointKey: "openai",
             protocol: "openai",
-            adapterType: "openai_compatible",
             baseUrl: "https://alpha.example.com/v1"
           },
           models: []
@@ -328,7 +319,6 @@ describe("managed provider multi-account", () => {
       provider: {
         providerKey: "beta",
         displayName: "Beta",
-        adapterType: "openai_compatible",
         baseUrl: "https://beta.example.com/v1",
         priority: 1
       },
@@ -338,7 +328,6 @@ describe("managed provider multi-account", () => {
           endpoint: {
             endpointKey: "openai",
             protocol: "openai",
-            adapterType: "openai_compatible",
             baseUrl: "https://beta.example.com/v1"
           },
           models: []
@@ -393,7 +382,6 @@ describe("managed provider multi-account", () => {
       provider: {
         providerKey: "large-catalog",
         displayName: "Large Catalog",
-        adapterType: "openai_compatible",
         baseUrl: "https://old.example.com/v1",
         providerKind: "relay",
         modelAvailabilityScope: "per_account"
@@ -404,7 +392,6 @@ describe("managed provider multi-account", () => {
           endpoint: {
             endpointKey: "openai",
             protocol: "openai",
-            adapterType: "openai_compatible",
             baseUrl: "https://old.example.com/v1"
           },
           models: []
@@ -426,7 +413,6 @@ describe("managed provider multi-account", () => {
       provider: {
         providerKey: "large-catalog",
         displayName: "Large Catalog",
-        adapterType: "openai_compatible",
         baseUrl: "https://new.example.com/v1",
         providerKind: "relay",
         modelAvailabilityScope: "per_account"
@@ -436,7 +422,6 @@ describe("managed provider multi-account", () => {
           endpoint: {
             endpointKey: "openai",
             protocol: "openai",
-            adapterType: "openai_compatible",
             baseUrl: "https://new.example.com/v1"
           },
           models

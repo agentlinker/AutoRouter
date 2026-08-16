@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import { ZodError } from "zod";
 
 import { registerExplainRoute } from "./routes/explain.js";
 import { isHttpError } from "../utils/httpErrors.js";
@@ -96,6 +97,16 @@ export async function createServer(
   });
 
   fastify.setErrorHandler((error, request, reply) => {
+    if (error instanceof ZodError) {
+      reply.status(400).send({
+        error: {
+          code: "invalid_request",
+          message: error.issues[0]?.message ?? "Invalid request"
+        }
+      });
+      return;
+    }
+
     if (isHttpError(error)) {
       reply.status(error.statusCode).send({
         error: {

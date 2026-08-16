@@ -41,8 +41,10 @@ interface ShorthandProviderModelInput {
 
 interface ShorthandProviderEndpointInput {
   protocol: string;
-  adapter: string;
+  /** @deprecated adapter 由 protocol 推导，保留仅为兼容旧配置（openrouter 自动注入 custom_headers） */
+  adapter?: string;
   base_url: string;
+  custom_headers?: Record<string, string>;
   capabilities?: {
     streaming?: boolean;
     tools?: boolean;
@@ -58,8 +60,10 @@ interface ShorthandProviderInput {
   privacy_level?: "public_only" | "normal" | "private";
   usage_trust?: "low" | "medium" | "high";
   protocol?: string;
+  /** @deprecated adapter 由 protocol 推导，保留仅为兼容旧配置（openrouter 自动注入 custom_headers） */
   adapter?: string;
   base_url?: string;
+  custom_headers?: Record<string, string>;
   capabilities?: {
     streaming?: boolean;
     tools?: boolean;
@@ -68,6 +72,28 @@ interface ShorthandProviderInput {
   accounts?: ShorthandProviderAccountInput[];
   models?: ShorthandProviderModelInput[];
   endpoints?: Record<string, ShorthandProviderEndpointInput>;
+}
+
+/**
+ * 旧配置里 `adapter: openrouter` 承载的全部信息就是这两个 header。
+ * adapter 概念已移除，把它翻译成 custom_headers 以保持旧配置行为不变。
+ * 键用小写：header 名大小写不敏感，统一小写避免与内建 header 重复。
+ */
+const LEGACY_OPENROUTER_HEADERS: Record<string, string> = {
+  "x-title": "autorouter",
+  "http-referer": "https://autorouter.local"
+};
+
+function resolveCustomHeaders(
+  explicit: Record<string, string> | undefined,
+  legacyAdapter: string | undefined
+): Record<string, string> | undefined {
+  if (legacyAdapter !== "openrouter") {
+    return explicit;
+  }
+
+  // 显式 custom_headers 优先，旧 adapter 只补齐未声明的键
+  return { ...LEGACY_OPENROUTER_HEADERS, ...explicit };
 }
 
 function expandHome(filePath: string): string {
@@ -123,8 +149,8 @@ function normalizeProviders(rawProviders: Record<string, unknown>): ConfigSource
         normalizedEndpoints[endpointId] = {
           provider: providerId,
           platform: endpoint.protocol,
-          adapter: endpoint.adapter,
           base_url: endpoint.base_url,
+          custom_headers: resolveCustomHeaders(endpoint.custom_headers, endpoint.adapter),
           capabilities: endpoint.capabilities ?? {}
         };
 
@@ -152,7 +178,7 @@ function normalizeProviders(rawProviders: Record<string, unknown>): ConfigSource
       continue;
     }
 
-    if (!provider.protocol || !provider.adapter || !provider.base_url) {
+    if (!provider.protocol || !provider.base_url) {
       continue;
     }
 
@@ -163,8 +189,8 @@ function normalizeProviders(rawProviders: Record<string, unknown>): ConfigSource
     normalizedEndpoints[endpointId] = {
       provider: providerId,
       platform: provider.protocol,
-      adapter: provider.adapter,
       base_url: provider.base_url,
+      custom_headers: resolveCustomHeaders(provider.custom_headers, provider.adapter),
       capabilities: provider.capabilities ?? {}
     };
 
@@ -268,6 +294,39 @@ function normalizePolicies(rawPolicies: Record<string, unknown>): ConfigSource {
   return normalizedPolicies;
 }
 
+function normalizeExplicitEndpoints(
+  endpoints: Record<string, unknown>
+): Record<string, unknown> {
+  const normalized: Record<string, unknown> = {};
+  for (const [endpointId, value] of Object.entries(endpoints)) {
+    const endpoint = toRecord(value);
+    const legacyAdapter = typeof endpoint.adapter === "string" ? endpoint.adapter : undefined;
+    const { adapter: _adapter, ...rest } = endpoint;
+    const customHeaders = resolveCustomHeaders(
+      toStringRecord(endpoint.custom_headers),
+      legacyAdapter
+    );
+    normalized[endpointId] = {
+      ...rest,
+      ...(customHeaders ? { custom_headers: customHeaders } : {})
+    };
+  }
+  return normalized;
+}
+
+function toStringRecord(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record: Record<string, string> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof item === "string") {
+      record[key] = item;
+    }
+  }
+  return record;
+}
+
 function normalizeConfigShape(rawConfig: ConfigSource): ConfigSource {
   const providersBlock = toRecord(rawConfig.providers);
   const routesBlock = toRecord(rawConfig.routes);
@@ -307,7 +366,11 @@ function normalizeConfigShape(rawConfig: ConfigSource): ConfigSource {
     },
     platforms: mergeObjects({}, platformsBlock, toRecord(normalizedProviderBlocks.platforms)),
     providers: toRecord(normalizedProviderBlocks.providers),
-    endpoints: mergeObjects({}, endpointsBlock, toRecord(normalizedProviderBlocks.endpoints)),
+    endpoints: mergeObjects(
+      {},
+      normalizeExplicitEndpoints(endpointsBlock),
+      toRecord(normalizedProviderBlocks.endpoints)
+    ),
     accounts: mergeObjects({}, accountsBlock, toRecord(normalizedProviderBlocks.accounts)),
     models: mergeObjects({}, modelsBlock, toRecord(normalizedProviderBlocks.models)),
     routes: normalizedRoutes,

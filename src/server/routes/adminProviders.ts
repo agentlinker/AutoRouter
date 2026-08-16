@@ -8,9 +8,9 @@ import {
   type ManagedDiscoveredModelInput
 } from "../../repositories/managedProviderRepository.js";
 import {
-  getOfficialProviderTemplate,
-  listOfficialProviderTemplates
+  getOfficialProviderTemplate
 } from "../../providers/officialProviderTemplates.js";
+import { getProviderTemplateLoadResult } from "../../providers/providerTemplateLoader.js";
 import { SecretCipher } from "../../security/secretCipher.js";
 import {
   accountUnavailableReason,
@@ -22,8 +22,18 @@ import type { ManagedModelRow } from "../../db/schema.js";
 import { HttpError, isHttpError } from "../../utils/httpErrors.js";
 
 const protocolSchema = z.enum(["openai", "anthropic"]);
-const endpointAdapterSchema = z.enum(["openai_compatible", "openrouter", "anthropic"]);
 const endpointKeySchema = z.string().min(1).regex(/^[A-Za-z0-9_.-]+$/);
+
+function parseCustomHeaders(json: string | null): Record<string, string> | undefined {
+  if (!json) return undefined;
+  try {
+    const parsed = JSON.parse(json);
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    return parsed as Record<string, string>;
+  } catch {
+    return undefined;
+  }
+}
 
 const providerKindSchema = z.enum(["official", "relay", "custom"]);
 const modelAvailabilityScopeSchema = z.enum(["shared_by_provider", "per_account"]);
@@ -45,12 +55,22 @@ const createProviderBodySchema = z.object({
     endpoint_key: endpointKeySchema,
     protocol: protocolSchema,
     base_url: z.string().url(),
+    custom_headers: z.record(z.string()).optional(),
     enabled: z.boolean().optional()
   }).strict()).min(1).optional(),
   website_url: z.string().url().optional().or(z.literal("")),
   api_key: z.string().min(1),
+  accounts: z.array(z.object({
+    account_key: accountKeySchema,
+    endpoint_key: endpointKeySchema.optional(),
+    api_key: z.string().min(1),
+    expires_at: z.string().min(1).optional().nullable(),
+    quota: accountQuotaSchema.optional().nullable(),
+    enabled: z.boolean().optional()
+  }).strict()).min(1).optional(),
   provider_kind: providerKindSchema.optional(),
   model_availability_scope: modelAvailabilityScopeSchema.optional(),
+  priority: z.number().int().nonnegative().default(0),
   template_id: z.string().min(1).optional(),
   trust_level: z.enum(["low", "medium", "high"]).default("low"),
   privacy_level: z.enum(["public_only", "normal", "private"]).default("normal"),
@@ -60,13 +80,14 @@ const createProviderBodySchema = z.object({
 const patchProviderBodySchema = z.object({
   enabled: z.boolean().optional(),
   display_name: z.string().min(1).optional(),
-  priority: z.number().int().optional(),
+  priority: z.number().int().nonnegative().optional(),
   protocol: protocolSchema.optional(),
   base_url: z.string().url().optional(),
   endpoints: z.array(z.object({
     endpoint_key: endpointKeySchema,
     protocol: protocolSchema,
     base_url: z.string().url(),
+    custom_headers: z.record(z.string()).optional(),
     enabled: z.boolean().optional()
   }).strict()).min(1).optional(),
   website_url: z.string().url().optional().or(z.literal("")),
@@ -113,8 +134,8 @@ const mergeCheckBodySchema = z.object({
 const createEndpointBodySchema = z.object({
   endpoint_key: endpointKeySchema,
   protocol: protocolSchema,
-  adapter_type: endpointAdapterSchema,
   base_url: z.string().url(),
+  custom_headers: z.record(z.string()).optional(),
   enabled: z.boolean().optional(),
   api_key: z.string().min(1).optional()
 }).strict();
@@ -123,7 +144,6 @@ interface EndpointDiscoveryBundle {
   endpoint: {
     endpointKey: string;
     protocol: "openai" | "anthropic";
-    adapterType: "openai_compatible" | "openrouter" | "anthropic";
     baseUrl: string;
     enabled?: boolean;
   };
@@ -133,8 +153,8 @@ interface EndpointDiscoveryBundle {
 
 const patchEndpointBodySchema = z.object({
   protocol: protocolSchema.optional(),
-  adapter_type: endpointAdapterSchema.optional(),
   base_url: z.string().url().optional(),
+  custom_headers: z.record(z.string()).optional(),
   enabled: z.boolean().optional()
 }).strict();
 
@@ -152,7 +172,6 @@ async function discoverModelsForEndpoint(
     providerKey: string;
     endpointKey: string;
     protocol: "openai" | "anthropic";
-    adapterType: "openai_compatible" | "openrouter" | "anthropic";
     baseUrl: string;
     apiKey: string;
   }
@@ -163,7 +182,7 @@ async function discoverModelsForEndpoint(
     apiKey: input.apiKey
   };
 
-  if (input.protocol === "anthropic" || input.adapterType === "anthropic") {
+  if (input.protocol === "anthropic") {
     const models = await discoveryService.listAnthropicModels(discoveryInput);
     return input.endpointKey === "default"
       ? models
@@ -189,12 +208,14 @@ function normalizeEndpointInputs(input: {
     endpoint_key: string;
     protocol: "openai" | "anthropic";
     base_url: string;
+    custom_headers?: Record<string, string>;
     enabled?: boolean;
   }>;
 }): Array<{
   endpoint_key: string;
   protocol: "openai" | "anthropic";
   base_url: string;
+  custom_headers?: Record<string, string>;
   enabled?: boolean;
 }> {
   if (input.endpoints && input.endpoints.length > 0) {
@@ -219,10 +240,6 @@ function normalizeEndpointInputs(input: {
   return [];
 }
 
-function toAdapterType(protocol: "openai" | "anthropic"): "openai_compatible" | "anthropic" {
-  return protocol === "anthropic" ? "anthropic" : "openai_compatible";
-}
-
 function buildProviderInput(input: {
   provider_key: string;
   display_name: string;
@@ -238,11 +255,12 @@ function buildProviderInput(input: {
   endpoint_key: string;
   protocol: "openai" | "anthropic";
   base_url: string;
+  custom_headers?: Record<string, string>;
   enabled?: boolean;
 }>): {
   providerKey: string;
   displayName: string;
-  adapterType: "openai_compatible" | "openrouter" | "anthropic";
+  protocol: "openai" | "anthropic";
   baseUrl: string;
   websiteUrl: string | null;
   providerKind?: "official" | "relay" | "custom";
@@ -258,7 +276,7 @@ function buildProviderInput(input: {
   return {
     providerKey: input.provider_key,
     displayName: input.display_name,
-    adapterType: representativeEndpoint ? toAdapterType(representativeEndpoint.protocol) : "openai_compatible",
+    protocol: representativeEndpoint?.protocol ?? "openai",
     baseUrl: representativeEndpoint?.base_url ?? "",
     websiteUrl: input.website_url || null,
     providerKind: input.provider_kind,
@@ -276,6 +294,7 @@ function ensureUniqueEndpointKeys(
     endpoint_key: string;
     protocol: "openai" | "anthropic";
     base_url: string;
+    custom_headers?: Record<string, string>;
     enabled?: boolean;
   }>
 ) {
@@ -299,6 +318,7 @@ async function discoverEndpointBundles(
       endpoint_key: string;
       protocol: "openai" | "anthropic";
       base_url: string;
+      custom_headers?: Record<string, string>;
       enabled?: boolean;
     }>;
   }
@@ -312,7 +332,6 @@ async function discoverEndpointBundles(
           providerKey: input.providerKey,
           endpointKey: endpoint.endpoint_key,
           protocol: endpoint.protocol,
-          adapterType: toAdapterType(endpoint.protocol),
           baseUrl: endpoint.base_url,
           apiKey: input.apiKey
         });
@@ -325,8 +344,8 @@ async function discoverEndpointBundles(
         endpoint: {
           endpointKey: endpoint.endpoint_key,
           protocol: endpoint.protocol,
-          adapterType: toAdapterType(endpoint.protocol),
           baseUrl: endpoint.base_url,
+          customHeaders: endpoint.custom_headers,
           enabled: endpoint.enabled
         },
         models,
@@ -461,7 +480,7 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
   return {
     provider_key: details.provider.providerKey,
     display_name: details.provider.displayName,
-    adapter_type: details.provider.adapterType,
+    protocol: details.endpoints[0]?.protocol ?? "openai",
     base_url: details.provider.baseUrl,
     website_url: details.provider.websiteUrl,
     provider_kind: details.provider.providerKind ?? "custom",
@@ -480,8 +499,8 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
     endpoints: details.endpoints.map((endpoint) => ({
       endpoint_key: endpoint.endpointKey,
       protocol: endpoint.protocol,
-      adapter_type: endpoint.adapterType,
       base_url: endpoint.baseUrl,
+      custom_headers: parseCustomHeaders(endpoint.customHeadersJson),
       enabled: endpoint.enabled,
       supports_streaming: endpoint.supportsStreaming,
       supports_tools: endpoint.supportsTools,
@@ -532,8 +551,12 @@ export async function registerAdminProvidersRoutes(
   });
 
   fastify.get("/admin/api/provider-templates", async () => {
+    const loaded = getProviderTemplateLoadResult();
     return {
-      data: listOfficialProviderTemplates()
+      data: loaded.templates,
+      meta: {
+        load_errors: loaded.errors
+      }
     };
   });
 
@@ -636,7 +659,8 @@ export async function registerAdminProvidersRoutes(
     }
 
     const snapshot = dependencies.runtimeManager.getSnapshot();
-    const adapter = snapshot.adapters.get(endpoint.adapterType as never);
+    const adapterType = endpoint.protocol === "anthropic" ? "anthropic" : "openai_compatible";
+    const adapter = snapshot.adapters.get(adapterType);
     const endpointId = `${details.provider.providerKey}/${endpoint.endpointKey}`;
     const accountId = `${endpointId}/${account.accountKey}`;
     const target = {
@@ -656,8 +680,8 @@ export async function registerAdminProvidersRoutes(
         id: endpointId,
         provider_id: details.provider.providerKey,
         platform_id: endpoint.protocol,
-        adapter: endpoint.adapterType,
         base_url: endpoint.baseUrl,
+        custom_headers: parseCustomHeaders(endpoint.customHeadersJson),
         enabled: endpoint.enabled,
         capabilities: {
           streaming: endpoint.supportsStreaming,
@@ -787,6 +811,7 @@ export async function registerAdminProvidersRoutes(
         endpoint_key: endpoint.endpoint_key,
         protocol: endpoint.protocol,
         base_url: endpoint.base_url,
+        custom_headers: endpoint.custom_headers,
         enabled: endpoint.enabled
       }))
     });
@@ -795,9 +820,20 @@ export async function registerAdminProvidersRoutes(
     }
     ensureUniqueEndpointKeys(endpointInputs);
 
+    const primaryAccount = body.accounts?.[0];
+    if (body.accounts) {
+      const accountKeys = new Set<string>();
+      for (const account of body.accounts) {
+        if (accountKeys.has(account.account_key)) {
+          throw new HttpError(400, "duplicate_account_key", "Account Key must be unique");
+        }
+        accountKeys.add(account.account_key);
+      }
+    }
+    const discoveryApiKey = primaryAccount?.api_key ?? body.api_key;
     const endpointBundles = await discoverEndpointBundles(dependencies.discoveryService, {
       providerKey: body.provider_key,
-      apiKey: body.api_key,
+      apiKey: discoveryApiKey,
       endpoints: endpointInputs
     });
     ensureProviderDiscoveryUsable(endpointBundles);
@@ -810,14 +846,40 @@ export async function registerAdminProvidersRoutes(
         model_availability_scope:
           body.model_availability_scope ?? template?.model_availability_scope
       }, endpointInputs),
-      encryptedApiKey: dependencies.secretCipher.encrypt(body.api_key),
-      apiKeyHint: ManagedProviderRepository.toApiKeyHint(body.api_key),
+      encryptedApiKey: dependencies.secretCipher.encrypt(discoveryApiKey),
+      apiKeyHint: ManagedProviderRepository.toApiKeyHint(discoveryApiKey),
+      defaultAccount: primaryAccount
+        ? {
+            accountKey: primaryAccount.account_key,
+            endpointKey: primaryAccount.endpoint_key,
+            enabled: primaryAccount.enabled,
+            expiresAt: primaryAccount.expires_at ?? null,
+            quotaJson: primaryAccount.quota ? JSON.stringify(primaryAccount.quota) : null
+          }
+        : undefined,
       endpointBundles
     });
 
+    for (const account of body.accounts?.slice(1) ?? []) {
+      const created = dependencies.repository.createAccount(body.provider_key, {
+        accountKey: account.account_key,
+        endpointKey: account.endpoint_key,
+        encryptedApiKey: dependencies.secretCipher.encrypt(account.api_key),
+        apiKeyHint: ManagedProviderRepository.toApiKeyHint(account.api_key),
+        enabled: account.enabled,
+        expiresAt: account.expires_at ?? null,
+        quotaJson: account.quota ? JSON.stringify(account.quota) : null
+      });
+      if (!created) {
+        throw new HttpError(400, "invalid_account", `Unable to create account ${account.account_key}`);
+      }
+    }
+
     await dependencies.runtimeManager.reload();
     reply.status(201);
-    return serializeProviderDetails(details);
+    return serializeProviderDetails(
+      dependencies.repository.getProviderDetails(body.provider_key) ?? details
+    );
   });
 
   fastify.post<{ Params: { providerKey: string } }>(
@@ -838,7 +900,6 @@ export async function registerAdminProvidersRoutes(
         providerKey: details.provider.providerKey,
         endpointKey: endpoint.endpointKey,
         protocol: endpoint.protocol as "openai" | "anthropic",
-        adapterType: endpoint.adapterType as "openai_compatible" | "openrouter" | "anthropic",
         baseUrl: endpoint.baseUrl,
         apiKey
       });
@@ -979,7 +1040,6 @@ export async function registerAdminProvidersRoutes(
         providerKey: existing.provider.providerKey,
         endpointKey: body.endpoint_key,
         protocol: body.protocol,
-        adapterType: body.adapter_type,
         baseUrl: body.base_url,
         apiKey
       });
@@ -987,8 +1047,8 @@ export async function registerAdminProvidersRoutes(
       const endpoint = dependencies.repository.createProviderEndpoint(request.params.providerKey, {
         endpointKey: body.endpoint_key,
         protocol: body.protocol,
-        adapterType: body.adapter_type,
         baseUrl: body.base_url,
+        customHeaders: body.custom_headers,
         enabled: body.enabled
       });
 
@@ -1026,8 +1086,8 @@ export async function registerAdminProvidersRoutes(
         request.params.endpointKey,
         {
           protocol: body.protocol,
-          adapterType: body.adapter_type,
           baseUrl: body.base_url,
+          customHeaders: body.custom_headers,
           enabled: body.enabled
         }
       );
@@ -1058,7 +1118,6 @@ export async function registerAdminProvidersRoutes(
         providerKey: details.provider.providerKey,
         endpointKey: endpoint.endpointKey,
         protocol: endpoint.protocol as "openai" | "anthropic",
-        adapterType: endpoint.adapterType as "openai_compatible" | "openrouter" | "anthropic",
         baseUrl: endpoint.baseUrl,
         apiKey
       });
@@ -1218,7 +1277,6 @@ export async function registerAdminProvidersRoutes(
             providerKey: details.provider.providerKey,
             endpointKey: endpoint.endpointKey,
             protocol: endpoint.protocol as "openai" | "anthropic",
-            adapterType: endpoint.adapterType as "openai_compatible" | "openrouter" | "anthropic",
             baseUrl: endpoint.baseUrl,
             apiKey
           });

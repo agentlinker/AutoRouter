@@ -78,7 +78,6 @@ describe("admin catalog integration", () => {
       provider: {
         providerKey: "catalog-provider",
         displayName: "Catalog Provider",
-        adapterType: "openai_compatible",
         baseUrl: "https://catalog.example.com/v1",
         enabled: true
       },
@@ -88,7 +87,6 @@ describe("admin catalog integration", () => {
           endpoint: {
             endpointKey: "default",
             protocol: "openai",
-            adapterType: "openai_compatible",
             baseUrl: "https://catalog.example.com/v1",
             enabled: true
           },

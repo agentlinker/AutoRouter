@@ -4,7 +4,10 @@ import { MockAgent, setGlobalDispatcher } from "undici";
 import { OpenAiCompatibleAdapter } from "../../src/providers/openaiCompatible.js";
 import { HttpError } from "../../src/utils/httpErrors.js";
 
-function createRouteTarget(baseUrl: string) {
+function createRouteTarget(
+  baseUrl: string,
+  customHeaders?: Record<string, string>
+) {
   return {
     platform: {
       id: "openai",
@@ -21,8 +24,8 @@ function createRouteTarget(baseUrl: string) {
       id: "demo-openai",
       provider_id: "demo",
       platform_id: "openai",
-      adapter: "openai_compatible",
       base_url: baseUrl,
+      custom_headers: customHeaders,
       enabled: true,
       capabilities: {
         streaming: true,
@@ -245,6 +248,44 @@ describe("OpenAiCompatibleAdapter", () => {
     });
   });
 
+  it("sends custom headers while protecting the authorization header", async () => {
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+
+    let seenHeaders: Record<string, string | string[] | undefined> = {};
+    mockAgent
+      .get("https://adapter-headers.example.com")
+      .intercept({ path: "/v1/chat/completions", method: "POST" })
+      .reply((options) => {
+        seenHeaders = (options as { headers: typeof seenHeaders }).headers;
+        return {
+          statusCode: 200,
+          data: "{}",
+          headers: { "content-type": "application/json" }
+        };
+      });
+
+    const adapter = new OpenAiCompatibleAdapter();
+    await adapter.chatCompletion(
+      {
+        model: "auto",
+        messages: [{ role: "user", content: "hello" }],
+        stream: false,
+        tools: [],
+        metadata: {},
+        context_tokens_est: 10
+      },
+      createRouteTarget("https://adapter-headers.example.com/v1", {
+        "X-Title": "autorouter",
+        Authorization: "should-not-win"
+      })
+    );
+
+    expect(seenHeaders["x-title"]).toBe("autorouter");
+    expect(seenHeaders.authorization).toBe("Bearer test");
+    await mockAgent.close();
+  });
   it("returns the upstream body verbatim so passthrough keeps unmodeled fields", async () => {
     const mockAgent = new MockAgent();
     mockAgent.disableNetConnect();

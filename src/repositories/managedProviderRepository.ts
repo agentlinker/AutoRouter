@@ -25,7 +25,7 @@ export type ModelAvailabilityScope = "shared_by_provider" | "per_account";
 export interface ManagedProviderInput {
   providerKey: string;
   displayName: string;
-  adapterType: "openai_compatible" | "openrouter" | "anthropic";
+  protocol?: "openai" | "anthropic";
   baseUrl: string;
   websiteUrl?: string | null;
   providerKind?: ProviderKind;
@@ -67,8 +67,8 @@ export interface AccountQuota {
 export interface ManagedEndpointInput {
   endpointKey: string;
   protocol: "openai" | "anthropic";
-  adapterType: "openai_compatible" | "openrouter" | "anthropic";
   baseUrl: string;
+  customHeaders?: Record<string, string>;
   enabled?: boolean;
   supportsStreaming?: boolean;
   supportsTools?: boolean;
@@ -112,8 +112,8 @@ function normalizeProviderPriority(priority: number | undefined): number | undef
 
 export interface ManagedEndpointUpdateInput {
   protocol?: "openai" | "anthropic";
-  adapterType?: "openai_compatible" | "openrouter" | "anthropic";
   baseUrl?: string;
+  customHeaders?: Record<string, string>;
   enabled?: boolean;
   supportsStreaming?: boolean;
   supportsTools?: boolean;
@@ -819,8 +819,7 @@ export class ManagedProviderRepository {
         {
           endpoint: {
             endpointKey: "default",
-            protocol: input.provider.adapterType === "anthropic" ? "anthropic" : "openai",
-            adapterType: input.provider.adapterType,
+            protocol: input.provider.protocol ?? "openai",
             baseUrl: input.provider.baseUrl,
             enabled: input.provider.enabled ?? true,
             supportsStreaming: true,
@@ -861,7 +860,6 @@ export class ManagedProviderRepository {
       tx.update(managedProvidersTable)
         .set({
           displayName: input.provider.displayName,
-          adapterType: representativeEndpoint?.adapterType ?? input.provider.adapterType,
           baseUrl: representativeEndpoint?.baseUrl ?? input.provider.baseUrl,
           websiteUrl: input.provider.websiteUrl ?? null,
           providerKind,
@@ -899,8 +897,8 @@ export class ManagedProviderRepository {
             providerId: existing.provider.id,
             endpointKey: bundle.endpoint.endpointKey,
             protocol: bundle.endpoint.protocol,
-            adapterType: bundle.endpoint.adapterType,
             baseUrl: bundle.endpoint.baseUrl,
+            customHeadersJson: bundle.endpoint.customHeaders ? JSON.stringify(bundle.endpoint.customHeaders) : null,
             enabled: bundle.endpoint.enabled ?? true,
             supportsStreaming: bundle.endpoint.supportsStreaming ?? true,
             supportsTools: bundle.endpoint.supportsTools ?? bundle.models.some((model) => model.supportsTools),
@@ -1006,6 +1004,13 @@ export class ManagedProviderRepository {
     provider: ManagedProviderInput;
     encryptedApiKey: string;
     apiKeyHint?: string;
+    defaultAccount?: {
+      accountKey: string;
+      endpointKey?: string;
+      enabled?: boolean;
+      expiresAt?: string | null;
+      quotaJson?: string | null;
+    };
     endpointBundles: ManagedEndpointBundleInput[];
   }): ManagedProviderDetails {
     const now = nowIso();
@@ -1021,7 +1026,6 @@ export class ManagedProviderRepository {
         .values({
           providerKey: input.provider.providerKey,
           displayName: input.provider.displayName,
-          adapterType: input.provider.adapterType,
           baseUrl: input.provider.baseUrl,
           websiteUrl: input.provider.websiteUrl ?? null,
           providerKind,
@@ -1039,6 +1043,7 @@ export class ManagedProviderRepository {
 
       let discoveredCount = 0;
       let firstEndpointId: number | null = null;
+      const endpointIdsByKey = new Map<string, number>();
 
       for (const bundle of input.endpointBundles) {
         const endpointInsert = tx.insert(managedProviderEndpointsTable)
@@ -1046,8 +1051,8 @@ export class ManagedProviderRepository {
             providerId: providerInsert.id,
             endpointKey: bundle.endpoint.endpointKey,
             protocol: bundle.endpoint.protocol,
-            adapterType: bundle.endpoint.adapterType,
             baseUrl: bundle.endpoint.baseUrl,
+            customHeadersJson: bundle.endpoint.customHeaders ? JSON.stringify(bundle.endpoint.customHeaders) : null,
             enabled: bundle.endpoint.enabled ?? true,
             supportsStreaming: bundle.endpoint.supportsStreaming ?? true,
             supportsTools: bundle.endpoint.supportsTools ?? bundle.models.some((model) => model.supportsTools),
@@ -1061,6 +1066,7 @@ export class ManagedProviderRepository {
         if (firstEndpointId === null) {
           firstEndpointId = endpointInsert.id;
         }
+        endpointIdsByKey.set(bundle.endpoint.endpointKey, endpointInsert.id);
 
         discoveredCount += bundle.models.length;
 
@@ -1082,13 +1088,17 @@ export class ManagedProviderRepository {
 
       const defaultAccount = tx.insert(managedProviderCredentialsTable).values({
         providerId: providerInsert.id,
-        accountKey: "default",
+        accountKey: input.defaultAccount?.accountKey ?? "default",
         // null endpoint means this key can be used on all provider endpoints
-        endpointId: null,
-        enabled: true,
+        endpointId: input.defaultAccount?.endpointKey
+          ? endpointIdsByKey.get(input.defaultAccount.endpointKey) ?? null
+          : null,
+        enabled: input.defaultAccount?.enabled ?? true,
         runtimeStatus: "normal",
         statusSource: "system",
         recentErrorCount: 0,
+        expiresAt: input.defaultAccount?.expiresAt ?? null,
+        quotaJson: input.defaultAccount?.quotaJson ?? null,
         apiKeyEncrypted: input.encryptedApiKey,
         keyHint: input.apiKeyHint ?? null,
         createdAt: now,
@@ -1430,12 +1440,6 @@ export class ManagedProviderRepository {
         .set({
           baseUrl: input.baseUrl ?? existing.provider.baseUrl,
           protocol: input.protocol ?? existing.endpoints.find((endpoint) => endpoint.endpointKey === "default")?.protocol ?? "openai",
-          adapterType:
-            input.protocol === "anthropic"
-              ? "anthropic"
-              : input.protocol === "openai"
-                ? "openai_compatible"
-                : existing.endpoints.find((endpoint) => endpoint.endpointKey === "default")?.adapterType ?? "openai_compatible",
           enabled: input.enabled ?? existing.provider.enabled,
           updatedAt: now
         })
@@ -1487,8 +1491,8 @@ export class ManagedProviderRepository {
         providerId: provider.id,
         endpointKey: input.endpointKey,
         protocol: input.protocol,
-        adapterType: input.adapterType,
         baseUrl: input.baseUrl,
+        customHeadersJson: input.customHeaders ? JSON.stringify(input.customHeaders) : null,
         enabled: input.enabled ?? true,
         supportsStreaming: input.supportsStreaming ?? true,
         supportsTools: input.supportsTools ?? false,
@@ -1513,8 +1517,8 @@ export class ManagedProviderRepository {
     this.db.update(managedProviderEndpointsTable)
       .set({
         protocol: input.protocol ?? endpoint.protocol,
-        adapterType: input.adapterType ?? endpoint.adapterType,
         baseUrl: input.baseUrl ?? endpoint.baseUrl,
+        customHeadersJson: input.customHeaders !== undefined ? (input.customHeaders ? JSON.stringify(input.customHeaders) : null) : endpoint.customHeadersJson,
         enabled: input.enabled ?? endpoint.enabled,
         supportsStreaming: input.supportsStreaming ?? endpoint.supportsStreaming,
         supportsTools: input.supportsTools ?? endpoint.supportsTools,

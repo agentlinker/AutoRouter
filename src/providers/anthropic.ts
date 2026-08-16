@@ -3,6 +3,7 @@ import { request } from "undici";
 import type { NormalizedChatRequest } from "../routing/types.js";
 import { PROVIDER_AUTH_FAILED_CODE } from "../utils/providerErrors.js";
 import { HttpError } from "../utils/httpErrors.js";
+import { mergeCustomHeaders } from "./customHeaders.js";
 import type {
   HealthResult,
   ProviderAdapter,
@@ -13,14 +14,17 @@ import type {
 } from "./adapter.js";
 import { parseJsonSafely } from "./openaiCompatible.js";
 
-function buildHeaders(apiKey: string | undefined): Record<string, string> {
-  const headers: Record<string, string> = {
-    "content-type": "application/json",
-    "anthropic-version": "2023-06-01"
-  };
+function buildHeaders(target: RouteTarget): Record<string, string> {
+  const headers = mergeCustomHeaders(
+    {
+      "content-type": "application/json",
+      "anthropic-version": "2023-06-01"
+    },
+    target.endpoint.custom_headers
+  );
 
-  if (apiKey) {
-    headers["x-api-key"] = apiKey;
+  if (target.credential) {
+    headers["x-api-key"] = target.credential;
   }
 
   return headers;
@@ -165,7 +169,7 @@ export class AnthropicAdapter implements ProviderAdapter {
     try {
       const response = await request(`${target.endpoint.base_url}/messages`, {
         method: "POST",
-        headers: buildHeaders(target.credential),
+        headers: buildHeaders(target),
         body: JSON.stringify({
           model: target.model.model_name,
           max_tokens: 1,
@@ -194,7 +198,7 @@ export class AnthropicAdapter implements ProviderAdapter {
     try {
       response = await request(`${target.endpoint.base_url}/messages`, {
         method: "POST",
-        headers: buildHeaders(target.credential),
+        headers: buildHeaders(target),
         body: JSON.stringify(toAnthropicRequest(requestBody, target))
       });
     } catch (error) {
@@ -255,7 +259,7 @@ export class AnthropicAdapter implements ProviderAdapter {
     try {
       response = await request(`${target.endpoint.base_url}/messages`, {
         method: "POST",
-        headers: buildHeaders(target.credential),
+        headers: buildHeaders(target),
         body: JSON.stringify({
           ...toAnthropicRequest(requestBody, target),
           stream: true
@@ -299,7 +303,7 @@ export class AnthropicAdapter implements ProviderAdapter {
     try {
       response = await request(`${target.endpoint.base_url}/messages`, {
         method: "POST",
-        headers: buildHeaders(target.credential),
+        headers: buildHeaders(target),
         body: JSON.stringify({
           ...requestBody,
           model: target.model.model_name,
@@ -337,7 +341,7 @@ export class AnthropicAdapter implements ProviderAdapter {
     try {
       response = await request(`${target.endpoint.base_url}/messages`, {
         method: "POST",
-        headers: buildHeaders(target.credential),
+        headers: buildHeaders(target),
         body: JSON.stringify({
           ...requestBody,
           model: target.model.model_name,

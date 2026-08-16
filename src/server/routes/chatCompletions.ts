@@ -168,10 +168,10 @@ export async function registerChatCompletionsRoute(
         {
           ...executionInput,
           supportsCandidate: (_candidate, target) =>
-            Boolean(state.adapters.get(target.endpoint.adapter as never).streamChatCompletion),
+            Boolean(state.adapters.forProtocol(target.platform.protocol).streamChatCompletion),
           invokeStream: (_candidate, target) =>
             state.adapters
-              .get(target.endpoint.adapter as never)
+              .forProtocol(target.platform.protocol)
               .streamChatCompletion!(normalizedRequest, target),
           onStreamStart: () => {
             if (!reply.raw.headersSent) {
@@ -235,7 +235,7 @@ export async function registerChatCompletionsRoute(
       const outcome = await executeRoutedRequest({
         ...executionInput,
         invoke: (_candidate, target) =>
-          state.adapters.get(target.endpoint.adapter as never).chatCompletion(
+          state.adapters.forProtocol(target.platform.protocol).chatCompletion(
             normalizedRequest,
             target
           )

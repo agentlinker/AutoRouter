@@ -79,6 +79,37 @@ function parsePricingJson(pricingJson: string | null | undefined): PriceEntryCon
   };
 }
 
+/**
+ * custom_headers 在 DB 里是 JSON 文本。解析失败当作未配置：
+ * header 是可选增强项，不该因为一条脏数据让整个 provider 不可用。
+ */
+function parseCustomHeaders(
+  customHeadersJson: string | null | undefined
+): Record<string, string> | undefined {
+  if (!customHeadersJson) {
+    return undefined;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(customHeadersJson) as unknown;
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return undefined;
+  }
+
+  const headers: Record<string, string> = {};
+  for (const [name, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof value === "string") {
+      headers[name] = value;
+    }
+  }
+
+  return Object.keys(headers).length > 0 ? headers : undefined;
+}
+
 export class RuntimeConfigProjector {
   public constructor(private readonly options: RuntimeProjectorOptions) {}
 
@@ -121,8 +152,8 @@ export class RuntimeConfigProjector {
       mergedConfig.endpoints[endpointId] = {
         provider: providerId,
         platform: bundle.endpoint.protocol,
-        adapter: bundle.endpoint.adapterType as RouterConfig["endpoints"][string]["adapter"],
         base_url: bundle.endpoint.baseUrl,
+        custom_headers: parseCustomHeaders(bundle.endpoint.customHeadersJson),
         enabled: bundle.provider.enabled && bundle.endpoint.enabled,
         capabilities: {
           streaming: bundle.endpoint.supportsStreaming,

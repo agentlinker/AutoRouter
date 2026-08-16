@@ -386,7 +386,7 @@ async function fallbackResponsesViaChat(
     runtimeStatusService,
     candidates: routeDecision.ordered,
     invoke: (_candidate, target) =>
-      state.adapters.get(target.endpoint.adapter as never).chatCompletion(normalizedRequest, target)
+      state.adapters.forProtocol(target.platform.protocol).chatCompletion(normalizedRequest, target)
   });
 
   const priceEstimate = outcome.selected
@@ -702,7 +702,7 @@ export async function registerResponsesRoute(
       // 只有实现了原生 responses 方法的 adapter 才能直通；其余候选跳过，
       // 全部跳过时降级为 Chat Completions 转换。
       supportsCandidate: (_candidate: RoutedCandidate, target: RouteTarget) => {
-        const adapter = state.adapters.get(target.endpoint.adapter as never);
+        const adapter = state.adapters.forProtocol(target.platform.protocol);
         return Boolean(request.body.stream ? adapter.streamResponse : adapter.responseCompletion);
       }
     };
@@ -721,7 +721,7 @@ export async function registerResponsesRoute(
         {
           ...executionInput,
           invokeStream: (_candidate, target) =>
-            state.adapters.get(target.endpoint.adapter as never).streamResponse!(
+            state.adapters.forProtocol(target.platform.protocol).streamResponse!(
               {
                 ...(request.body as Record<string, unknown>),
                 model: request.body.model!,
@@ -793,7 +793,7 @@ export async function registerResponsesRoute(
       const outcome = await executeRoutedRequest({
         ...executionInput,
         invoke: (_candidate, target) =>
-          state.adapters.get(target.endpoint.adapter as never).responseCompletion!(
+          state.adapters.forProtocol(target.platform.protocol).responseCompletion!(
             {
               ...(request.body as Record<string, unknown>),
               model: request.body.model!,

@@ -97,7 +97,6 @@ describe("admin providers integration", () => {
       repository.createProviderWithEndpointBundles({
         provider: {
           ...provider,
-          adapterType: "openai_compatible",
           baseUrl: `https://${provider.providerKey}.example.com/v1`
         },
         encryptedApiKey: secretCipher.encrypt(`${provider.providerKey}-secret`),
@@ -106,7 +105,6 @@ describe("admin providers integration", () => {
             endpoint: {
               endpointKey: "default",
               protocol: "openai",
-              adapterType: "openai_compatible",
               baseUrl: `https://${provider.providerKey}.example.com/v1`
             },
             models: [
@@ -331,11 +329,45 @@ describe("admin providers integration", () => {
         display_name: "Managed Provider",
         base_url: "https://managed.example.com/v1",
         website_url: "https://managed.example.com",
-        api_key: "managed-secret"
+        priority: 3,
+        api_key: "managed-secret",
+        accounts: [
+          {
+            account_key: "primary",
+            endpoint_key: "default",
+            api_key: "managed-secret",
+            expires_at: "2030-01-02T03:04:05.000Z",
+            quota: { remaining_usd: 12, source: "manual" },
+            enabled: true
+          },
+          {
+            account_key: "backup",
+            endpoint_key: "default",
+            api_key: "backup-secret",
+            quota: { remaining_usd: 4, source: "manual" },
+            enabled: true
+          }
+        ]
       }
     });
 
     expect(createResponse.statusCode).toBe(201);
+    expect(createResponse.json().priority).toBe(3);
+    expect(createResponse.json().accounts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          account_key: "primary",
+          endpoint_key: "default",
+          expires_at: "2030-01-02T03:04:05.000Z",
+          quota: expect.objectContaining({ remaining_usd: 12 })
+        }),
+        expect.objectContaining({
+          account_key: "backup",
+          endpoint_key: "default",
+          quota: expect.objectContaining({ remaining_usd: 4 })
+        })
+      ])
+    );
     expect(createResponse.json().models).toHaveLength(1);
     expect(createResponse.json().models[0].model_name).toBe("managed-model");
     expect(createResponse.json()).not.toHaveProperty("runtime_status");
@@ -348,7 +380,7 @@ describe("admin providers integration", () => {
         authorization: "Bearer admin-token"
       },
       payload: {
-        account_key: "default",
+        account_key: "primary",
         model_key: createResponse.json().models[0].model_key,
         prompt: "Return exactly TEST_OK."
       }
@@ -358,7 +390,7 @@ describe("admin providers integration", () => {
     expect(testModelResponse.json()).toMatchObject({
       success: true,
       provider_key: "managed",
-      account_key: "default",
+      account_key: "primary",
       model_name: "managed-model",
       prompt: "Return exactly TEST_OK.",
       protocol: "responses",
@@ -418,6 +450,7 @@ describe("admin providers integration", () => {
       },
       payload: {
         display_name: "Managed Provider Edited",
+        priority: 8,
         base_url: "https://managed.example.com/v2",
         website_url: "https://managed.example.com/docs"
       }
@@ -425,11 +458,24 @@ describe("admin providers integration", () => {
 
     expect(editResponse.statusCode).toBe(200);
     expect(editResponse.json().display_name).toBe("Managed Provider Edited");
+    expect(editResponse.json().priority).toBe(8);
     expect(editResponse.json().base_url).toBe("https://managed.example.com/v2");
     expect(editResponse.json().website_url).toBe("https://managed.example.com/docs");
     expect(editResponse.json().models).toHaveLength(1);
     expect(editResponse.json().models[0].model_name).toBe("managed-model-v2");
     expect(editResponse.json().models[0].supports_tools).toBe(true);
+
+    const negativePriorityResponse = await server.inject({
+      method: "PATCH",
+      url: "/admin/api/providers/managed",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        priority: -1
+      }
+    });
+    expect(negativePriorityResponse.statusCode).toBe(400);
 
     pool
       .intercept({
@@ -478,7 +524,6 @@ describe("admin providers integration", () => {
       payload: {
         endpoint_key: "anthropic",
         protocol: "anthropic",
-        adapter_type: "anthropic",
         base_url: "https://managed.example.com/anthropic"
       }
     });
@@ -493,7 +538,6 @@ describe("admin providers integration", () => {
         expect.objectContaining({
           endpoint_key: "anthropic",
           protocol: "anthropic",
-          adapter_type: "anthropic"
         })
       ])
     );
@@ -1121,7 +1165,6 @@ describe("admin providers integration", () => {
         expect.objectContaining({
           endpoint_key: "default",
           protocol: "anthropic",
-          adapter_type: "anthropic",
           base_url: "https://anthropic-create.example.com/v1"
         })
       ])
@@ -1233,7 +1276,6 @@ describe("admin providers integration", () => {
       payload: {
         endpoint_key: "anthropic",
         protocol: "anthropic",
-        adapter_type: "anthropic",
         base_url: "https://relay-dual.example.com/v1"
       }
     });
@@ -1249,7 +1291,6 @@ describe("admin providers integration", () => {
         expect.objectContaining({
           endpoint_key: "anthropic",
           protocol: "anthropic",
-          adapter_type: "anthropic",
           base_url: "https://relay-dual.example.com/v1"
         })
       ])
@@ -1263,7 +1304,6 @@ describe("admin providers integration", () => {
       payload: {
         endpoint_key: "anthropic",
         protocol: "anthropic",
-        adapter_type: "anthropic",
         base_url: "https://relay-dual.example.com/v1"
       }
     });

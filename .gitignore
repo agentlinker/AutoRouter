@@ -7,6 +7,8 @@ AGENTS.md
 CLAUDE.md
 openspec/
 config/config.yaml
+config/provider-templates.user.yaml
+scripts/probe-muyuan-client-header.ts
 data/
 .claude/
 .codex/

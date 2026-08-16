@@ -1,4 +1,14 @@
+import { copyFileSync } from "node:fs";
 import type Database from "better-sqlite3";
+
+function backupBeforeAdapterColumnRemoval(sqlite: Database.Database): void {
+  if (sqlite.name === ":memory:") {
+    return;
+  }
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  copyFileSync(sqlite.name, `${sqlite.name}.bak-${timestamp}`);
+}
 
 function toLogicalModelName(modelName: string): string {
   const trimmed = modelName.trim();
@@ -63,7 +73,6 @@ export function runMigrations(sqlite: Database.Database) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       provider_key TEXT NOT NULL UNIQUE,
       display_name TEXT NOT NULL,
-      adapter_type TEXT NOT NULL,
       base_url TEXT NOT NULL,
       website_url TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
@@ -90,8 +99,8 @@ export function runMigrations(sqlite: Database.Database) {
       provider_id INTEGER NOT NULL,
       endpoint_key TEXT NOT NULL,
       protocol TEXT NOT NULL DEFAULT 'openai',
-      adapter_type TEXT NOT NULL,
       base_url TEXT NOT NULL,
+      custom_headers_json TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       supports_streaming INTEGER NOT NULL DEFAULT 1,
       supports_tools INTEGER NOT NULL DEFAULT 0,
@@ -195,39 +204,43 @@ export function runMigrations(sqlite: Database.Database) {
     sqlite.exec("ALTER TABLE managed_models ADD COLUMN endpoint_id INTEGER;");
   }
 
-  sqlite.exec(`
-    INSERT OR IGNORE INTO managed_provider_endpoints (
-      provider_id,
-      endpoint_key,
-      protocol,
-      adapter_type,
-      base_url,
-      enabled,
-      supports_streaming,
-      supports_tools,
-      supports_json_mode,
-      created_at,
-      updated_at
-    )
-    SELECT
-      id,
-      'default',
-      CASE WHEN adapter_type = 'anthropic' THEN 'anthropic' ELSE 'openai' END,
-      adapter_type,
-      base_url,
-      enabled,
-      1,
-      0,
-      0,
-      created_at,
-      updated_at
-    FROM managed_providers
-    WHERE NOT EXISTS (
-      SELECT 1
-      FROM managed_provider_endpoints
-      WHERE managed_provider_endpoints.provider_id = managed_providers.id
-    );
+  // 这段回填读 managed_providers.adapter_type，必须在下面 DROP COLUMN 之前执行；
+  // adapter_type 已删除的库（含全新建库）跳过，protocol 由后续 endpoint 自带。
+  if (providerColumns.some((column) => column.name === "adapter_type")) {
+    sqlite.exec(`
+      INSERT OR IGNORE INTO managed_provider_endpoints (
+        provider_id,
+        endpoint_key,
+        protocol,
+        base_url,
+        enabled,
+        supports_streaming,
+        supports_tools,
+        supports_json_mode,
+        created_at,
+        updated_at
+      )
+      SELECT
+        id,
+        'default',
+        CASE WHEN adapter_type = 'anthropic' THEN 'anthropic' ELSE 'openai' END,
+        base_url,
+        enabled,
+        1,
+        0,
+        0,
+        created_at,
+        updated_at
+      FROM managed_providers
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM managed_provider_endpoints
+        WHERE managed_provider_endpoints.provider_id = managed_providers.id
+      );
+    `);
+  }
 
+  sqlite.exec(`
     UPDATE managed_models
     SET endpoint_id = (
       SELECT managed_provider_endpoints.id
@@ -237,6 +250,28 @@ export function runMigrations(sqlite: Database.Database) {
     )
     WHERE endpoint_id IS NULL;
   `);
+
+  // 删除冗余列：adapter_type（两张表）
+  if (providerColumns.some((column) => column.name === "adapter_type")) {
+    backupBeforeAdapterColumnRemoval(sqlite);
+    sqlite.exec("ALTER TABLE managed_providers DROP COLUMN adapter_type;");
+  }
+
+  const endpointColumns = sqlite.pragma("table_info(managed_provider_endpoints)") as Array<{
+    name: string;
+  }>;
+  if (endpointColumns.some((column) => column.name === "adapter_type")) {
+    // provider 表已在上面备份；只有旧库 endpoint 单独残留时也要保留备份。
+    if (!providerColumns.some((column) => column.name === "adapter_type")) {
+      backupBeforeAdapterColumnRemoval(sqlite);
+    }
+    sqlite.exec("ALTER TABLE managed_provider_endpoints DROP COLUMN adapter_type;");
+  }
+
+  // 新增列：custom_headers_json
+  if (!endpointColumns.some((column) => column.name === "custom_headers_json")) {
+    sqlite.exec("ALTER TABLE managed_provider_endpoints ADD COLUMN custom_headers_json TEXT;");
+  }
 
   const routeTraceColumns = sqlite.pragma("table_info(route_traces)") as Array<{
     name: string;

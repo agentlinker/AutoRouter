@@ -3,12 +3,11 @@ import { z } from "zod";
 export const trustLevelSchema = z.enum(["low", "medium", "high"]);
 export const privacyLevelSchema = z.enum(["public_only", "normal", "private"]);
 export const usageTrustSchema = z.enum(["low", "medium", "high"]);
-export const adapterTypeSchema = z.enum([
-  "openai_compatible",
-  "openrouter",
-  "ollama",
-  "anthropic"
-]);
+/**
+ * 内部 adapter 实现标识，由 endpoint 的 protocol 唯一决定，不是用户输入字段。
+ * 用户只需要选 protocol（openai / anthropic）。
+ */
+export const adapterTypeSchema = z.enum(["openai_compatible", "anthropic"]);
 export const accountTypeSchema = z.enum(["api_key", "local_model"]);
 export const healthStatusSchema = z.enum(["unknown", "healthy", "degraded", "down"]);
 
@@ -16,7 +15,8 @@ export const quotaSchema = z
   .object({
     monthly_usd_limit: z.number().nonnegative().optional(),
     remaining_usd: z.number().nonnegative().optional(),
-    reset_at: z.string().optional()
+    reset_at: z.string().optional(),
+    source: z.enum(["manual", "discovered", "unknown"]).optional()
   })
   .strict();
 
@@ -43,12 +43,35 @@ export const endpointCapabilitiesSchema = z
   })
   .strict();
 
+/**
+ * 认证 header 一律由 CredentialStore 提供，不允许 custom_headers 覆盖：
+ * 否则凭证来源不可追溯，也可能被用来绕过凭证隔离。
+ */
+export const RESERVED_CUSTOM_HEADER_NAMES = new Set(["authorization", "x-api-key"]);
+
+/**
+ * 自定义请求头。值原样发往上游，不加密、不写入 trace。
+ * 凭证请用 account 的 api_key，不要放在这里。
+ */
+export const customHeadersSchema = z
+  .record(z.string().min(1), z.string())
+  .superRefine((headers, ctx) => {
+    for (const name of Object.keys(headers)) {
+      if (RESERVED_CUSTOM_HEADER_NAMES.has(name.trim().toLowerCase())) {
+        ctx.addIssue({
+          code: "custom",
+          message: `custom_headers 不能设置认证 header ${name}，凭证请配置 account 的 api_key`
+        });
+      }
+    }
+  });
+
 export const endpointSchema = z
   .object({
     provider: z.string().min(1),
     platform: z.string().min(1),
-    adapter: adapterTypeSchema,
     base_url: z.string().url(),
+    custom_headers: customHeadersSchema.optional(),
     enabled: z.boolean().default(true),
     capabilities: endpointCapabilitiesSchema.default({})
   })
@@ -226,6 +249,7 @@ export type QuotaConfig = z.infer<typeof quotaSchema>;
 export type PlatformConfig = z.infer<typeof platformSchema>;
 export type ProviderConfig = z.infer<typeof providerSchema>;
 export type EndpointCapabilitiesConfig = z.infer<typeof endpointCapabilitiesSchema>;
+export type CustomHeadersConfig = z.infer<typeof customHeadersSchema>;
 export type EndpointConfig = z.infer<typeof endpointSchema>;
 export type AccountConfig = z.infer<typeof accountSchema>;
 export type PriceEntryConfig = z.infer<typeof priceEntrySchema>;

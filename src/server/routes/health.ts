@@ -24,7 +24,6 @@ export async function registerHealthRoute(
         const apiKey = accountConfig
           ? state.credentialStore.resolve(accountState.id, accountConfig)
           : undefined;
-        const adapter = state.adapters.get(endpointConfig.adapter);
         const providerState = state.providers.find(
           (provider) => provider.id === endpointState.provider_id
         );
@@ -37,6 +36,7 @@ export async function registerHealthRoute(
         let healthResult: HealthResult = { status: "down" };
 
         if (providerState && platformState && healthModel) {
+          const adapter = state.adapters.forProtocol(platformState.protocol);
           healthResult = await adapter.healthCheck({
             platform: platformState,
             provider: providerState,

@@ -40,8 +40,8 @@ export interface EndpointRuntimeState {
   id: string;
   provider_id: string;
   platform_id: string;
-  adapter: string;
   base_url: string;
+  custom_headers?: Record<string, string>;
   enabled: boolean;
   capabilities: {
     streaming: boolean;

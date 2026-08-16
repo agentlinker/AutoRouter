@@ -347,11 +347,11 @@ h2 {
 }
 
 .form-page {
-  max-width: 760px;
+  max-width: 100%;
 }
 
 .form-card {
-  max-width: 680px;
+  max-width: 100%;
 }
 
 .form {
@@ -439,6 +439,62 @@ input:focus {
 .endpoint-row-actions {
   display: flex;
   align-items: end;
+}
+
+.custom-headers-list {
+  display: grid;
+  gap: 8px;
+}
+
+.custom-header-row {
+  display: grid;
+  grid-template-columns: 1fr 2fr auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.custom-header-row input {
+  width: 100%;
+}
+
+.custom-header-row button {
+  flex-shrink: 0;
+}
+
+.additional-api-keys-list {
+  display: grid;
+  gap: 8px;
+}
+
+.additional-api-key-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.additional-api-key-row input {
+  width: 100%;
+}
+
+.account-editor {
+  display: grid;
+  gap: 12px;
+}
+
+.account-editor-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(130px, 1fr)) auto auto;
+  gap: 12px;
+  align-items: end;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.3);
+}
+
+.account-editor-row .capability-toggle {
+  min-height: 38px;
 }
 
 .endpoint-summary {
@@ -748,6 +804,30 @@ button:disabled {
   font-size: 13px;
 }
 
+.provider-priority-metric input {
+  width: 96px;
+  height: 32px;
+  padding: 0 8px;
+  font-size: 13px;
+}
+
+.provider-priority-metric small {
+  color: var(--danger);
+  font-size: 11px;
+}
+
+.provider-priority-metric input {
+  width: 96px;
+  height: 32px;
+  padding: 0 8px;
+  font-size: 13px;
+}
+
+.provider-priority-metric small {
+  color: var(--danger);
+  font-size: 11px;
+}
+
 .provider-actions {
   display: flex;
   gap: 8px;
@@ -953,10 +1033,10 @@ button:disabled {
   align-items: center;
 }
 
-/* endpoint 列表多一列「操作」，放同地址添加 Anthropic 入口的按钮 */
+/* endpoint 列表：名称 + protocol + enabled + 操作按钮 */
 .endpoint-table .model-capability-header,
 .endpoint-table .model-capability-row {
-  grid-template-columns: minmax(200px, 1fr) repeat(3, minmax(86px, 110px)) minmax(150px, auto);
+  grid-template-columns: minmax(200px, 1fr) repeat(2, minmax(86px, 110px)) minmax(150px, auto);
 }
 
 .provider-model-table .model-capability-header,
@@ -1518,6 +1598,10 @@ button:disabled {
   }
 
   .endpoint-editor-row {
+    grid-template-columns: 1fr;
+  }
+
+  .account-editor-row {
     grid-template-columns: 1fr;
   }
 
