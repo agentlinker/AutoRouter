@@ -7,6 +7,8 @@ import type {
   ProviderRuntimeState
 } from "../state/routerState.js";
 
+type RequestHeaderValue = string | string[] | undefined;
+
 export interface RouteTarget {
   platform: PlatformRuntimeState;
   provider: ProviderRuntimeState;
@@ -15,6 +17,7 @@ export interface RouteTarget {
   modelId: string;
   model: ModelDefinitionConfig;
   credential?: string;
+  request_headers?: Record<string, RequestHeaderValue>;
 }
 
 export interface HealthResult {

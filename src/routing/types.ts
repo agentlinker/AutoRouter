@@ -31,6 +31,7 @@ export interface ChatCompletionsRequestBody {
   temperature?: number;
   max_tokens?: number;
   metadata?: Record<string, unknown>;
+  upstream_metadata?: Record<string, unknown>;
 }
 
 export interface NormalizedChatRequest {
@@ -43,5 +44,6 @@ export interface NormalizedChatRequest {
   temperature?: number;
   max_tokens?: number;
   metadata: Record<string, unknown>;
+  upstream_metadata?: Record<string, unknown>;
   context_tokens_est: number;
 }

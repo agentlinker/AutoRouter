@@ -126,6 +126,8 @@ Notes:
 - The gateway keeps response headers minimal by default.
 - Detailed routing internals such as provider, endpoint, account, fallback chain, and filter reasons are not exposed in response headers.
 - Use `x-autorouter-trace-id` with `GET /v1/autorouter/explain/latest` or local trace files for routing diagnostics.
+- Request `metadata` is consumed by AutoRouter for routing and tracing, and is not forwarded to OpenAI-compatible upstreams. Use `upstream_metadata` when the upstream provider should receive a `metadata` body field.
+- Request headers are not forwarded wholesale. AutoRouter forwards only allowlisted identity headers (`originator`, `user-agent`) by default; endpoint `custom_headers` can override them.
 
 ### Responses
 
@@ -145,7 +147,7 @@ curl -s \
 
 Expected:
 
-- Accepts `input`, `instructions`, `tools`, `tool_choice`, `temperature`, `max_output_tokens`, and `metadata`
+- Accepts `input`, `instructions`, `tools`, `tool_choice`, `temperature`, `max_output_tokens`, `metadata`, and `upstream_metadata`
 - Routes through the same policy, fallback, trace, and credential handling as chat completions
 - OpenAI-compatible managed endpoints with native Responses support are forwarded directly to upstream `POST /responses`
 - Streaming Responses requests are proxied as upstream SSE rather than converted from chat completions

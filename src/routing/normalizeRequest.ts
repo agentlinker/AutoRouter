@@ -25,6 +25,7 @@ export function normalizeChatRequest(
     temperature: body.temperature,
     max_tokens: body.max_tokens,
     metadata,
+    upstream_metadata: body.upstream_metadata,
     context_tokens_est: estimateChatContextTokens({
       messages: body.messages,
       tools,

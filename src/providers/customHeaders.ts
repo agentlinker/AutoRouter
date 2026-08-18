@@ -1,5 +1,31 @@
 import { RESERVED_CUSTOM_HEADER_NAMES } from "../config/schema.js";
 
+export const DEFAULT_FORWARD_REQUEST_HEADERS = new Set(["originator", "user-agent"]);
+
+type RequestHeaderValue = string | string[] | undefined;
+
+export function pickForwardedRequestHeaders(
+  requestHeaders: Record<string, RequestHeaderValue> | undefined
+): Record<string, string> | undefined {
+  if (!requestHeaders) {
+    return undefined;
+  }
+
+  const forwarded: Record<string, string> = {};
+  for (const [name, value] of Object.entries(requestHeaders)) {
+    const normalized = name.trim().toLowerCase();
+    if (!DEFAULT_FORWARD_REQUEST_HEADERS.has(normalized)) {
+      continue;
+    }
+    const headerValue = Array.isArray(value) ? value.join(", ") : value;
+    if (headerValue) {
+      forwarded[normalized] = headerValue;
+    }
+  }
+
+  return Object.keys(forwarded).length > 0 ? forwarded : undefined;
+}
+
 /**
  * 把 endpoint 的 custom_headers 合并进内建 header。
  *

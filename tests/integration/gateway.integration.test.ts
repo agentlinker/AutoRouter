@@ -253,6 +253,130 @@ describe("gateway integration", () => {
     await gateway.close();
   });
 
+  it("forwards only allowlisted identity headers to upstream providers", async () => {
+    let seenHeaders: Record<string, string | string[] | undefined> = {};
+    mockAgent
+      .get("https://headers.example.com")
+      .intercept({ path: "/v1/chat/completions", method: "POST" })
+      .reply((options) => {
+        seenHeaders = (options as { headers: typeof seenHeaders }).headers;
+        return {
+          statusCode: 200,
+          data: {
+            id: "chatcmpl_headers",
+            object: "chat.completion",
+            choices: [{ message: { role: "assistant", content: "ok" } }]
+          },
+          headers: { "content-type": "application/json" }
+        };
+      });
+
+    const config = loadConfig({
+      override: {
+        trace: {
+          directory: traceDirectory,
+          log_prompts: false
+        },
+        platforms: {
+          openai: { protocol: "openai" }
+        },
+        providers: {
+          headers: {
+            display_name: "Headers",
+            trust_level: "medium",
+            privacy_level: "normal",
+            usage_trust: "medium"
+          }
+        },
+        endpoints: {
+          "headers-openai": {
+            provider: "headers",
+            platform: "openai",
+            base_url: "https://headers.example.com/v1",
+            custom_headers: {
+              "user-agent": "configured-agent"
+            },
+            capabilities: {
+              streaming: true,
+              tools: true,
+              json_mode: true
+            }
+          }
+        },
+        accounts: {
+          "headers-account": {
+            endpoint: "headers-openai",
+            account_type: "api_key",
+            credential_env: "PRIMARY_API_KEY"
+          }
+        },
+        models: {
+          "headers-model": {
+            endpoint: "headers-openai",
+            model_name: "headers-model",
+            capabilities: {
+              streaming: true,
+              tools: true,
+              json_mode: true
+            }
+          }
+        },
+        routes: {
+          auto: {
+            policy: "balanced",
+            candidates: [{ account: "headers-account", model: "headers-model" }]
+          }
+        },
+        policies: {
+          balanced: {
+            min_trust_level: "medium",
+            allow_public_only_provider: false,
+            fallback_enabled: true,
+            sticky_session: false
+          }
+        }
+      }
+    });
+
+    const registry = buildProviderRegistry(config);
+    const state: RouterState = {
+      config,
+      logger: createLogger(),
+      platforms: registry.platforms,
+      providers: registry.providers,
+      endpoints: registry.endpoints,
+      accounts: registry.accounts,
+      priceTable: new PriceTable(config),
+      adapters: new AdapterRegistry(),
+      stickySessions: new StickySessionStore(),
+      traceStore: createTraceStore(traceDatabasePath)
+    };
+
+    const gateway = await createServer(state);
+    const response = await gateway.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: {
+        authorization: "Bearer test-token",
+        originator: "codex_cli_rs",
+        "user-agent": "client-agent",
+        cookie: "should-not-forward"
+      },
+      payload: {
+        model: "auto",
+        messages: [{ role: "user", content: "hello" }]
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(seenHeaders.originator).toBe("codex_cli_rs");
+    expect(seenHeaders["user-agent"]).toBe("configured-agent");
+    expect(seenHeaders.cookie).toBeUndefined();
+    expect(seenHeaders.authorization).toBe("Bearer primary-key");
+
+    await gateway.close();
+  });
+
   it("falls back after non-retryable 400 provider errors", async () => {
     const badPool = mockAgent.get("https://bad-400.example.com");
     badPool

@@ -3,7 +3,7 @@ import { request } from "undici";
 import type { NormalizedChatRequest } from "../routing/types.js";
 import { PROVIDER_AUTH_FAILED_CODE } from "../utils/providerErrors.js";
 import { HttpError } from "../utils/httpErrors.js";
-import { mergeCustomHeaders } from "./customHeaders.js";
+import { mergeCustomHeaders, pickForwardedRequestHeaders } from "./customHeaders.js";
 import type {
   HealthResult,
   ProviderAdapter,
@@ -15,7 +15,10 @@ import type {
 
 function buildHeaders(target: RouteTarget): Record<string, string> {
   const headers = mergeCustomHeaders(
-    { "content-type": "application/json" },
+    mergeCustomHeaders(
+      { "content-type": "application/json" },
+      pickForwardedRequestHeaders(target.request_headers)
+    ),
     target.endpoint.custom_headers
   );
 
@@ -24,6 +27,61 @@ function buildHeaders(target: RouteTarget): Record<string, string> {
   }
 
   return headers;
+}
+
+function applyUpstreamMetadata(
+  payload: Record<string, unknown>,
+  upstreamMetadata: unknown
+): Record<string, unknown> {
+  if (
+    upstreamMetadata &&
+    typeof upstreamMetadata === "object" &&
+    !Array.isArray(upstreamMetadata)
+  ) {
+    return {
+      ...payload,
+      metadata: upstreamMetadata
+    };
+  }
+
+  return payload;
+}
+
+function toChatCompletionsPayload(
+  requestBody: NormalizedChatRequest,
+  target: RouteTarget,
+  stream: boolean
+): Record<string, unknown> {
+  const {
+    metadata: _metadata,
+    upstream_metadata: upstreamMetadata,
+    context_tokens_est: _contextTokensEst,
+    ...payloadWithoutInternalFields
+  } = requestBody;
+
+  return applyUpstreamMetadata({
+    ...payloadWithoutInternalFields,
+    model: target.model.model_name,
+    stream
+  }, upstreamMetadata);
+}
+
+function toResponsesPayload(
+  requestBody: ProviderResponsesRequest,
+  target: RouteTarget,
+  stream: boolean
+): Record<string, unknown> {
+  const {
+    metadata: _metadata,
+    upstream_metadata: upstreamMetadata,
+    ...payloadWithoutInternalFields
+  } = requestBody;
+
+  return applyUpstreamMetadata({
+    ...payloadWithoutInternalFields,
+    model: target.model.model_name,
+    stream
+  }, upstreamMetadata);
 }
 
 /**
@@ -64,10 +122,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     requestBody: NormalizedChatRequest,
     target: RouteTarget
   ): Promise<ProviderResponse> {
-    const upstreamPayload = {
-      ...requestBody,
-      model: target.model.model_name
-    };
+    const upstreamPayload = toChatCompletionsPayload(requestBody, target, false);
 
     let response;
     try {
@@ -138,11 +193,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     requestBody: NormalizedChatRequest,
     target: RouteTarget
   ): AsyncIterable<ProviderStreamChunk> {
-    const basePayload = {
-      ...requestBody,
-      model: target.model.model_name,
-      stream: true
-    };
+    const basePayload = toChatCompletionsPayload(requestBody, target, true);
 
     const sendStream = (includeUsage: boolean) =>
       request(`${target.endpoint.base_url}/chat/completions`, {
@@ -205,11 +256,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     requestBody: ProviderResponsesRequest,
     target: RouteTarget
   ): Promise<ProviderResponse> {
-    const upstreamPayload = {
-      ...requestBody,
-      model: target.model.model_name,
-      stream: false
-    };
+    const upstreamPayload = toResponsesPayload(requestBody, target, false);
 
     let response;
     try {
@@ -271,11 +318,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     requestBody: ProviderResponsesRequest,
     target: RouteTarget
   ): AsyncIterable<ProviderStreamChunk> {
-    const upstreamPayload = {
-      ...requestBody,
-      model: target.model.model_name,
-      stream: true
-    };
+    const upstreamPayload = toResponsesPayload(requestBody, target, true);
 
     let response;
     try {

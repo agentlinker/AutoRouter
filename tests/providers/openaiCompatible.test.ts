@@ -6,7 +6,8 @@ import { HttpError } from "../../src/utils/httpErrors.js";
 
 function createRouteTarget(
   baseUrl: string,
-  customHeaders?: Record<string, string>
+  customHeaders?: Record<string, string>,
+  requestHeaders?: Record<string, string | string[] | undefined>
 ) {
   return {
     platform: {
@@ -53,7 +54,8 @@ function createRouteTarget(
         json_mode: true
       }
     },
-    credential: "test"
+    credential: "test",
+    request_headers: requestHeaders
   };
 }
 
@@ -227,6 +229,85 @@ describe("OpenAiCompatibleAdapter", () => {
     await mockAgent.close();
   });
 
+
+  it("keeps AutoRouter metadata internal and maps upstream_metadata to upstream metadata", async () => {
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+
+    let seenBody = "";
+    mockAgent
+      .get("https://adapter-no-metadata.example.com")
+      .intercept({ path: "/v1/chat/completions", method: "POST" })
+      .reply((options) => {
+        seenBody = String((options as { body?: unknown }).body ?? "");
+        return {
+          statusCode: 200,
+          data: '{"choices":[{"message":{"content":"OK"}}]}',
+          headers: { "content-type": "application/json" }
+        };
+      });
+
+    const adapter = new OpenAiCompatibleAdapter();
+    await adapter.chatCompletion(
+      {
+        model: "auto",
+        messages: [{ role: "user", content: "hello" }],
+        stream: false,
+        tools: [],
+        metadata: { session_id: "abc", privacy_level: "normal" },
+        upstream_metadata: { project: "demo" },
+        context_tokens_est: 10
+      },
+      createRouteTarget("https://adapter-no-metadata.example.com/v1")
+    );
+
+    expect(seenBody).toContain('"metadata":{"project":"demo"}');
+    expect(seenBody).not.toContain('"session_id"');
+    expect(seenBody).not.toContain('"privacy_level"');
+    expect(seenBody).not.toContain('"context_tokens_est"');
+
+    await mockAgent.close();
+  });
+
+  it("keeps AutoRouter metadata internal on native responses requests", async () => {
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+
+    let seenBody = "";
+    mockAgent
+      .get("https://adapter-responses-metadata.example.com")
+      .intercept({ path: "/v1/responses", method: "POST" })
+      .reply((options) => {
+        seenBody = String((options as { body?: unknown }).body ?? "");
+        return {
+          statusCode: 200,
+          data: '{"output_text":"OK"}',
+          headers: { "content-type": "application/json" }
+        };
+      });
+
+    const adapter = new OpenAiCompatibleAdapter();
+    await adapter.responseCompletion!(
+      {
+        model: "auto",
+        input: "hello",
+        stream: false,
+        metadata: { session_id: "abc", privacy_level: "normal" },
+        upstream_metadata: { project: "demo" }
+      },
+      createRouteTarget("https://adapter-responses-metadata.example.com/v1")
+    );
+
+    expect(seenBody).toContain('"metadata":{"project":"demo"}');
+    expect(seenBody).not.toContain('"session_id"');
+    expect(seenBody).not.toContain('"privacy_level"');
+    expect(seenBody).not.toContain('"upstream_metadata"');
+
+    await mockAgent.close();
+  });
+
   it("marks network failures as retryable provider_unreachable", async () => {
     const adapter = new OpenAiCompatibleAdapter();
 
@@ -248,7 +329,7 @@ describe("OpenAiCompatibleAdapter", () => {
     });
   });
 
-  it("sends custom headers while protecting the authorization header", async () => {
+  it("forwards allowlisted request headers and lets custom headers override them", async () => {
     const mockAgent = new MockAgent();
     mockAgent.disableNetConnect();
     setGlobalDispatcher(mockAgent);
@@ -278,12 +359,20 @@ describe("OpenAiCompatibleAdapter", () => {
       },
       createRouteTarget("https://adapter-headers.example.com/v1", {
         "X-Title": "autorouter",
-        Authorization: "should-not-win"
+        Authorization: "should-not-win",
+        "User-Agent": "configured-agent"
+      }, {
+        originator: "codex_cli_rs",
+        "user-agent": "client-agent",
+        cookie: "should-not-forward"
       })
     );
 
+    expect(seenHeaders.originator).toBe("codex_cli_rs");
+    expect(seenHeaders["user-agent"]).toBe("configured-agent");
     expect(seenHeaders["x-title"]).toBe("autorouter");
     expect(seenHeaders.authorization).toBe("Bearer test");
+    expect(seenHeaders.cookie).toBeUndefined();
     await mockAgent.close();
   });
   it("returns the upstream body verbatim so passthrough keeps unmodeled fields", async () => {

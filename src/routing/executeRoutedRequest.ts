@@ -17,6 +17,7 @@ export interface RoutedExecutionInput {
   state: RuntimeSnapshot;
   runtimeStatusService?: RuntimeStatusService;
   candidates: RoutedCandidate[];
+  requestHeaders?: RouteTarget["request_headers"];
   /**
    * 跳过不适用的候选（如 `/v1/responses` 需要 adapter 实现 responseCompletion）。
    * 返回 false 的候选不计入 attempts，也不记失败。
@@ -64,7 +65,8 @@ function resolveModelKey(state: RuntimeSnapshot, candidate: RoutedCandidate): st
  */
 function buildRouteTarget(
   state: RuntimeSnapshot,
-  candidate: RoutedCandidate
+  candidate: RoutedCandidate,
+  requestHeaders?: RouteTarget["request_headers"]
 ): RouteTarget | null {
   const accountConfig = state.config.accounts[candidate.account.id];
   if (!accountConfig) {
@@ -78,7 +80,8 @@ function buildRouteTarget(
     account: candidate.account,
     modelId: candidate.modelId,
     model: candidate.modelDefinition,
-    credential: state.credentialStore.resolve(candidate.account.id, accountConfig)
+    credential: state.credentialStore.resolve(candidate.account.id, accountConfig),
+    request_headers: requestHeaders
   };
 }
 
@@ -155,7 +158,7 @@ export async function executeRoutedRequest(
       continue;
     }
 
-    const target = buildRouteTarget(input.state, candidate);
+    const target = buildRouteTarget(input.state, candidate, input.requestHeaders);
     if (!target) {
       lastError = new HttpError(500, "account_not_found", "Configured account missing");
       continue;
@@ -245,7 +248,7 @@ export async function* streamRoutedRequest(
       continue;
     }
 
-    const target = buildRouteTarget(input.state, candidate);
+    const target = buildRouteTarget(input.state, candidate, input.requestHeaders);
     if (!target) {
       outcome.lastError = new HttpError(500, "account_not_found", "Configured account missing");
       continue;

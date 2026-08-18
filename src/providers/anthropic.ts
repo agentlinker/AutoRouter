@@ -3,7 +3,7 @@ import { request } from "undici";
 import type { NormalizedChatRequest } from "../routing/types.js";
 import { PROVIDER_AUTH_FAILED_CODE } from "../utils/providerErrors.js";
 import { HttpError } from "../utils/httpErrors.js";
-import { mergeCustomHeaders } from "./customHeaders.js";
+import { mergeCustomHeaders, pickForwardedRequestHeaders } from "./customHeaders.js";
 import type {
   HealthResult,
   ProviderAdapter,
@@ -16,10 +16,13 @@ import { parseJsonSafely } from "./openaiCompatible.js";
 
 function buildHeaders(target: RouteTarget): Record<string, string> {
   const headers = mergeCustomHeaders(
-    {
-      "content-type": "application/json",
-      "anthropic-version": "2023-06-01"
-    },
+    mergeCustomHeaders(
+      {
+        "content-type": "application/json",
+        "anthropic-version": "2023-06-01"
+      },
+      pickForwardedRequestHeaders(target.request_headers)
+    ),
     target.endpoint.custom_headers
   );
 

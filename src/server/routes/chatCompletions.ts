@@ -150,7 +150,8 @@ export async function registerChatCompletionsRoute(
     const executionInput = {
       state,
       runtimeStatusService,
-      candidates: orderedCandidates
+      candidates: orderedCandidates,
+      requestHeaders: request.headers
     };
 
     if (normalizedRequest.stream) {

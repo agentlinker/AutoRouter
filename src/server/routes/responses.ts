@@ -29,6 +29,7 @@ interface ResponsesRequestBody {
   temperature?: number;
   max_output_tokens?: number;
   metadata?: Record<string, unknown>;
+  upstream_metadata?: Record<string, unknown>;
 }
 
 interface ChatCompletionResponseBody {
@@ -338,7 +339,8 @@ async function fallbackResponsesViaChat(
     tool_choice: request.body.tool_choice,
     temperature: request.body.temperature,
     max_tokens: request.body.max_output_tokens,
-    metadata: request.body.metadata
+    metadata: request.body.metadata,
+    upstream_metadata: request.body.upstream_metadata
   });
 
   const privacyLevel =
@@ -699,6 +701,7 @@ export async function registerResponsesRoute(
       state,
       runtimeStatusService,
       candidates: orderedCandidates,
+      requestHeaders: request.headers,
       // 只有实现了原生 responses 方法的 adapter 才能直通；其余候选跳过，
       // 全部跳过时降级为 Chat Completions 转换。
       supportsCandidate: (_candidate: RoutedCandidate, target: RouteTarget) => {

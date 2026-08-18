@@ -487,6 +487,7 @@ export async function registerAnthropicMessagesRoute(
           state,
           runtimeStatusService,
           candidates: routeDecision.ordered,
+          requestHeaders: request.headers,
           supportsCandidate: (_candidate, target) =>
             Boolean(state.adapters.forProtocol(target.platform.protocol).streamMessage),
           invokeStream: (_candidate, target) =>
@@ -584,6 +585,7 @@ export async function registerAnthropicMessagesRoute(
       state,
       runtimeStatusService,
       candidates: routeDecision.ordered,
+      requestHeaders: request.headers,
       // adapter 支持原生 Messages 时零转换直通，否则退化为 Chat Completions 转换。
       // 直通路径保住 thinking blocks / cache_control / tool_use 等字段。
       invoke: (_candidate, target) => {
