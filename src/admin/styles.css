@@ -626,6 +626,32 @@ button:disabled {
   color: var(--danger);
 }
 
+/* 与 .badge 同高同字号同圆角，只用配色区分「可点击的恢复动作」 */
+.runtime-recover-action {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid rgba(125, 211, 252, 0.34);
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.12);
+  color: #7dd3fc;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.runtime-recover-action:hover {
+  border-color: var(--line-strong);
+  background: rgba(56, 189, 248, 0.2);
+}
+
+.runtime-recover-action:focus-visible {
+  outline: 2px solid rgba(125, 211, 252, 0.78);
+  outline-offset: 2px;
+}
+
 .switch-control {
   display: inline-flex;
   align-items: center;
@@ -1048,6 +1074,12 @@ button:disabled {
     repeat(3, minmax(86px, 0.5fr));
 }
 
+.provider-model-table .page-actions {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+}
+
 .model-capability-header {
   color: var(--muted);
   font-size: 12px;
@@ -1300,6 +1332,20 @@ button:disabled {
 
 .provider-test-result span {
   color: var(--muted);
+}
+
+.provider-test-response {
+  max-height: 260px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+  background: rgba(2, 6, 23, 0.5);
+  color: #dbeafe;
+  font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .provider-test-result.success {

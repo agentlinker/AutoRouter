@@ -145,6 +145,8 @@ export interface ProviderModelTestResult {
   upstream_status: number | null;
   error_code: string | null;
   error_message: string | null;
+  response_body?: string | null;
+  endpoint_key?: string;
 }
 
 export interface ProviderFormValues {
@@ -239,6 +241,8 @@ export function testProviderModel(
     account_key: string;
     model_key: string;
     prompt: string;
+    endpoint_key?: string;
+    temporary_headers?: Record<string, string>;
   }
 ): Promise<ProviderModelTestResult> {
   return requestJson<ProviderModelTestResult>(

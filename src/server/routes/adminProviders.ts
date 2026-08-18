@@ -20,6 +20,7 @@ import type { RuntimeStatusService } from "../../runtime/runtimeStatusService.js
 import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
 import type { ManagedModelRow } from "../../db/schema.js";
 import { HttpError, isHttpError } from "../../utils/httpErrors.js";
+import { RESERVED_CUSTOM_HEADER_NAMES } from "../../config/schema.js";
 
 const protocolSchema = z.enum(["openai", "anthropic"]);
 const endpointKeySchema = z.string().min(1).regex(/^[A-Za-z0-9_.-]+$/);
@@ -33,6 +34,59 @@ function parseCustomHeaders(json: string | null): Record<string, string> | undef
   } catch {
     return undefined;
   }
+}
+
+function mergeTestHeaders(
+  endpointHeaders: Record<string, string> | undefined,
+  temporaryHeaders: Record<string, string> | undefined
+): Record<string, string> | undefined {
+  if (!temporaryHeaders) return endpointHeaders;
+  const merged = { ...(endpointHeaders ?? {}) };
+  for (const [name, value] of Object.entries(temporaryHeaders)) {
+    const normalized = name.trim().toLowerCase();
+    if (!normalized || RESERVED_CUSTOM_HEADER_NAMES.has(normalized)) continue;
+    merged[normalized] = value;
+  }
+  return merged;
+}
+
+function extractTestResponseBody(body: unknown, raw?: string): string | null {
+  const record = body && typeof body === "object" ? body as Record<string, unknown> : null;
+  const choiceContent = Array.isArray(record?.choices)
+    ? (record.choices[0] as { message?: { content?: unknown } } | undefined)?.message?.content
+    : undefined;
+  const outputText = typeof record?.output_text === "string" ? record.output_text : undefined;
+  const outputContent = Array.isArray(record?.output)
+    ? record.output
+        .flatMap((item) => {
+          if (!item || typeof item !== "object") return [];
+          const content = (item as { content?: unknown }).content;
+          return Array.isArray(content)
+            ? content.flatMap((part) =>
+                part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
+                  ? [(part as { text: string }).text]
+                  : []
+              )
+            : [];
+        })
+        .join("\n")
+    : undefined;
+  const messageContent = Array.isArray(record?.content)
+    ? record.content
+        .flatMap((part) =>
+          part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
+            ? [(part as { text: string }).text]
+            : []
+        )
+        .join("\n")
+    : undefined;
+  const candidate = choiceContent ?? outputText ?? outputContent ?? messageContent ?? body;
+  const text = typeof candidate === "string"
+    ? candidate
+    : candidate !== undefined && candidate !== null
+      ? JSON.stringify(candidate)
+      : raw ?? "";
+  return text ? (text.length > 16_384 ? `${text.slice(0, 16_384)}\n…(已截断)` : text) : null;
 }
 
 const providerKindSchema = z.enum(["official", "relay", "custom"]);
@@ -106,7 +160,9 @@ const providerListQuerySchema = z.object({
 const testProviderModelBodySchema = z.object({
   account_key: accountKeySchema,
   model_key: z.string().min(1),
-  prompt: z.string().trim().min(1).max(2000).default("Reply with OK.")
+  prompt: z.string().trim().min(1).max(2000).default("Reply with OK."),
+  endpoint_key: endpointKeySchema.optional(),
+  temporary_headers: z.record(z.string(), z.string()).optional()
 }).strict();
 
 const createAccountBodySchema = z.object({
@@ -637,6 +693,18 @@ export async function registerAdminProvidersRoutes(
     const modelEndpoint = model.endpointId
       ? details.endpoints.find((item) => item.id === model.endpointId)
       : null;
+    const requestedEndpoint = body.endpoint_key
+      ? details.endpoints.find((item) => item.endpointKey === body.endpoint_key)
+      : null;
+    if (body.endpoint_key && !requestedEndpoint) {
+      throw new HttpError(404, "endpoint_not_found", "Endpoint not found");
+    }
+    if (requestedEndpoint && accountEndpoint && requestedEndpoint.id !== accountEndpoint.id) {
+      throw new HttpError(400, "account_endpoint_mismatch", "Selected account cannot access the endpoint");
+    }
+    if (requestedEndpoint && modelEndpoint && requestedEndpoint.id !== modelEndpoint.id) {
+      throw new HttpError(400, "model_endpoint_mismatch", "Selected model belongs to another endpoint");
+    }
     if (
       accountEndpoint &&
       modelEndpoint &&
@@ -650,6 +718,7 @@ export async function registerAdminProvidersRoutes(
     }
 
     const endpoint =
+      requestedEndpoint ??
       modelEndpoint ??
       accountEndpoint ??
       details.endpoints.find((item) => item.enabled) ??
@@ -681,7 +750,10 @@ export async function registerAdminProvidersRoutes(
         provider_id: details.provider.providerKey,
         platform_id: endpoint.protocol,
         base_url: endpoint.baseUrl,
-        custom_headers: parseCustomHeaders(endpoint.customHeadersJson),
+        custom_headers: mergeTestHeaders(
+          parseCustomHeaders(endpoint.customHeadersJson),
+          body.temporary_headers
+        ),
         enabled: endpoint.enabled,
         capabilities: {
           streaming: endpoint.supportsStreaming,
@@ -765,7 +837,9 @@ export async function registerAdminProvidersRoutes(
         latency_ms: Date.now() - startedAt,
         upstream_status: providerResponse.status,
         error_code: null,
-        error_message: null
+        error_message: null,
+        response_body: extractTestResponseBody(providerResponse.body, providerResponse.raw),
+        endpoint_key: endpoint.endpointKey
       };
     } catch (error) {
       dependencies.runtimeStatusService?.recordFailure({

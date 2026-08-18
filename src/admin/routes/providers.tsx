@@ -16,6 +16,7 @@ import {
   Network,
   Plus,
   RefreshCw,
+  RotateCcw,
   Route,
   ScrollText,
   Settings,
@@ -192,6 +193,18 @@ function isRuntimeStatusSchedulable(input: {
     return !isCooldownActive(input.status_cooldown_until);
   }
   return false;
+}
+
+function isManualRecoveryRequired(input: {
+  runtime_status?: string | null;
+  status_reason?: string | null;
+  status_cooldown_until?: string | null;
+}) {
+  return !isRuntimeStatusSchedulable(input) && (
+    input.runtime_status === "disabled" ||
+    input.runtime_status === "abnormal" ||
+    input.status_reason?.endsWith("_permanent") === true
+  );
 }
 
 function isAccountSchedulable(account: NonNullable<ProviderDetails["accounts"]>[number]) {
@@ -978,6 +991,16 @@ export function ProviderDetailPage() {
               <span className={runtimeStatusBadgeClass(model.runtime_status)} title={runtimeStatusDetail(model)}>
                 {runtimeStatusLabel(model.runtime_status)}
               </span>
+              {!isRuntimeNormal(model.runtime_status) ? (
+                <button
+                  type="button"
+                  className="ghost-action small-action"
+                  disabled={modelMutation.isPending}
+                  onClick={() => modelMutation.mutate({ model_key: model.model_key, enabled: true })}
+                >
+                  恢复调度
+                </button>
+              ) : null}
               <CapabilityToggle
                 checked={model.supports_streaming}
                 disabled={modelMutation.isPending}
@@ -1818,6 +1841,8 @@ function ProviderModelTestDialog(props: {
       : props.provider.models;
   const [modelKey, setModelKey] = useState(models[0]?.model_key ?? "");
   const [prompt, setPrompt] = useState("Reply with OK.");
+  const [endpointKey, setEndpointKey] = useState("");
+  const [temporaryHeaders, setTemporaryHeaders] = useState<Array<{ key: string; value: string }>>([]);
   const [result, setResult] = useState<ProviderModelTestResult | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
 
@@ -1825,16 +1850,25 @@ function ProviderModelTestDialog(props: {
     if (!models.some((model) => model.model_key === modelKey)) {
       setModelKey(models[0]?.model_key ?? "");
     }
+    if (!endpointKey || !props.provider.endpoints.some((endpoint) => endpoint.endpoint_key === endpointKey)) {
+      setEndpointKey(props.provider.endpoints[0]?.endpoint_key ?? "");
+    }
     setResult(null);
     setRequestError(null);
-  }, [accountKey, modelKey, models]);
+  }, [accountKey, modelKey, models, endpointKey, props.provider.endpoints]);
 
   const mutation = useMutation({
     mutationFn: () =>
       testProviderModel(props.token, props.provider.provider_key, {
         account_key: accountKey,
         model_key: modelKey,
-        prompt: prompt.trim()
+        prompt: prompt.trim(),
+        endpoint_key: endpointKey || undefined,
+        temporary_headers: Object.fromEntries(
+          temporaryHeaders
+            .map((pair) => [pair.key.trim().toLowerCase(), pair.value] as const)
+            .filter(([key]) => key.length > 0)
+        )
       }),
     onSuccess: (nextResult) => {
       setResult(nextResult);
@@ -1889,6 +1923,55 @@ function ProviderModelTestDialog(props: {
           </select>
         </label>
         <label className="field">
+          <span>Endpoint</span>
+          <select
+            value={endpointKey}
+            disabled={mutation.isPending}
+            onChange={(event) => {
+              setEndpointKey(event.target.value);
+              setResult(null);
+              setRequestError(null);
+            }}
+          >
+            {props.provider.endpoints.map((endpoint) => (
+              <option key={endpoint.endpoint_key} value={endpoint.endpoint_key}>
+                {endpoint.endpoint_key} · {endpoint.protocol} · {endpoint.base_url}
+              </option>
+            ))}
+          </select>
+        </label>
+        <div className="field">
+          <div className="field-group-header">
+            <span>临时 Headers（仅本次测试）</span>
+            <button
+              type="button"
+              className="ghost-action small-action"
+              onClick={() => setTemporaryHeaders((current) => [...current, { key: "", value: "" }])}
+            >
+              <Plus size={14} /> 添加 Header
+            </button>
+          </div>
+          <div className="custom-headers-list">
+            {temporaryHeaders.map((pair, index) => (
+              <div className="custom-header-row" key={`${index}-${pair.key}`}>
+                <input
+                  value={pair.key}
+                  placeholder="Header 名称"
+                  onChange={(event) => setTemporaryHeaders((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item))}
+                />
+                <input
+                  value={pair.value}
+                  placeholder="Header 值"
+                  onChange={(event) => setTemporaryHeaders((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item))}
+                />
+                <button type="button" className="ghost-action small-action" onClick={() => setTemporaryHeaders((current) => current.filter((_item, itemIndex) => itemIndex !== index))}>
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+        <label className="field">
           <span>测试内容</span>
           <textarea
             value={prompt}
@@ -1923,6 +2006,9 @@ function ProviderModelTestDialog(props: {
               {result.upstream_status ? ` · HTTP ${result.upstream_status}` : ""}
             </span>
             <code>{result.prompt}</code>
+            {result.response_body ? (
+              <pre className="provider-test-response">{result.response_body}</pre>
+            ) : null}
             {result.error_message ? <p>{result.error_message}</p> : null}
           </div>
         ) : null}
@@ -1952,6 +2038,13 @@ function ProviderCard(props: {
     onError: (error) => {
       setPriorityError(error instanceof Error ? error.message : "优先级保存失败");
     }
+  });
+  const accountMutation = useMutation({
+    mutationFn: (input: { account_key: string; enabled: boolean }) =>
+      updateProviderAccount(props.token, props.provider.provider_key, input.account_key, {
+        enabled: input.enabled
+      }),
+    onSuccess: props.onPriorityChanged
   });
 
   useEffect(() => {
@@ -2029,15 +2122,28 @@ function ProviderCard(props: {
         <strong>{account.account_key}</strong>
         <code>{account.key_hint ?? "hidden"}</code>
       </div>
-      <span className={account.enabled ? "badge success" : "badge danger"}>
-        {account.enabled ? "已启用" : "已停用"}
-      </span>
+      <SwitchControl
+        checked={account.enabled}
+        disabled={props.disabled || accountMutation.isPending}
+        label={`${account.account_key} API Key 启用开关`}
+        onChange={(enabled) => accountMutation.mutate({ account_key: account.account_key, enabled })}
+      />
       <span
         className={runtimeStatusBadgeClass(account.runtime_status)}
         title={runtimeStatusDetail(account)}
       >
         {runtimeStatusLabel(account.runtime_status)}
       </span>
+      {isManualRecoveryRequired(account) ? (
+        <button
+          type="button"
+          className="runtime-recover-action"
+          disabled={props.disabled || accountMutation.isPending}
+          onClick={() => accountMutation.mutate({ account_key: account.account_key, enabled: true })}
+        >
+          恢复调度
+        </button>
+      ) : null}
     </div>
   );
 
@@ -2171,7 +2277,6 @@ function ProviderCard(props: {
                   <strong>default</strong>
                   <code>{props.provider.key_hint ?? "hidden"}</code>
                 </div>
-                <span className="badge success">已启用</span>
               </div>
               {renderModelList(props.provider.models)}
             </div>
@@ -2187,7 +2292,6 @@ function ProviderCard(props: {
                     <strong>default</strong>
                     <code>{props.provider.key_hint ?? "hidden"}</code>
                   </div>
-                  <span className="badge success">已启用</span>
                 </div>
               )}
             </div>
@@ -2281,6 +2385,17 @@ function ProviderAccountsPanel(props: {
             <span>{account.expires_at ? formatDateTime(account.expires_at) : "未设置"}</span>
             <span>{formatQuotaSummary(account.quota)}</span>
             <div className="page-actions">
+              {isManualRecoveryRequired(account) ? (
+                <button
+                  type="button"
+                  className="ghost-action small-action"
+                  disabled={toggleMutation.isPending}
+                  onClick={() => toggleMutation.mutate({ account_key: account.account_key, enabled: true })}
+                >
+                  <RotateCcw size={14} />
+                  恢复调度
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="ghost-action small-action"

@@ -106,6 +106,18 @@ describe("managed provider multi-account", () => {
     expect(repo.getAccount("demo", "backup")?.runtimeStatus).toBe("disabled");
     expect(repo.getProviderDetails("demo")?.provider.runtimeStatus).toBe("normal");
 
+    const recovered = repo.updateAccount("demo", "backup", { enabled: true });
+    expect(recovered).toMatchObject({
+      enabled: true,
+      runtimeStatus: "normal",
+      statusReason: null,
+      statusMessage: null,
+      statusCooldownUntil: null,
+      cooldownStrike: 0,
+      recentErrorCount: 0,
+      statusSource: "manual"
+    });
+
     const projector = new RuntimeConfigProjector({
       baseConfig: config,
       managedProviderRepository: repo,
@@ -118,7 +130,7 @@ describe("managed provider multi-account", () => {
     const snapshot = projector.project();
     expect(Object.keys(snapshot.config.accounts).some((id) => id.endsWith("/backup"))).toBe(true);
     const backup = snapshot.accounts.find((item) => item.id.endsWith("/backup"));
-    expect(backup?.available).toBe(false);
+    expect(backup?.available).toBe(true);
   });
 
   it("suggests merge for same base_url + protocol", () => {
