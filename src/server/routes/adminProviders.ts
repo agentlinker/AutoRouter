@@ -20,7 +20,8 @@ import type { RuntimeStatusService } from "../../runtime/runtimeStatusService.js
 import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
 import type { ManagedModelRow } from "../../db/schema.js";
 import { HttpError, isHttpError } from "../../utils/httpErrors.js";
-import { RESERVED_CUSTOM_HEADER_NAMES } from "../../config/schema.js";
+import { customHeadersSchema, RESERVED_CUSTOM_HEADER_NAMES } from "../../config/schema.js";
+import { isResponsesUnsupportedError } from "../../utils/responsesFallback.js";
 
 const protocolSchema = z.enum(["openai", "anthropic"]);
 const endpointKeySchema = z.string().min(1).regex(/^[A-Za-z0-9_.-]+$/);
@@ -109,7 +110,7 @@ const createProviderBodySchema = z.object({
     endpoint_key: endpointKeySchema,
     protocol: protocolSchema,
     base_url: z.string().url(),
-    custom_headers: z.record(z.string()).optional(),
+    custom_headers: customHeadersSchema.optional(),
     enabled: z.boolean().optional()
   }).strict()).min(1).optional(),
   website_url: z.string().url().optional().or(z.literal("")),
@@ -141,7 +142,7 @@ const patchProviderBodySchema = z.object({
     endpoint_key: endpointKeySchema,
     protocol: protocolSchema,
     base_url: z.string().url(),
-    custom_headers: z.record(z.string()).optional(),
+    custom_headers: customHeadersSchema.optional(),
     enabled: z.boolean().optional()
   }).strict()).min(1).optional(),
   website_url: z.string().url().optional().or(z.literal("")),
@@ -162,7 +163,7 @@ const testProviderModelBodySchema = z.object({
   model_key: z.string().min(1),
   prompt: z.string().trim().min(1).max(2000).default("Reply with OK."),
   endpoint_key: endpointKeySchema.optional(),
-  temporary_headers: z.record(z.string(), z.string()).optional()
+  temporary_headers: customHeadersSchema.optional()
 }).strict();
 
 const createAccountBodySchema = z.object({
@@ -191,7 +192,7 @@ const createEndpointBodySchema = z.object({
   endpoint_key: endpointKeySchema,
   protocol: protocolSchema,
   base_url: z.string().url(),
-  custom_headers: z.record(z.string()).optional(),
+  custom_headers: customHeadersSchema.optional(),
   enabled: z.boolean().optional(),
   api_key: z.string().min(1).optional()
 }).strict();
@@ -210,7 +211,7 @@ interface EndpointDiscoveryBundle {
 const patchEndpointBodySchema = z.object({
   protocol: protocolSchema.optional(),
   base_url: z.string().url().optional(),
-  custom_headers: z.record(z.string()).optional(),
+  custom_headers: customHeadersSchema.optional(),
   enabled: z.boolean().optional()
 }).strict();
 
@@ -800,24 +801,36 @@ export async function registerAdminProvidersRoutes(
         : "chat_completions";
 
     try {
-      const providerResponse =
-        protocol === "responses"
-          ? await adapter.responseCompletion!({
-              model: model.modelName,
-              input: body.prompt,
-              max_output_tokens: 8,
-              stream: false
-            }, target)
-          : await adapter.chatCompletion({
-              model: model.modelName,
-              messages: [{ role: "user", content: body.prompt }],
-              stream: false,
-              tools: [],
-              temperature: 0,
-              max_tokens: 8,
-              metadata: {},
-              context_tokens_est: 8
-            }, target);
+      const chatRequest = {
+        model: model.modelName,
+        messages: [{ role: "user" as const, content: body.prompt }],
+        stream: false,
+        tools: [],
+        temperature: 0,
+        max_tokens: 8,
+        metadata: {},
+        context_tokens_est: 8
+      };
+
+      let providerResponse;
+      if (protocol === "responses") {
+        try {
+          providerResponse = await adapter.responseCompletion!({
+            model: model.modelName,
+            input: body.prompt,
+            max_output_tokens: 8,
+            stream: false
+          }, target);
+        } catch (error) {
+          if (!isResponsesUnsupportedError(error)) {
+            throw error;
+          }
+          protocol = "chat_completions";
+          providerResponse = await adapter.chatCompletion(chatRequest, target);
+        }
+      } else {
+        providerResponse = await adapter.chatCompletion(chatRequest, target);
+      }
 
       dependencies.runtimeStatusService?.recordSuccess({
         snapshot,

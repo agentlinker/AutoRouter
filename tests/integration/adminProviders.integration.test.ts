@@ -647,6 +647,141 @@ describe("admin providers integration", () => {
     await server.close();
   });
 
+  it("falls back to chat completions when provider model test finds unsupported responses", async () => {
+    const pool = mockAgent.get("https://admin-responses-fallback.example.com");
+    pool
+      .intercept({ path: "/v1/responses", method: "POST" })
+      .reply(500, {
+        error: {
+          message: "not implemented"
+        }
+      });
+    pool
+      .intercept({ path: "/v1/chat/completions", method: "POST" })
+      .reply(200, {
+        id: "chatcmpl_admin_responses_fallback",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: "fallback-model",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "admin fallback ok"
+            },
+            finish_reason: "stop"
+          }
+        ]
+      });
+
+    const config = loadConfig({
+      override: {
+        server: {
+          host: "127.0.0.1",
+          port: 8811,
+          request_timeout_ms: 120000,
+          gateway_token_env: "AUTO_ROUTER_TOKEN",
+          admin_token_env: "AUTO_ROUTER_ADMIN_TOKEN"
+        },
+        database: {
+          path: join(tempDir, "autorouter-responses-fallback.db")
+        },
+        trace: {
+          directory: join(tempDir, "traces-responses-fallback"),
+          log_prompts: false
+        },
+        routes: {},
+        providers: {},
+        endpoints: {},
+        accounts: {},
+        models: {},
+        policies: {}
+      }
+    });
+
+    const databaseClient = createDatabaseClient(config.database.path);
+    const repository = new ManagedProviderRepository(databaseClient.db);
+    const routeTraceRepository = new RouteTraceRepository(databaseClient.db);
+    const adapters = new AdapterRegistry();
+    const stickySessions = new StickySessionStore();
+    const traceStore = new TraceStore(routeTraceRepository);
+    const secretCipher = new SecretCipher(process.env.AUTO_ROUTER_MASTER_KEY);
+    const runtimeManager = new RuntimeManager({
+      baseConfig: config,
+      managedProviderRepository: repository,
+      secretCipher,
+      adapters,
+      stickySessions,
+      traceStore,
+      logger: createLogger()
+    });
+    const discoveryService = new ProviderModelDiscoveryService();
+
+    repository.createProviderWithEndpointBundles({
+      provider: {
+        providerKey: "responses-fallback",
+        displayName: "Responses Fallback",
+        baseUrl: "https://admin-responses-fallback.example.com/v1"
+      },
+      encryptedApiKey: secretCipher.encrypt("fallback-secret"),
+      endpointBundles: [
+        {
+          endpoint: {
+            endpointKey: "default",
+            protocol: "openai",
+            baseUrl: "https://admin-responses-fallback.example.com/v1"
+          },
+          models: [
+            {
+              modelKey: "fallback-model",
+              providerModelId: "fallback-model",
+              modelName: "fallback-model",
+              supportsStreaming: true,
+              supportsTools: false,
+              supportsJsonMode: false
+            }
+          ]
+        }
+      ]
+    });
+
+    const server = await createServer(runtimeManager, {
+      managedProviderRepository: repository,
+      discoveryService,
+      secretCipher
+    });
+
+    const response = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers/responses-fallback/test-model",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        account_key: "default",
+        model_key: "fallback-model",
+        prompt: "Return ok"
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      success: true,
+      provider_key: "responses-fallback",
+      account_key: "default",
+      model_key: "fallback-model",
+      model_name: "fallback-model",
+      protocol: "chat_completions",
+      upstream_status: 200,
+      error_code: null,
+      error_message: null,
+      response_body: "admin fallback ok"
+    });
+
+    await server.close();
+  });
+
   it("rejects provider creation when model discovery fails for every endpoint", async () => {
     const pool = mockAgent.get("https://discovery-fails.example.com");
 
@@ -726,6 +861,175 @@ describe("admin providers integration", () => {
     expect(createResponse.json().error.code).toBe("provider_discovery_failed");
     expect(createResponse.json().error.message).toContain("Provider model discovery failed");
     expect(repository.getProviderDetails("discovery-fails")).toBeNull();
+
+    await server.close();
+  });
+
+  it("rejects reserved custom headers before persisting provider endpoints", async () => {
+    const config = loadConfig({
+      override: {
+        server: {
+          host: "127.0.0.1",
+          port: 8811,
+          request_timeout_ms: 120000,
+          gateway_token_env: "AUTO_ROUTER_TOKEN",
+          admin_token_env: "AUTO_ROUTER_ADMIN_TOKEN"
+        },
+        database: {
+          path: join(tempDir, "autorouter-reserved-headers.db")
+        },
+        trace: {
+          directory: join(tempDir, "traces-reserved-headers"),
+          log_prompts: false
+        },
+        routes: {},
+        providers: {},
+        endpoints: {},
+        accounts: {},
+        models: {},
+        policies: {}
+      }
+    });
+
+    const databaseClient = createDatabaseClient(config.database.path);
+    const repository = new ManagedProviderRepository(databaseClient.db);
+    const routeTraceRepository = new RouteTraceRepository(databaseClient.db);
+    const adapters = new AdapterRegistry();
+    const stickySessions = new StickySessionStore();
+    const traceStore = new TraceStore(routeTraceRepository);
+    const secretCipher = new SecretCipher(process.env.AUTO_ROUTER_MASTER_KEY);
+    const runtimeManager = new RuntimeManager({
+      baseConfig: config,
+      managedProviderRepository: repository,
+      secretCipher,
+      adapters,
+      stickySessions,
+      traceStore,
+      logger: createLogger()
+    });
+    const discoveryService = new ProviderModelDiscoveryService();
+
+    repository.createProviderWithEndpointBundles({
+      provider: {
+        providerKey: "existing",
+        displayName: "Existing",
+        baseUrl: "https://existing.example.com/v1"
+      },
+      encryptedApiKey: secretCipher.encrypt("existing-secret"),
+      endpointBundles: [
+        {
+          endpoint: {
+            endpointKey: "default",
+            protocol: "openai",
+            baseUrl: "https://existing.example.com/v1"
+          },
+          models: [
+            {
+              modelKey: "existing-model",
+              providerModelId: "existing-model",
+              modelName: "existing-model",
+              supportsStreaming: true,
+              supportsTools: false,
+              supportsJsonMode: false
+            }
+          ]
+        }
+      ]
+    });
+
+    const server = await createServer(runtimeManager, {
+      managedProviderRepository: repository,
+      discoveryService,
+      secretCipher
+    });
+
+    const createProviderResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        provider_key: "reserved-create",
+        display_name: "Reserved Create",
+        api_key: "secret",
+        endpoints: [
+          {
+            endpoint_key: "default",
+            protocol: "openai",
+            base_url: "https://reserved-create.example.com/v1",
+            custom_headers: {
+              authorization: "Bearer should-not-persist"
+            }
+          }
+        ]
+      }
+    });
+
+    expect(createProviderResponse.statusCode).toBe(400);
+    expect(createProviderResponse.json().error.message).toContain("custom_headers 不能设置认证 header authorization");
+    expect(repository.getProviderDetails("reserved-create")).toBeNull();
+
+    const replaceProviderResponse = await server.inject({
+      method: "PATCH",
+      url: "/admin/api/providers/existing",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        endpoints: [
+          {
+            endpoint_key: "default",
+            protocol: "openai",
+            base_url: "https://existing.example.com/v2",
+            custom_headers: {
+              "x-api-key": "should-not-persist"
+            }
+          }
+        ]
+      }
+    });
+
+    expect(replaceProviderResponse.statusCode).toBe(400);
+    expect(replaceProviderResponse.json().error.message).toContain("custom_headers 不能设置认证 header x-api-key");
+    expect(repository.getProviderEndpoint("existing", "default")?.baseUrl).toBe("https://existing.example.com/v1");
+
+    const createEndpointResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers/existing/endpoints",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        endpoint_key: "blocked",
+        protocol: "openai",
+        base_url: "https://blocked.example.com/v1",
+        custom_headers: {
+          Authorization: "Bearer should-not-persist"
+        }
+      }
+    });
+
+    expect(createEndpointResponse.statusCode).toBe(400);
+    expect(createEndpointResponse.json().error.message).toContain("custom_headers 不能设置认证 header Authorization");
+    expect(repository.getProviderEndpoint("existing", "blocked")).toBeNull();
+
+    const patchEndpointResponse = await server.inject({
+      method: "PATCH",
+      url: "/admin/api/providers/existing/endpoints/default",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        custom_headers: {
+          "X-Api-Key": "should-not-persist"
+        }
+      }
+    });
+
+    expect(patchEndpointResponse.statusCode).toBe(400);
+    expect(patchEndpointResponse.json().error.message).toContain("custom_headers 不能设置认证 header X-Api-Key");
+    expect(repository.getProviderEndpoint("existing", "default")?.customHeadersJson).toBeNull();
 
     await server.close();
   });

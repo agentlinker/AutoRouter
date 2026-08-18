@@ -377,6 +377,148 @@ describe("gateway integration", () => {
     await gateway.close();
   });
 
+  it("falls back to chat completions when the upstream responses endpoint is unsupported", async () => {
+    const pool = mockAgent.get("https://responses-fallback.example.com");
+    pool
+      .intercept({ path: "/v1/responses", method: "POST" })
+      .reply(500, {
+        error: {
+          message: "not implemented"
+        }
+      });
+    pool
+      .intercept({ path: "/v1/chat/completions", method: "POST" })
+      .reply(200, {
+        id: "chatcmpl_responses_fallback",
+        object: "chat.completion",
+        created: Math.floor(Date.now() / 1000),
+        model: "fallback-model",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "responses fallback ok"
+            },
+            finish_reason: "stop"
+          }
+        ],
+        usage: {
+          prompt_tokens: 3,
+          completion_tokens: 2,
+          total_tokens: 5
+        }
+      });
+
+    vi.stubEnv("RESPONSES_FALLBACK_API_KEY", "responses-fallback-key");
+    const config = loadConfig({
+      override: {
+        trace: {
+          directory: traceDirectory,
+          log_prompts: false
+        },
+        platforms: {
+          openai: {
+            protocol: "openai"
+          }
+        },
+        providers: {
+          "responses-fallback": {
+            display_name: "Responses Fallback",
+            trust_level: "medium",
+            privacy_level: "normal",
+            usage_trust: "medium"
+          }
+        },
+        endpoints: {
+          "responses-fallback-openai": {
+            provider: "responses-fallback",
+            platform: "openai",
+            adapter: "openai_compatible",
+            base_url: "https://responses-fallback.example.com/v1",
+            capabilities: {
+              streaming: true,
+              tools: true,
+              json_mode: true
+            }
+          }
+        },
+        accounts: {
+          "responses-fallback-account": {
+            endpoint: "responses-fallback-openai",
+            account_type: "api_key",
+            credential_env: "RESPONSES_FALLBACK_API_KEY"
+          }
+        },
+        models: {
+          "fallback-model": {
+            endpoint: "responses-fallback-openai",
+            model_name: "fallback-model",
+            capabilities: {
+              streaming: true,
+              tools: true,
+              json_mode: true
+            }
+          }
+        },
+        routes: {
+          auto: {
+            policy: "balanced",
+            candidates: [
+              {
+                account: "responses-fallback-account",
+                model: "fallback-model"
+              }
+            ]
+          }
+        },
+        policies: {
+          balanced: {
+            min_trust_level: "medium",
+            allow_public_only_provider: false,
+            fallback_enabled: true,
+            sticky_session: false
+          }
+        }
+      }
+    });
+
+    const registry = buildProviderRegistry(config);
+    const state: RouterState = {
+      config,
+      logger: createLogger(),
+      platforms: registry.platforms,
+      providers: registry.providers,
+      endpoints: registry.endpoints,
+      accounts: registry.accounts,
+      priceTable: new PriceTable(config),
+      adapters: new AdapterRegistry(),
+      stickySessions: new StickySessionStore(),
+      traceStore: createTraceStore(traceDatabasePath)
+    };
+
+    const gateway = await createServer(state);
+    const response = await gateway.inject({
+      method: "POST",
+      url: "/v1/responses",
+      headers: {
+        authorization: "Bearer test-token"
+      },
+      payload: {
+        model: "auto",
+        input: "hello",
+        stream: false
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().output_text).toBe("responses fallback ok");
+    expect(response.json().model).toBe("fallback-model");
+    expect(state.traceStore.latest()?.policy_hits).toContain("responses_via_chat");
+
+    await gateway.close();
+  });
+
   it("falls back after non-retryable 400 provider errors", async () => {
     const badPool = mockAgent.get("https://bad-400.example.com");
     badPool

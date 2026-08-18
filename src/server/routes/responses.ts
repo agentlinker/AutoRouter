@@ -18,6 +18,7 @@ import type { ChatCompletionsRequestBody, ChatMessage, ToolDefinition } from "..
 import { HttpError } from "../../utils/httpErrors.js";
 import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
 import type { RuntimeStatusService } from "../../runtime/runtimeStatusService.js";
+import { isResponsesUnsupportedError } from "../../utils/responsesFallback.js";
 
 interface ResponsesRequestBody {
   model?: string;
@@ -327,7 +328,7 @@ function responsesUsageToChatUsage(usage: unknown): {
 async function fallbackResponsesViaChat(
   runtimeManager: RuntimeManagerLike,
   runtimeStatusService: RuntimeStatusService | undefined,
-  request: { body: ResponsesRequestBody },
+  request: { body: ResponsesRequestBody; headers?: RouteTarget["request_headers"] },
   reply: FastifyReply
 ) {
   const state = runtimeManager.getSnapshot();
@@ -387,6 +388,7 @@ async function fallbackResponsesViaChat(
     state,
     runtimeStatusService,
     candidates: routeDecision.ordered,
+    requestHeaders: request.headers,
     invoke: (_candidate, target) =>
       state.adapters.forProtocol(target.platform.protocol).chatCompletion(normalizedRequest, target)
   });
@@ -815,6 +817,10 @@ export async function registerResponsesRoute(
     }
 
     if (!sawNativeResponsesAdapter) {
+      return fallbackResponsesViaChat(runtimeManager, runtimeStatusService, request, reply);
+    }
+
+    if (!providerResponse && isResponsesUnsupportedError(lastError) && !reply.raw.headersSent) {
       return fallbackResponsesViaChat(runtimeManager, runtimeStatusService, request, reply);
     }
 
