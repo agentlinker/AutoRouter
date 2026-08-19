@@ -1080,6 +1080,13 @@ button:disabled {
   gap: 8px;
 }
 
+.runtime-status-cell {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .model-capability-header {
   color: var(--muted);
   font-size: 12px;

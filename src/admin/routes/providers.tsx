@@ -988,19 +988,21 @@ export function ProviderDetailPage() {
                   })
                 }
               />
-              <span className={runtimeStatusBadgeClass(model.runtime_status)} title={runtimeStatusDetail(model)}>
-                {runtimeStatusLabel(model.runtime_status)}
-              </span>
-              {!isRuntimeNormal(model.runtime_status) ? (
-                <button
-                  type="button"
-                  className="ghost-action small-action"
-                  disabled={modelMutation.isPending}
-                  onClick={() => modelMutation.mutate({ model_key: model.model_key, enabled: true })}
-                >
-                  恢复调度
-                </button>
-              ) : null}
+              <div className="runtime-status-cell">
+                <span className={runtimeStatusBadgeClass(model.runtime_status)} title={runtimeStatusDetail(model)}>
+                  {runtimeStatusLabel(model.runtime_status)}
+                </span>
+                {!isRuntimeNormal(model.runtime_status) ? (
+                  <button
+                    type="button"
+                    className="runtime-recover-action"
+                    disabled={modelMutation.isPending}
+                    onClick={() => modelMutation.mutate({ model_key: model.model_key, enabled: true })}
+                  >
+                    恢复调度
+                  </button>
+                ) : null}
+              </div>
               <CapabilityToggle
                 checked={model.supports_streaming}
                 disabled={modelMutation.isPending}
