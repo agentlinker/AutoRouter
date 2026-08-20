@@ -1203,7 +1203,7 @@ describe("admin providers integration", () => {
     await server.close();
   });
 
-  it("reuses provider models for endpoints that cannot list models", async () => {
+  it("rejects provider creation when any endpoint cannot list models", async () => {
     const pool = mockAgent.get("https://shared-models.example.com");
 
     pool
@@ -1223,38 +1223,6 @@ describe("admin providers integration", () => {
       })
       .reply(503, {
         error: { message: "model list unavailable" }
-      });
-
-    pool
-      .intercept({
-        path: "/alt/chat/completions",
-        method: "POST"
-      })
-      .reply(200, (options) => {
-        const body = JSON.parse(String(options.body)) as { model: string };
-        expect(body.model).toBe("shared-model");
-
-        return {
-          id: "chatcmpl_shared_alt",
-          object: "chat.completion",
-          created: Math.floor(Date.now() / 1000),
-          model: "shared-model",
-          choices: [
-            {
-              index: 0,
-              message: {
-                role: "assistant",
-                content: "shared alt ok"
-              },
-              finish_reason: "stop"
-            }
-          ],
-          usage: {
-            prompt_tokens: 5,
-            completion_tokens: 4,
-            total_tokens: 9
-          }
-        };
       });
 
     const config = loadConfig({
@@ -1331,28 +1299,18 @@ describe("admin providers integration", () => {
       }
     });
 
-    expect(createResponse.statusCode).toBe(201);
-    expect(createResponse.json().models).toEqual([
+    // 一个 endpoint 成功、一个失败时也必须整体失败：否则 provider 建好了但
+    // alt endpoint 永远空着，用户只能从 model_sync_runs 里才看得到失败
+    expect(createResponse.statusCode).toBe(503);
+    expect(createResponse.json().error.code).toBe("provider_discovery_failed");
+    expect(createResponse.json().error.message).toContain("alt");
+    expect(createResponse.json().error.details.failed_endpoints).toEqual([
       expect.objectContaining({
-        model_key: "shared/shared-model",
-        endpoint_key: "default"
+        endpoint_key: "alt",
+        base_url: "https://shared-models.example.com/alt"
       })
     ]);
-
-    const chatResponse = await server.inject({
-      method: "POST",
-      url: "/v1/chat/completions",
-      headers: {
-        authorization: "Bearer gateway-token"
-      },
-      payload: {
-        model: "shared/alt/shared-model",
-        messages: [{ role: "user", content: "use alt endpoint" }]
-      }
-    });
-
-    expect(chatResponse.statusCode).toBe(200);
-    expect(chatResponse.json().choices[0].message.content).toBe("shared alt ok");
+    expect(repository.getProviderDetails("shared")).toBeNull();
 
     await server.close();
   });

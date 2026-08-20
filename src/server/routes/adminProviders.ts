@@ -416,25 +416,36 @@ function discoveryErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Provider model discovery failed";
 }
 
+/**
+ * 任一 endpoint 发现失败即整体报错。
+ *
+ * 不能只在「所有 endpoint 都没发现到模型」时报错：那样单个 endpoint 失败会被
+ * 静默吞掉，只留一条 model_sync_runs 记录，前端只显示最新一条成功记录，
+ * 结果是 provider 建好了但某个 endpoint 永远空着，用户无从得知。
+ */
 function ensureProviderDiscoveryUsable(endpointBundles: EndpointDiscoveryBundle[]): void {
-  const discoveredCount = endpointBundles.reduce((sum, bundle) => sum + bundle.models.length, 0);
-  if (discoveredCount > 0) {
-    return;
-  }
-
   const failedBundles = endpointBundles.filter((bundle) => bundle.error !== undefined);
   if (failedBundles.length === 0) {
     return;
   }
 
   const first = failedBundles[0]!;
+  const failedKeys = failedBundles.map((bundle) => bundle.endpoint.endpointKey);
   throw new HttpError(
     isHttpError(first.error) ? first.error.statusCode : 502,
     isHttpError(first.error) ? first.error.code : "provider_discovery_failed",
-    `Provider model discovery failed for endpoint ${first.endpoint.endpointKey}: ${
+    `Provider model discovery failed for endpoint ${failedKeys.join(", ")}: ${
       discoveryErrorMessage(first.error)
     }`,
-    isHttpError(first.error) ? first.error.retryable : false
+    isHttpError(first.error) ? first.error.retryable : false,
+    {
+      failed_endpoints: failedBundles.map((bundle) => ({
+        endpoint_key: bundle.endpoint.endpointKey,
+        protocol: bundle.endpoint.protocol,
+        base_url: bundle.endpoint.baseUrl,
+        error: discoveryErrorMessage(bundle.error)
+      }))
+    }
   );
 }
 
@@ -1357,6 +1368,7 @@ export async function registerAdminProvidersRoutes(
       }
 
       let lastUpdated = details;
+      const failures: Array<{ endpoint_key: string; error: string }> = [];
       for (const endpoint of endpoints) {
         let models: ManagedDiscoveredModelInput[] = [];
         try {
@@ -1375,6 +1387,10 @@ export async function registerAdminProvidersRoutes(
             errorMessage: error instanceof Error ? error.message : "discovery_failed",
             models: []
           }) ?? lastUpdated;
+          failures.push({
+            endpoint_key: endpoint.endpointKey,
+            error: error instanceof Error ? error.message : "discovery_failed"
+          });
           continue;
         }
 
@@ -1387,6 +1403,20 @@ export async function registerAdminProvidersRoutes(
       }
 
       await dependencies.runtimeManager.reload();
+
+      // 成功的 endpoint 已落库，但失败必须让调用方看到，不能只留在 model_sync_runs 里
+      if (failures.length > 0) {
+        throw new HttpError(
+          502,
+          "provider_discovery_failed",
+          `Provider model discovery failed for endpoint ${
+            failures.map((item) => item.endpoint_key).join(", ")
+          }: ${failures[0]!.error}`,
+          false,
+          { failed_endpoints: failures }
+        );
+      }
+
       return serializeProviderDetails(lastUpdated);
     }
   );
