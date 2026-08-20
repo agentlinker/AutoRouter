@@ -59,7 +59,9 @@ export async function registerChatCompletionsRoute(
         normalizedRequest.context_tokens_est,
         privacyLevel,
         sessionId ? state.stickySessions.get(sessionId) : null,
-        state.modelStatuses ?? {}
+        state.modelStatuses ?? {},
+        // 入站是 Chat Completions，优先选 openai 协议的 endpoint（零转换透传）
+        "openai"
       );
     } catch (error) {
       recordRouteSelectionFailure(runtimeManager, error, {
@@ -87,7 +89,9 @@ export async function registerChatCompletionsRoute(
     // 显式要求了上下文窗口但候选元数据缺失时留下观测标记（宽松策略，不过滤候选）
     const withPolicyHits = (...hits: string[]) => [
       ...hits,
-      ...(routeDecision.contextWindowUnknown ? ["context_window_unknown"] : [])
+      ...(routeDecision.contextWindowUnknown ? ["context_window_unknown"] : []),
+      // 没有同协议候选说明只能走 anthropic→openai 转换，值得在 trace 里留痕
+      ...(routeDecision.sawProtocolMatch ? [] : ["protocol_mismatch"])
     ];
 
     const buildBaseTrace = () => {
