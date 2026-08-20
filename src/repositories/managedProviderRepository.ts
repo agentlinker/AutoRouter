@@ -1300,12 +1300,12 @@ export class ManagedProviderRepository {
           : null;
 
         return boundEndpoints.map((endpoint) => {
+          // 模型必须属于本 endpoint：借用兄弟 endpoint 的模型会造出打不通的候选
           const endpointModels = providerModels
             .filter((model) => model.endpointId === endpoint.id);
-          const sharedModels = endpointModels.length > 0 ? endpointModels : providerModels;
           const models = accountModelIds
-            ? sharedModels.filter((model) => accountModelIds.has(model.id))
-            : sharedModels;
+            ? endpointModels.filter((model) => accountModelIds.has(model.id))
+            : endpointModels;
 
           return {
             provider,
