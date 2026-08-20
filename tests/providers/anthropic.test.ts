@@ -95,4 +95,65 @@ describe("AnthropicAdapter", () => {
 
     await mockAgent.close();
   });
+
+  it("translates streamed anthropic events into OpenAI chat completion chunks", async () => {
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+
+    const upstream = [
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_stream","usage":{"input_tokens":7,"output_tokens":0}}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+    ].join("");
+
+    const pool = mockAgent.get("https://anthropic-stream.example.com");
+    pool
+      .intercept({
+        path: "/v1/messages",
+        method: "POST"
+      })
+      .reply(200, upstream, {
+        headers: { "content-type": "text/event-stream" }
+      });
+
+    const adapter = new AnthropicAdapter();
+    const chunks: string[] = [];
+    for await (const chunk of adapter.streamChatCompletion!(
+      {
+        model: "auto",
+        messages: [{ role: "user", content: "hello" }],
+        stream: true,
+        tools: [],
+        metadata: {},
+        context_tokens_est: 10
+      },
+      createRouteTarget("https://anthropic-stream.example.com/v1")
+    )) {
+      chunks.push(chunk.raw);
+    }
+
+    const raw = chunks.join("");
+    // 关键断言：客户端拿到的是 OpenAI 格式，而不是 Anthropic 原始事件
+    expect(raw).toContain('"object":"chat.completion.chunk"');
+    expect(raw).not.toContain("content_block_delta");
+    expect(raw).not.toContain("message_start");
+    expect(raw.endsWith("data: [DONE]\n\n")).toBe(true);
+
+    const events = raw
+      .split("\n\n")
+      .map((segment) => segment.replace(/^data: /, "").trim())
+      .filter((payload) => payload.length > 0 && payload !== "[DONE]")
+      .map((payload) => JSON.parse(payload) as {
+        choices: Array<{ delta: { content?: string }; finish_reason: string | null }>;
+        usage?: { total_tokens?: number };
+      });
+
+    expect(events.map((event) => event.choices[0].delta.content ?? "").join("")).toBe("hi");
+    expect(events.at(-1)?.choices[0].finish_reason).toBe("stop");
+    expect(events.at(-1)?.usage?.total_tokens).toBe(9);
+
+    await mockAgent.close();
+  });
 });

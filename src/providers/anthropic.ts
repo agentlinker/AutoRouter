@@ -4,6 +4,7 @@ import type { NormalizedChatRequest } from "../routing/types.js";
 import { PROVIDER_AUTH_FAILED_CODE } from "../utils/providerErrors.js";
 import { HttpError } from "../utils/httpErrors.js";
 import { mergeCustomHeaders, pickForwardedRequestHeaders } from "./customHeaders.js";
+import { AnthropicStreamTranslator } from "./anthropicStreamTranslator.js";
 import type {
   HealthResult,
   ProviderAdapter,
@@ -286,10 +287,18 @@ export class AnthropicAdapter implements ProviderAdapter {
       );
     }
 
+    // 调用方走的是 Chat Completions，必须把 Anthropic 事件流改写成 chat.completion.chunk
+    const translator = new AnthropicStreamTranslator(target.model.model_name);
     for await (const chunk of response.body) {
-      yield {
-        raw: Buffer.from(chunk).toString("utf8")
-      };
+      const translated = translator.push(Buffer.from(chunk).toString("utf8"));
+      if (translated.length > 0) {
+        yield { raw: translated };
+      }
+    }
+
+    const tail = translator.finish();
+    if (tail.length > 0) {
+      yield { raw: tail };
     }
   }
 
