@@ -368,7 +368,9 @@ async function fallbackResponsesViaChat(
       normalizedRequest.context_tokens_est,
       privacyLevel,
       null,
-      state.modelStatuses ?? {}
+      state.modelStatuses ?? {},
+      // 已降级成 Chat Completions 形态，优先选 openai 协议的 endpoint（零转换透传）
+      "openai"
     );
   } catch (error) {
     recordRouteSelectionFailure(runtimeManager, error, {
