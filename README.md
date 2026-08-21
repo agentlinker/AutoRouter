@@ -10,7 +10,7 @@ The current implementation includes:
 - Local `POST /v1/responses`
 - Local `POST /v1/messages`
 - Local `GET /v1/models`
-- Local `GET /v1/autorouter/health`
+- Local `GET /health`
 - Local `GET /v1/autorouter/explain/latest`
 - OpenAI-compatible, Anthropic, OpenRouter, and Ollama adapters
 - Sticky sessions, fallback routing, trace logging, and basic cost estimation
@@ -71,16 +71,14 @@ npm run dev
 ### Health
 
 ```bash
-curl -s \
-  -H "Authorization: Bearer dev-token" \
-  http://127.0.0.1:8811/v1/autorouter/health
+curl -s http://127.0.0.1:8811/health
 ```
 
 Expected:
 
-- Returns gateway host/port
-- Returns configured providers and accounts
-- Shows provider health status
+- Returns `{"status":"ok"}` once the process is up
+- Requires no token: it is a liveness probe, not a routing diagnostic
+- Does not probe upstreams; use the Admin provider pages or trace for that
 
 ### Models
 

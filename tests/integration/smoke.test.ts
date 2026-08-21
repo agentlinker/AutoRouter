@@ -159,14 +159,13 @@ describe("local smoke", () => {
 
     const gateway = await createServer(state);
 
+    // 存活探针无需鉴权，也不探测上游
     const healthResponse = await gateway.inject({
       method: "GET",
-      url: "/v1/autorouter/health",
-      headers: {
-        authorization: "Bearer smoke-token"
-      }
+      url: "/health"
     });
     expect(healthResponse.statusCode).toBe(200);
+    expect(healthResponse.json()).toEqual({ status: "ok" });
 
     const modelsResponse = await gateway.inject({
       method: "GET",

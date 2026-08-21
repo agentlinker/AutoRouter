@@ -93,6 +93,11 @@ export async function createServer(
       return;
     }
 
+    // 存活探针不鉴权：只返回进程状态，不暴露配置与运行态
+    if (request.url === "/health") {
+      return;
+    }
+
     requireGatewayToken(request, reply, process.env[snapshot.config.server.gateway_token_env]);
   });
 
@@ -189,7 +194,7 @@ export async function createServer(
     });
   }
 
-  await registerHealthRoute(fastify, runtimeManager);
+  await registerHealthRoute(fastify);
   await registerModelsRoute(fastify, runtimeManager);
   await registerChatCompletionsRoute(fastify, runtimeManager, dependencies?.runtimeStatusService);
   await registerAnthropicMessagesRoute(fastify, runtimeManager, dependencies?.runtimeStatusService);

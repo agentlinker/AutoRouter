@@ -1,70 +1,12 @@
 import type { FastifyInstance } from "fastify";
 
-import type { HealthResult } from "../../providers/adapter.js";
-import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
-
-export async function registerHealthRoute(
-  fastify: FastifyInstance,
-  runtimeManager: RuntimeManagerLike
-) {
-  fastify.get("/v1/autorouter/health", async () => {
-    const state = runtimeManager.getSnapshot();
-    const checkedEndpoints = await Promise.all(
-      state.endpoints.map(async (endpointState) => {
-        const endpointConfig = state.config.endpoints[endpointState.id];
-        const accountState = state.accounts.find(
-          (account) => account.endpoint_id === endpointState.id && account.available
-        );
-
-        if (!endpointConfig || !accountState) {
-          return endpointState;
-        }
-
-        const accountConfig = state.config.accounts[accountState.id];
-        const apiKey = accountConfig
-          ? state.credentialStore.resolve(accountState.id, accountConfig)
-          : undefined;
-        const providerState = state.providers.find(
-          (provider) => provider.id === endpointState.provider_id
-        );
-        const platformState = state.platforms.find(
-          (platform) => platform.id === endpointState.platform_id
-        );
-        const healthModel = Object.entries(state.config.models).find(
-          ([, model]) => model.endpoint === endpointState.id
-        );
-        let healthResult: HealthResult = { status: "down" };
-
-        if (providerState && platformState && healthModel) {
-          const adapter = state.adapters.forProtocol(platformState.protocol);
-          healthResult = await adapter.healthCheck({
-            platform: platformState,
-            provider: providerState,
-            endpoint: endpointState,
-            account: accountState,
-            modelId: healthModel[0],
-            model: healthModel[1],
-            credential: apiKey
-          });
-        }
-
-        endpointState.health = healthResult.status;
-        return {
-          ...endpointState,
-          health_detail: healthResult.detail
-        };
-      })
-    );
-
-    return {
-      status: "ok",
-      gateway: {
-        host: state.config.server.host,
-        port: state.config.server.port
-      },
-      platforms: state.platforms,
-      endpoints: checkedEndpoints,
-      accounts: state.accounts
-    };
-  });
+/**
+ * 存活探针：只回答「AutoRouter 进程是否正常启动并能响应请求」。
+ *
+ * 不探测上游、不检查模型可用性——那些由 RuntimeStatusService 的熔断状态机
+ * 负责，探针再做一遍只会让探测耗时随 endpoint 数量线性增长。
+ * 无需鉴权，否则探测方（launchd / 监控）得先拿到 gateway token。
+ */
+export async function registerHealthRoute(fastify: FastifyInstance) {
+  fastify.get("/health", async () => ({ status: "ok" }));
 }
