@@ -101,7 +101,6 @@ function resolvePolicy(config: RouterConfig, routeId: string): PolicyConfig {
       require_json_mode: false
     },
     weights: {
-      health: 1,
       trust: 1,
       cost: 0,
       quality: 0,
@@ -146,10 +145,6 @@ function canUseCandidate(
 
   if (!endpoint.enabled) {
     return "endpoint_disabled";
-  }
-
-  if (endpoint.health === "down") {
-    return "endpoint_down";
   }
 
   const accountGate = resolveAccountExecutionGate({
@@ -262,8 +257,6 @@ function evaluateCandidateScore(
   const stickyScore = sticky ? 1 : 0;
 
   const trustScore = trustLevelScore(provider.trust_level);
-  const healthScore =
-    endpoint.health === "healthy" ? 1 : endpoint.health === "degraded" ? 0.5 : 0.2;
   const quotaPressurePenalty =
     account.quota?.remaining_usd !== undefined && account.quota.remaining_usd < 1 ? 1 : 0;
   const recentErrorPenalty = normalizeScore(
@@ -294,7 +287,6 @@ function evaluateCandidateScore(
     candidateProtocol === preferredProtocol;
 
   const score =
-    weights.health * healthScore +
     weights.trust * trustScore +
     weights.cost * costScore +
     weights.quality * qualityScore +

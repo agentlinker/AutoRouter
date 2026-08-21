@@ -772,7 +772,6 @@ export async function registerAdminProvidersRoutes(
           tools: endpoint.supportsTools,
           json_mode: endpoint.supportsJsonMode
         },
-        health: "unknown" as const,
         recent_error_count: 0
       },
       account: {

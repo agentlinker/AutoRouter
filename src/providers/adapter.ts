@@ -20,11 +20,6 @@ export interface RouteTarget {
   request_headers?: Record<string, RequestHeaderValue>;
 }
 
-export interface HealthResult {
-  status: "healthy" | "degraded" | "down";
-  detail?: string;
-}
-
 export interface ProviderResponse {
   status: number;
   body: unknown;
@@ -58,7 +53,6 @@ export type ProviderMessagesRequest = Record<string, unknown> & {
 
 export interface ProviderAdapter {
   readonly type: string;
-  healthCheck(target: RouteTarget): Promise<HealthResult>;
   chatCompletion(
     request: NormalizedChatRequest,
     target: RouteTarget

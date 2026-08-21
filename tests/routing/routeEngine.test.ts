@@ -457,7 +457,6 @@ describe("selectRoute", () => {
             min_trust_level: "low",
             sticky_session: true,
             weights: {
-              health: 1,
               trust: 1,
               quality: 0.8,
               cost: 0.3,
@@ -473,7 +472,6 @@ describe("selectRoute", () => {
               min_trust_level: "low"
             },
             weights: {
-              health: 0.5,
               trust: 0.4,
               quality: 0.1,
               cost: 2,
@@ -490,7 +488,6 @@ describe("selectRoute", () => {
               require_tools: true
             },
             weights: {
-              health: 0.8,
               trust: 0.8,
               quality: 1,
               cost: 0.1,

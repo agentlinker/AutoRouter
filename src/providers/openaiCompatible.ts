@@ -5,7 +5,6 @@ import { PROVIDER_AUTH_FAILED_CODE } from "../utils/providerErrors.js";
 import { HttpError } from "../utils/httpErrors.js";
 import { mergeCustomHeaders, pickForwardedRequestHeaders } from "./customHeaders.js";
 import type {
-  HealthResult,
   ProviderAdapter,
   ProviderResponse,
   ProviderResponsesRequest,
@@ -97,26 +96,6 @@ export function parseJsonSafely(raw: string): unknown {
 
 export class OpenAiCompatibleAdapter implements ProviderAdapter {
   public readonly type = "openai_compatible";
-
-  public async healthCheck(target: RouteTarget): Promise<HealthResult> {
-    try {
-      const response = await request(`${target.endpoint.base_url}/models`, {
-        method: "GET",
-        headers: buildHeaders(target)
-      });
-
-      if (response.statusCode >= 200 && response.statusCode < 400) {
-        return { status: "healthy" };
-      }
-
-      return { status: "degraded", detail: `status:${response.statusCode}` };
-    } catch (error) {
-      return {
-        status: "down",
-        detail: error instanceof Error ? error.message : "health_check_failed"
-      };
-    }
-  }
 
   public async chatCompletion(
     requestBody: NormalizedChatRequest,

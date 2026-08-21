@@ -9,7 +9,6 @@ export const usageTrustSchema = z.enum(["low", "medium", "high"]);
  */
 export const adapterTypeSchema = z.enum(["openai_compatible", "anthropic"]);
 export const accountTypeSchema = z.enum(["api_key", "local_model"]);
-export const healthStatusSchema = z.enum(["unknown", "healthy", "degraded", "down"]);
 
 export const quotaSchema = z
   .object({
@@ -156,7 +155,6 @@ export const policyThresholdsSchema = z
 
 export const policyWeightsSchema = z
   .object({
-    health: z.number().nonnegative().default(1),
     trust: z.number().nonnegative().default(1),
     cost: z.number().nonnegative().default(0),
     quality: z.number().nonnegative().default(0),
@@ -244,7 +242,6 @@ export type PrivacyLevel = z.infer<typeof privacyLevelSchema>;
 export type UsageTrust = z.infer<typeof usageTrustSchema>;
 export type AdapterType = z.infer<typeof adapterTypeSchema>;
 export type AccountType = z.infer<typeof accountTypeSchema>;
-export type HealthStatus = z.infer<typeof healthStatusSchema>;
 export type QuotaConfig = z.infer<typeof quotaSchema>;
 export type PlatformConfig = z.infer<typeof platformSchema>;
 export type ProviderConfig = z.infer<typeof providerSchema>;

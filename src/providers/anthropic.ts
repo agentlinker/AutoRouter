@@ -6,7 +6,6 @@ import { HttpError } from "../utils/httpErrors.js";
 import { mergeCustomHeaders, pickForwardedRequestHeaders } from "./customHeaders.js";
 import { AnthropicStreamTranslator } from "./anthropicStreamTranslator.js";
 import type {
-  HealthResult,
   ProviderAdapter,
   ProviderMessagesRequest,
   ProviderResponse,
@@ -168,31 +167,6 @@ function toOpenAiLikeResponse(body: Record<string, unknown>, modelName: string) 
 
 export class AnthropicAdapter implements ProviderAdapter {
   public readonly type = "anthropic";
-
-  public async healthCheck(target: RouteTarget): Promise<HealthResult> {
-    try {
-      const response = await request(`${target.endpoint.base_url}/messages`, {
-        method: "POST",
-        headers: buildHeaders(target),
-        body: JSON.stringify({
-          model: target.model.model_name,
-          max_tokens: 1,
-          messages: [{ role: "user", content: "ping" }]
-        })
-      });
-
-      if (response.statusCode >= 200 && response.statusCode < 400) {
-        return { status: "healthy" };
-      }
-
-      return { status: "degraded", detail: `status:${response.statusCode}` };
-    } catch (error) {
-      return {
-        status: "down",
-        detail: error instanceof Error ? error.message : "health_check_failed"
-      };
-    }
-  }
 
   public async chatCompletion(
     requestBody: NormalizedChatRequest,

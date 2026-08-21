@@ -159,9 +159,6 @@ describe("stream fallback boundary", () => {
     const attemptedEndpoints: string[] = [];
     const adapter: ProviderAdapter = {
       type: "openai_compatible",
-      async healthCheck() {
-        return { status: "healthy" };
-      },
       async chatCompletion() {
         throw new Error("not used");
       },
@@ -219,9 +216,6 @@ describe("stream fallback boundary", () => {
     const attemptedEndpoints: string[] = [];
     const adapter: ProviderAdapter = {
       type: "openai_compatible",
-      async healthCheck() {
-        return { status: "healthy" };
-      },
       async chatCompletion() {
         throw new Error("not used");
       },

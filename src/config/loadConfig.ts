@@ -273,7 +273,6 @@ function normalizePolicies(rawPolicies: Record<string, unknown>): ConfigSource {
         min_context_window: thresholds.min_context_window
       },
       weights: {
-        health: weights.health ?? 1,
         trust: weights.trust ?? 1,
         cost: weights.cost ?? 0,
         quality: weights.quality ?? 0,

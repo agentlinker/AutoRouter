@@ -87,7 +87,6 @@ function mapEndpoint(
     custom_headers: endpoint.custom_headers,
     enabled: endpoint.enabled,
     capabilities: endpoint.capabilities,
-    health: "unknown",
     recent_error_count: 0
   };
 }

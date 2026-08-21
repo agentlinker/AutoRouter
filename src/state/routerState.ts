@@ -48,7 +48,6 @@ export interface EndpointRuntimeState {
     tools: boolean;
     json_mode: boolean;
   };
-  health: "unknown" | "healthy" | "degraded" | "down";
   recent_error_count: number;
 }
 
