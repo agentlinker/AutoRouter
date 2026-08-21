@@ -1014,6 +1014,20 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.model-list li .model-chip-name,
+.model-list li .model-chip-endpoint {
+  display: inline;
+}
+
+.model-list li .model-chip-endpoint {
+  margin-left: 6px;
+  color: var(--muted);
+}
+
+.model-list li .model-chip-endpoint::before {
+  content: "@";
+}
+
 .model-list li.available {
   border-color: rgba(52, 211, 153, 0.28);
   color: #bbf7d0;

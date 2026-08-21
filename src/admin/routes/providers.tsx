@@ -58,6 +58,13 @@ import {
 import { AppDialog } from "../components/Dialog.js";
 import { Sidebar } from "../components/Sidebar.js";
 import { providerKindLabel } from "../providerLabels.js";
+import {
+  isManualRecoveryRequired,
+  isRuntimeStatusSchedulable,
+  runtimeStatusBadgeClass,
+  runtimeStatusDetail,
+  runtimeStatusDisplayLabel
+} from "../runtimeStatusPresentation.js";
 import { readSidebarCollapsed, writeSidebarCollapsed } from "../utils/sidebarCollapse.js";
 
 export const providerTokenStorageKey = "autorouter_admin_token";
@@ -134,77 +141,6 @@ function toDatetimeLocal(value: string | null | undefined): string {
 
 function RequiredMark() {
   return <span className="required-mark">*</span>;
-}
-
-function runtimeStatusLabel(status?: string | null) {
-  switch (status) {
-    case "disabled":
-      return "鉴权异常";
-    case "rate_limited":
-      return "限流中";
-    case "cooling_down":
-      return "错误冷却中";
-    case "abnormal":
-      return "失败过多";
-    case "normal":
-    case undefined:
-    case null:
-      return "正常";
-    default:
-      return status;
-  }
-}
-
-function runtimeStatusBadgeClass(status?: string | null) {
-  return status === "normal" || !status ? "badge success" : "badge warning";
-}
-
-function isRuntimeNormal(status?: string | null) {
-  return status === "normal" || !status;
-}
-
-function isCooldownActive(cooldownUntil?: string | null) {
-  if (!cooldownUntil) {
-    return false;
-  }
-  const until = Date.parse(cooldownUntil);
-  return Number.isFinite(until) && until > Date.now();
-}
-
-/**
- * 与后端 runtimeStatus.ts 的判定保持一致：
- * disabled / abnormal 需人工恢复；rate_limited 与 cooling_down 冷却到期即可再调度。
- */
-function isRuntimeStatusSchedulable(input: {
-  runtime_status?: string | null;
-  status_reason?: string | null;
-  status_cooldown_until?: string | null;
-}) {
-  if (isRuntimeNormal(input.runtime_status)) {
-    return true;
-  }
-  if (input.runtime_status === "disabled" || input.runtime_status === "abnormal") {
-    return false;
-  }
-  if (input.runtime_status === "rate_limited" || input.runtime_status === "cooling_down") {
-    if (input.status_reason?.endsWith("_permanent")) {
-      return false;
-    }
-    return !isCooldownActive(input.status_cooldown_until);
-  }
-  return false;
-}
-
-function isManualRecoveryRequired(input: {
-  runtime_status?: string | null;
-  status_reason?: string | null;
-  status_cooldown_until?: string | null;
-}) {
-  return !isRuntimeStatusSchedulable(input) && (
-    input.runtime_status === "disabled" ||
-    input.runtime_status === "abnormal" ||
-    input.status_reason?.endsWith("_permanent") === true
-  );
 }
 
 function isAccountSchedulable(account: NonNullable<ProviderDetails["accounts"]>[number]) {
@@ -287,24 +223,6 @@ function formatDateTime(value?: string | null) {
     return value;
   }
   return date.toLocaleString();
-}
-
-function runtimeStatusDetail(input: {
-  status_reason?: string | null;
-  status_message?: string | null;
-  status_cooldown_until?: string | null;
-}) {
-  const code = input.status_reason ? `异常码: ${input.status_reason}` : null;
-  const message = input.status_message ? `错误信息: ${input.status_message}` : null;
-  const cooldown = input.status_cooldown_until
-    ? `冷却至: ${new Date(input.status_cooldown_until).toLocaleString()}`
-    : null;
-  const parts = [
-    code,
-    message,
-    cooldown
-  ].filter(Boolean);
-  return parts.join("\n");
 }
 
 export function SwitchControl(props: {
@@ -989,10 +907,10 @@ export function ProviderDetailPage() {
                 }
               />
               <div className="runtime-status-cell">
-                <span className={runtimeStatusBadgeClass(model.runtime_status)} title={runtimeStatusDetail(model)}>
-                  {runtimeStatusLabel(model.runtime_status)}
+                <span className={runtimeStatusBadgeClass(model)} title={runtimeStatusDetail(model)}>
+                  {runtimeStatusDisplayLabel(model)}
                 </span>
-                {!isRuntimeNormal(model.runtime_status) ? (
+                {isManualRecoveryRequired(model) ? (
                   <button
                     type="button"
                     className="runtime-recover-action"
@@ -2055,6 +1973,15 @@ function ProviderCard(props: {
   const accounts = props.provider.accounts ?? [];
   const isPerAccountModels = props.provider.model_availability_scope !== "shared_by_provider";
   const visibleModelLimit = 12;
+  const modelEndpointLabel = (model: ProviderModel) => {
+    const endpoint = props.provider.endpoints.find((item) => item.endpoint_key === model.endpoint_key);
+    if (!endpoint) {
+      return model.endpoint_key;
+    }
+    return endpoint.endpoint_key === endpoint.protocol
+      ? endpoint.endpoint_key
+      : `${endpoint.endpoint_key}/${endpoint.protocol}`;
+  };
   const renderModelList = (
     models: ProviderModel[],
     account?: NonNullable<ProviderDetails["accounts"]>[number]
@@ -2086,7 +2013,8 @@ function ProviderCard(props: {
                 className={modelAvailable ? "available" : "unavailable"}
                 title={modelAvailable ? "可用" : unavailableReason || "不可用"}
               >
-                {model.model_name}
+                <span className="model-chip-name">{model.model_name}</span>
+                <span className="model-chip-endpoint">{modelEndpointLabel(model)}</span>
               </li>
             );
           })
@@ -2131,10 +2059,10 @@ function ProviderCard(props: {
         onChange={(enabled) => accountMutation.mutate({ account_key: account.account_key, enabled })}
       />
       <span
-        className={runtimeStatusBadgeClass(account.runtime_status)}
+        className={runtimeStatusBadgeClass(account)}
         title={runtimeStatusDetail(account)}
       >
-        {runtimeStatusLabel(account.runtime_status)}
+        {runtimeStatusDisplayLabel(account)}
       </span>
       {isManualRecoveryRequired(account) ? (
         <button
@@ -2379,10 +2307,10 @@ function ProviderAccountsPanel(props: {
               }
             />
             <span
-              className={runtimeStatusBadgeClass(account.runtime_status)}
+              className={runtimeStatusBadgeClass(account)}
               title={runtimeStatusDetail(account)}
             >
-              {runtimeStatusLabel(account.runtime_status)}
+              {runtimeStatusDisplayLabel(account)}
             </span>
             <span>{account.expires_at ? formatDateTime(account.expires_at) : "未设置"}</span>
             <span>{formatQuotaSummary(account.quota)}</span>
