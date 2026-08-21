@@ -242,7 +242,9 @@ function evaluateCandidateScore(
   priceTable: PriceTable,
   /** 候选 endpoint 所属 platform 的协议（protocol 定义在 platform 上） */
   candidateProtocol?: string,
-  preferredProtocol?: string
+  preferredProtocol?: string,
+  /** 模型级运行态（含 account×model），未熔断时其错误计数仍参与降权 */
+  modelStatus?: ModelRuntimeStatusState | null
 ): { score: number; sticky: boolean; protocolMatch: boolean } {
   const sticky =
     Boolean(
@@ -259,8 +261,12 @@ function evaluateCandidateScore(
   const trustScore = trustLevelScore(provider.trust_level);
   const quotaPressurePenalty =
     account.quota?.remaining_usd !== undefined && account.quota.remaining_usd < 1 ? 1 : 0;
+  // 模型级计数一并计入：熔断只在越过阈值后硬过滤，阈值以下的连续失败
+  // 需要靠打分自然降权，否则同 account 下的坏模型和好模型无从区分。
   const recentErrorPenalty = normalizeScore(
-    endpoint.recent_error_count + account.recent_error_count,
+    endpoint.recent_error_count +
+      account.recent_error_count +
+      (modelStatus?.recent_error_count ?? 0),
     10
   );
   const contextScore =
@@ -473,7 +479,8 @@ export function selectRoute(
       },
       priceTable,
       platform.protocol,
-      preferredProtocol
+      preferredProtocol,
+      modelStatus
     );
 
     if (protocolMatch) {

@@ -703,4 +703,104 @@ describe("selectRoute", () => {
 
     vi.unstubAllEnvs();
   });
+
+  /**
+   * 模型级错误计数此前只在触发熔断阈值后经硬过滤起作用，未参与打分：
+   * "某个模型最近老出错但还没熔断"不会降权，而同样情况的 account 会。
+   */
+  it("penalizes a model with recent errors even when it is not yet tripped", () => {
+    vi.stubEnv("PRIMARY_API_KEY", "primary");
+    vi.stubEnv("FALLBACK_API_KEY", "fallback");
+
+    const config = loadConfig({
+      override: {
+        providers: {
+          flaky: {
+            display_name: "Flaky",
+            trust_level: "high",
+            privacy_level: "normal",
+            usage_trust: "high",
+            protocol: "openai",
+            adapter: "openai_compatible",
+            base_url: "https://flaky.example.com/v1",
+            accounts: [{ id: "main", credential_env: "PRIMARY_API_KEY" }],
+            models: [{ id: "flaky-model", model_name: "flaky-model" }]
+          },
+          steady: {
+            display_name: "Steady",
+            trust_level: "high",
+            privacy_level: "normal",
+            usage_trust: "high",
+            protocol: "openai",
+            adapter: "openai_compatible",
+            base_url: "https://steady.example.com/v1",
+            accounts: [{ id: "main", credential_env: "FALLBACK_API_KEY" }],
+            models: [{ id: "steady-model", model_name: "steady-model" }]
+          }
+        },
+        routes: {
+          auto: {
+            policy: "balanced",
+            candidates: [
+              { provider: "flaky", account: "main", model: "flaky-model" },
+              { provider: "steady", account: "main", model: "steady-model" }
+            ]
+          }
+        },
+        policies: {
+          balanced: {
+            min_trust_level: "low",
+            fallback_enabled: true,
+            sticky_session: false,
+            weights: { trust: 1, error_penalty: 1 }
+          }
+        }
+      }
+    });
+
+    const registry = buildProviderRegistry(config);
+    const catalog = new ModelCatalog(config);
+    const args = [
+      config,
+      catalog,
+      new PriceTable(config),
+      registry.platforms,
+      registry.providers,
+      registry.endpoints,
+      registry.accounts,
+      "auto",
+      false,
+      false,
+      10,
+      "normal",
+      null
+    ] as const;
+
+    // 基线：两者同分，按候选顺序 flaky 在前
+    const baseline = selectRoute(...args, {});
+    expect(baseline.selected.provider.id).toBe("flaky");
+
+    // flaky-model 累积错误但仍为 normal（未熔断），应被降权到 steady 之后
+    // 键形态与 runtimeConfigProjector 投影的 configModelId 一致
+    const withModelErrors = selectRoute(...args, {
+      "flaky/flaky-model": {
+        provider_key: "flaky",
+        model_key: "flaky/flaky-model",
+        runtime_status: "normal",
+        rate_limit_strike: 0,
+        recent_error_count: 8
+      }
+    });
+    expect(withModelErrors.selected.provider.id).toBe("steady");
+
+    const flakyScore = withModelErrors.candidates.find(
+      (candidate) => candidate.provider === "flaky"
+    )?.score;
+    const steadyScore = withModelErrors.candidates.find(
+      (candidate) => candidate.provider === "steady"
+    )?.score;
+    expect(flakyScore).toBeLessThan(steadyScore!);
+
+    vi.unstubAllEnvs();
+  });
 });
