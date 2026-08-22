@@ -78,6 +78,8 @@ export class ModelCatalog {
   private readonly routes: Map<string, ResolvedRoute>;
   private readonly models: Map<string, ResolvedModelDefinition>;
   private readonly logicalModels: Map<string, ResolvedModelDefinition[]>;
+  /** alias（小写）→ 模型。用于让上游原始 id 等其它写法也能被请求。 */
+  private readonly aliasModels: Map<string, ResolvedModelDefinition[]>;
   private readonly providerIds: Set<string>;
 
   public constructor(private readonly config: RouterConfig) {
@@ -94,12 +96,24 @@ export class ModelCatalog {
       ])
     );
     this.logicalModels = new Map();
+    this.aliasModels = new Map();
     this.providerIds = new Set(Object.keys(config.providers));
 
     for (const model of this.models.values()) {
       const entries = this.logicalModels.get(model.model_name) ?? [];
       entries.push(model);
       this.logicalModels.set(model.model_name, entries);
+
+      for (const alias of model.aliases ?? []) {
+        const key = alias.trim().toLowerCase();
+        // alias 不与 logical model 名争位：同名时以 logical 名的解析结果为准。
+        if (!key || key === model.model_name.toLowerCase()) {
+          continue;
+        }
+        const aliasEntries = this.aliasModels.get(key) ?? [];
+        aliasEntries.push(model);
+        this.aliasModels.set(key, aliasEntries);
+      }
     }
   }
 
@@ -214,6 +228,7 @@ export class ModelCatalog {
     }
 
     const requestedModel = modelSelector.slice(separatorIndex + 1);
+    const requestedAlias = requestedModel.trim().toLowerCase();
     const matchedModels = [...this.models.values()].filter((model) => {
       if (this.config.endpoints[model.endpoint]?.provider !== providerId) {
         return false;
@@ -222,7 +237,8 @@ export class ModelCatalog {
       return (
         model.id === modelSelector ||
         model.id === `${providerId}/${requestedModel}` ||
-        model.model_name === requestedModel
+        model.model_name === requestedModel ||
+        (model.aliases ?? []).some((alias) => alias.trim().toLowerCase() === requestedAlias)
       );
     });
 
@@ -249,12 +265,14 @@ export class ModelCatalog {
 
     const requestedModel = modelSelector.slice(separatorIndex + 1);
     const logicalModels = this.logicalModels.get(requestedModel) ?? [];
+    const matched =
+      logicalModels.length > 0 ? logicalModels : this.resolveAliasModels(requestedModel);
 
     return {
       mode: "auto_model",
       requested: modelSelector,
       normalized: modelSelector,
-      candidates: this.expandConcreteModels(modelSelector, logicalModels)
+      candidates: this.expandConcreteModels(modelSelector, matched)
     };
   }
 
@@ -265,7 +283,17 @@ export class ModelCatalog {
     }
 
     const logicalModels = this.logicalModels.get(modelSelector) ?? [];
-    return this.expandConcreteModels(modelSelector, logicalModels);
+    if (logicalModels.length > 0) {
+      return this.expandConcreteModels(modelSelector, logicalModels);
+    }
+
+    // logical 名没命中时才看 alias，保证 logical 名始终优先。
+    return this.expandConcreteModels(modelSelector, this.resolveAliasModels(modelSelector));
+  }
+
+  /** 按 alias 找模型；大小写不敏感，因为上游同一 id 常有不同大小写写法。 */
+  private resolveAliasModels(modelSelector: string): ResolvedModelDefinition[] {
+    return this.aliasModels.get(modelSelector.trim().toLowerCase()) ?? [];
   }
 
   private expandConcreteModels(

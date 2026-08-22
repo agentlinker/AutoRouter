@@ -123,6 +123,9 @@ export const modelDefinitionSchema = z
   .object({
     endpoint: z.string().min(1),
     model_name: z.string().min(1),
+    // 同一模型的其它可请求写法（上游原始 id、厂商 slug 等），参与模型解析。
+    // 用 optional 而非 default([])：避免所有手写 model 字面量都被迫带上空数组。
+    aliases: z.array(z.string().min(1)).optional(),
     context_window: z.number().int().positive().optional(),
     capabilities: modelCapabilitiesSchema.default({}),
     pricing: priceEntrySchema.optional()

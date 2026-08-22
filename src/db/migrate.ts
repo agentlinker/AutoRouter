@@ -1,25 +1,44 @@
 import { copyFileSync } from "node:fs";
 import type Database from "better-sqlite3";
 
-function backupBeforeAdapterColumnRemoval(sqlite: Database.Database): void {
+function backupDatabase(sqlite: Database.Database, label: string): void {
   if (sqlite.name === ":memory:") {
     return;
   }
 
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  copyFileSync(sqlite.name, `${sqlite.name}.bak-${timestamp}`);
+  copyFileSync(sqlite.name, `${sqlite.name}.bak-${label}-${timestamp}`);
 }
 
+function backupBeforeAdapterColumnRemoval(sqlite: Database.Database): void {
+  backupDatabase(sqlite, "adapter-column");
+}
+
+// 与 src/catalog/logicalModelNames.ts 保持一致：migrate 不依赖应用层代码，故复制一份。
 function toLogicalModelName(modelName: string): string {
   const trimmed = modelName.trim();
   const basename = trimmed.split(/[/:]/).filter(Boolean).at(-1) ?? trimmed;
   return basename
     .replace(/[_\s]+/g, "-")
-    .replace(/([a-z])([0-9])/gi, "$1-$2")
-    .replace(/([0-9])([a-z])/gi, "$1-$2")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "")
     .toLowerCase();
+}
+
+/**
+ * 剥掉多 endpoint 同步时为规避 UNIQUE(provider_id, provider_model_id) 拼上的
+ * `${endpointKey}:` 合成前缀，还原上游真实 id。
+ * endpoint_key 为 default 或未绑定 endpoint 的行不会有合成前缀。
+ */
+function upstreamModelId(providerModelId: string, endpointKey: string | null): string {
+  if (!endpointKey || endpointKey === "default") {
+    return providerModelId;
+  }
+
+  const prefix = `${endpointKey}:`;
+  return providerModelId.startsWith(prefix)
+    ? providerModelId.slice(prefix.length)
+    : providerModelId;
 }
 
 function parseAliases(value: string | null | undefined): string[] {
@@ -49,6 +68,202 @@ function serializeAliases(values: Array<string | null | undefined>): string | nu
   ));
 
   return aliases.length > 0 ? JSON.stringify(aliases) : null;
+}
+
+/**
+ * 一次性修复旧归一化规则留下的 logical_name。
+ *
+ * 旧规则把 `deepseek-v4-pro` 写成了 `deepseek-v-4-pro`，这个结果不可反推
+ * （再归一化仍是自己），因此以 provider_model_id 重算目标名。目标名已被占用时做
+ * 合并：保留元数据更完整的一行，重绑 managed_models，并把两边 alias 并起来。
+ *
+ * 幂等：修复后 legacy 名字不再出现，后续启动不会匹配到任何行。
+ */
+function repairLegacyLogicalNames(
+  sqlite: Database.Database,
+  managedRows: Array<{
+    provider_model_id: string;
+    logical_model_id: number | null;
+  }>,
+  now: string
+): void {
+  const legacyRows = sqlite
+    .prepare(
+      `SELECT id, logical_name, display_name, aliases_json, metadata_source FROM logical_models`
+    )
+    .all() as Array<{
+      id: number;
+      logical_name: string;
+      display_name: string | null;
+      aliases_json: string | null;
+      metadata_source: string;
+    }>;
+  if (legacyRows.length === 0) {
+    return;
+  }
+
+  const legacyById = new Map(legacyRows.map((row) => [row.id, row]));
+  // 目标名由 managed_models.provider_model_id 决定，只收确实需要改的。
+  const renames = new Map<number, string>();
+  for (const row of managedRows) {
+    if (row.logical_model_id === null) {
+      continue;
+    }
+    const legacy = legacyById.get(row.logical_model_id);
+    if (!legacy) {
+      continue;
+    }
+    const target = toLogicalModelName(row.provider_model_id);
+    if (target && target !== legacy.logical_name) {
+      renames.set(legacy.id, target);
+    }
+  }
+  if (renames.size === 0) {
+    return;
+  }
+
+  // 这次修复会改名并合并删行，不可逆。只在确实有行要改时备份一次（幂等重跑不会再备份）。
+  backupDatabase(sqlite, "logical-name-repair");
+
+  const selectByName = sqlite.prepare(
+    `SELECT id, aliases_json, metadata_source FROM logical_models WHERE logical_name = ?`
+  );
+  const renameLogical = sqlite.prepare(
+    `UPDATE logical_models
+     SET logical_name = ?, display_name = ?, aliases_json = ?, updated_at = ?
+     WHERE id = ?`
+  );
+  const updateAliases = sqlite.prepare(
+    `UPDATE logical_models SET aliases_json = ?, updated_at = ? WHERE id = ?`
+  );
+  const rebindManaged = sqlite.prepare(
+    `UPDATE managed_models SET logical_model_id = ? WHERE logical_model_id = ?`
+  );
+  const deleteLogical = sqlite.prepare(`DELETE FROM logical_models WHERE id = ?`);
+
+  // display_name 若还是旧的机器生成名就跟着改；人工/openrouter 填过的展示名保留。
+  const nextDisplayName = (legacy: { logical_name: string; display_name: string | null },
+    target: string): string =>
+    !legacy.display_name || legacy.display_name === legacy.logical_name
+      ? target
+      : legacy.display_name;
+
+  for (const [legacyId, targetName] of renames.entries()) {
+    const legacy = legacyById.get(legacyId);
+    if (!legacy) {
+      continue;
+    }
+
+    const legacyAliases = parseAliases(legacy.aliases_json);
+    const existing = selectByName.get(targetName) as {
+      id: number;
+      aliases_json: string | null;
+      metadata_source: string;
+    } | undefined;
+
+    if (!existing) {
+      renameLogical.run(
+        targetName,
+        nextDisplayName(legacy, targetName),
+        serializeAliases([targetName, ...legacyAliases]),
+        now,
+        legacyId
+      );
+      continue;
+    }
+
+    if (existing.id === legacyId) {
+      continue;
+    }
+
+    // 目标名已被占用（UNIQUE 约束），合并成一行：元数据更完整的一方胜出。
+    const mergedAliases = serializeAliases([
+      targetName,
+      ...parseAliases(existing.aliases_json),
+      ...legacyAliases
+    ]);
+    const keepExisting =
+      metadataRank(existing.metadata_source) >= metadataRank(legacy.metadata_source);
+
+    if (keepExisting) {
+      rebindManaged.run(existing.id, legacyId);
+      updateAliases.run(mergedAliases, now, existing.id);
+      deleteLogical.run(legacyId);
+      continue;
+    }
+
+    // legacy 行元数据更好：先腾开被占用的名字，再把 legacy 改名过去。
+    rebindManaged.run(legacyId, existing.id);
+    deleteLogical.run(existing.id);
+    renameLogical.run(targetName, nextDisplayName(legacy, targetName), mergedAliases, now, legacyId);
+  }
+
+  // managed_models.model_name 冗余存了归一化结果，跟着 logical_name 对齐。
+  sqlite
+    .prepare(
+      `UPDATE managed_models
+       SET model_name = (
+         SELECT logical_models.logical_name
+         FROM logical_models
+         WHERE logical_models.id = managed_models.logical_model_id
+       ),
+       updated_at = ?
+       WHERE logical_model_id IS NOT NULL
+         AND model_name != (
+           SELECT logical_models.logical_name
+           FROM logical_models
+           WHERE logical_models.id = managed_models.logical_model_id
+         )`
+    )
+    .run(now);
+}
+
+/**
+ * 清掉历史 aliases 里的 `${endpointKey}:` 合成前缀。
+ *
+ * 早期 backfill 无条件把 provider_model_id 塞进 aliases，合成前缀因此落库；
+ * 而 serializeAliases 是并集语义，不会自动淘汰旧值，只能显式清理一次。
+ *
+ * 只用该 logical model 自己绑定的 endpoint_key 做前缀匹配（与写入路径同源），
+ * 避免误伤上游本身就带冒号的 id。
+ */
+function stripSyntheticAliasPrefixes(sqlite: Database.Database, now: string): void {
+  // 用全库 endpoint_key 集合（实际只有 openai / anthropic 这类少量值）而非单行绑定的：
+  // canonical 合并会把别的 logical 行的 alias 并进来，那些前缀不在当前行的 endpoint 上。
+  const endpointKeys = (
+    sqlite
+      .prepare(
+        `SELECT DISTINCT endpoint_key
+         FROM managed_provider_endpoints
+         WHERE endpoint_key IS NOT NULL AND endpoint_key != 'default'`
+      )
+      .all() as Array<{ endpoint_key: string }>
+  ).map((row) => row.endpoint_key);
+  if (endpointKeys.length === 0) {
+    return;
+  }
+
+  const rows = sqlite
+    .prepare(
+      `SELECT id, aliases_json FROM logical_models WHERE aliases_json IS NOT NULL`
+    )
+    .all() as Array<{ id: number; aliases_json: string | null }>;
+
+  const update = sqlite.prepare(
+    `UPDATE logical_models SET aliases_json = ?, updated_at = ? WHERE id = ?`
+  );
+
+  for (const row of rows) {
+    const cleaned = parseAliases(row.aliases_json).map((alias) => {
+      const matched = endpointKeys.find((key) => alias.startsWith(`${key}:`));
+      return matched ? alias.slice(matched.length + 1) : alias;
+    });
+
+    const nextJson = serializeAliases(cleaned);
+    if (nextJson !== row.aliases_json) {
+      update.run(nextJson, now, row.id);
+    }
+  }
 }
 
 function metadataRank(source: string | null | undefined): number {
@@ -683,16 +898,30 @@ export function runMigrations(sqlite: Database.Database) {
   const now = new Date().toISOString();
   const managedRows = sqlite
     .prepare(
-      `SELECT id, provider_model_id, model_name, raw_metadata_json
-       FROM managed_models
-       WHERE provider_model_id IS NOT NULL AND TRIM(provider_model_id) != ''`
+      `SELECT
+         models.id AS id,
+         models.provider_model_id AS provider_model_id,
+         models.model_name AS model_name,
+         models.raw_metadata_json AS raw_metadata_json,
+         models.logical_model_id AS logical_model_id,
+         endpoints.endpoint_key AS endpoint_key
+       FROM managed_models AS models
+       LEFT JOIN managed_provider_endpoints AS endpoints
+         ON endpoints.id = models.endpoint_id
+       WHERE models.provider_model_id IS NOT NULL AND TRIM(models.provider_model_id) != ''`
     )
     .all() as Array<{
       id: number;
       provider_model_id: string;
       model_name: string;
       raw_metadata_json: string | null;
+      logical_model_id: number | null;
+      endpoint_key: string | null;
     }>;
+
+  // 必须在下面的 backfill 之前：先把历史 legacy 名字改到新规则下的目标名，
+  // 否则 backfill 会为同一个模型再插一行新名字，造成两行并存。
+  repairLegacyLogicalNames(sqlite, managedRows, now);
 
   const insertLogical = sqlite.prepare(
     `INSERT OR IGNORE INTO logical_models (
@@ -715,12 +944,14 @@ export function runMigrations(sqlite: Database.Database) {
       logicalName,
       aliases: []
     };
-    entry.aliases.push(row.provider_model_id, row.model_name);
+    // 只收上游真实可请求的 id：合成的 `${endpointKey}:` 前缀是本地概念，上游不认。
+    const upstreamId = upstreamModelId(row.provider_model_id, row.endpoint_key);
+    entry.aliases.push(upstreamId, row.model_name);
     logicalByName.set(logicalName, entry);
     insertLogical.run(
       logicalName,
       logicalName,
-      serializeAliases([row.provider_model_id, row.model_name]),
+      serializeAliases([upstreamId, row.model_name]),
       now,
       now
     );
@@ -922,4 +1153,7 @@ export function runMigrations(sqlite: Database.Database) {
       updated_at = '${now}'
     WHERE metadata_source = 'provider_derived';
   `);
+
+  // 放在最后：上面的 canonical 合并会把各来源 alias 并起来，清理必须在并完之后。
+  stripSyntheticAliasPrefixes(sqlite, now);
 }
