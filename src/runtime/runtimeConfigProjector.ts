@@ -80,6 +80,25 @@ function parsePricingJson(pricingJson: string | null | undefined): PriceEntryCon
 }
 
 /**
+ * aliases 在 DB 里是 JSON 数组文本。解析失败当作没有别名：
+ * 别名是可选增强项，不该因为一条脏数据让模型不可用。
+ */
+function parseAliases(aliasesJson: string | null | undefined): string[] {
+  if (!aliasesJson) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(aliasesJson) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
  * custom_headers 在 DB 里是 JSON 文本。解析失败当作未配置：
  * header 是可选增强项，不该因为一条脏数据让整个 provider 不可用。
  */
@@ -174,10 +193,10 @@ export class RuntimeConfigProjector {
           continue;
         }
 
-        const effective = resolveEffectiveModelMetadata(
-          model,
-          model.logicalModelId ? logicalModels.get(model.logicalModelId) ?? null : null
-        );
+        const logical = model.logicalModelId
+          ? logicalModels.get(model.logicalModelId) ?? null
+          : null;
+        const effective = resolveEffectiveModelMetadata(model, logical);
         const modelKey =
           model.endpointId === bundle.endpoint.id || model.endpointId === null
             ? model.modelKey
@@ -187,6 +206,9 @@ export class RuntimeConfigProjector {
         mergedConfig.models[modelKey] = {
           endpoint: endpointId,
           model_name: model.modelName,
+          // 上游真实 id 也要能直接请求：中转站常以 deepseek-ai/deepseek-v4-pro 这类
+          // 带命名空间的写法暴露模型，客户端照抄过来必须解析得到。
+          aliases: parseAliases(logical?.aliasesJson),
           context_window: effective.contextWindow,
           capabilities: {
             streaming: effective.supportsStreaming,
