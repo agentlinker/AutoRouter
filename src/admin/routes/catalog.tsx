@@ -13,6 +13,11 @@ import {
   type CatalogModelInstance
 } from "../api/catalog.js";
 import { AppDialog, type AppDialogTone } from "../components/Dialog.js";
+import {
+  runtimeStatusBadgeClass,
+  runtimeStatusDetail,
+  runtimeStatusDisplayLabel
+} from "../runtimeStatusPresentation.js";
 import { getStoredToken, SwitchControl } from "./providers.js";
 
 function catalogQueryKey(token: string) {
@@ -21,47 +26,6 @@ function catalogQueryKey(token: string) {
 
 function catalogDetailQueryKey(token: string, logicalName: string) {
   return ["catalog", token, logicalName] as const;
-}
-
-function runtimeStatusLabel(status?: string | null) {
-  switch (status) {
-    case "disabled":
-      return "鉴权异常";
-    case "rate_limited":
-      return "限流中";
-    case "cooling_down":
-      return "错误冷却中";
-    case "abnormal":
-      return "失败过多";
-    case "normal":
-    case undefined:
-    case null:
-      return "正常";
-    default:
-      return status;
-  }
-}
-
-function runtimeStatusBadgeClass(status?: string | null) {
-  return status === "normal" || !status ? "badge success" : "badge warning";
-}
-
-function runtimeStatusDetail(input: {
-  status_reason?: string | null;
-  status_message?: string | null;
-  status_cooldown_until?: string | null;
-}) {
-  const code = input.status_reason ? `异常码: ${input.status_reason}` : null;
-  const message = input.status_message ? `错误信息: ${input.status_message}` : null;
-  const cooldown = input.status_cooldown_until
-    ? `冷却至: ${new Date(input.status_cooldown_until).toLocaleString()}`
-    : null;
-  const parts = [
-    code,
-    message,
-    cooldown
-  ].filter(Boolean);
-  return parts.join("\n");
 }
 
 function useCatalogModels(token: string) {
@@ -541,10 +505,10 @@ function CatalogInstanceRow(props: {
         onChange={(checked) => toggleMutation.mutate(checked)}
       />
       <span
-        className={runtimeStatusBadgeClass(props.instance.runtime_status)}
+        className={runtimeStatusBadgeClass(props.instance)}
         title={runtimeStatusDetail(props.instance)}
       >
-        {runtimeStatusLabel(props.instance.runtime_status)}
+        {runtimeStatusDisplayLabel(props.instance)}
       </span>
       <input
         value={contextOverride}
