@@ -216,7 +216,13 @@ export interface RoutedStreamInput extends Omit<RoutedExecutionInput, "invoke"> 
     candidate: RoutedCandidate,
     target: RouteTarget
   ) => AsyncIterable<ProviderStreamChunk>;
-  /** 首个 chunk 到达前调用一次，用于写响应头 */
+  /**
+   * 首个 chunk **实际到达后**调用一次，用于写 SSE 响应头。
+   *
+   * 必须等到有字节才调：一旦提交了 text/event-stream 头，reply 就切到 raw 模式，
+   * 此后无法再回一个 JSON 错误体。若在尝试前就调用，所有候选在首字节前失败时
+   * 错误处理器会因 payload 类型不符被 Fastify 拒绝，真实错误被 500 掩盖。
+   */
   onStreamStart?: (candidate: RoutedCandidate) => void;
 }
 
@@ -264,11 +270,11 @@ export async function* streamRoutedRequest(
     let yieldedForCandidate = false;
 
     try {
-      input.onStreamStart?.(candidate);
-
       for await (const chunk of input.invokeStream(candidate, target)) {
         if (firstTokenMs === undefined) {
           firstTokenMs = Date.now() - attemptStartedAt;
+          // 拿到第一个字节才提交 SSE 头，之前失败仍可回 JSON 错误
+          input.onStreamStart?.(candidate);
         }
         yieldedForCandidate = true;
         yield { chunk, candidate };

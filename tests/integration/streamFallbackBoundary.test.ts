@@ -11,6 +11,7 @@ import { StickySessionStore } from "../../src/routing/stickySession.js";
 import { createServer } from "../../src/server/createServer.js";
 import type { RouterState } from "../../src/state/routerState.js";
 import { TraceStore } from "../../src/trace/traceStore.js";
+import { HttpError } from "../../src/utils/httpErrors.js";
 import { createLogger } from "../../src/utils/logger.js";
 
 function createState(input: { adapter: ProviderAdapter; traceDatabasePath: string; traceDirectory: string }): RouterState {
@@ -268,6 +269,99 @@ describe("stream fallback boundary", () => {
       })
     ]);
     expect(explain.json().fallbacks).toEqual([]);
+
+    await gateway.close();
+  });
+
+  /**
+   * 首字节之前全部候选就失败时，必须回干净的 JSON 错误。
+   * 此前 onStreamStart 在 invokeStream 产出前就把 reply 切成 SSE，
+   * 错误处理器再 send 对象会被 Fastify 拒绝，真实错误被 500 掩盖。
+   */
+  it("returns a JSON error when every chat stream candidate fails before the first byte", async () => {
+    const adapter: ProviderAdapter = {
+      type: "openai_compatible",
+      async chatCompletion() {
+        throw new Error("not used");
+      },
+      async *streamChatCompletion(_request, target: RouteTarget) {
+        throw new HttpError(
+          503,
+          "provider_server_error",
+          `no available channel for ${target.endpoint.id}`,
+          true
+        );
+        yield { raw: "unreachable" };
+      }
+    };
+    const state = createState({ adapter, traceDatabasePath, traceDirectory });
+    const gateway = await createServer(state);
+
+    const response = await gateway.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      headers: {
+        authorization: "Bearer test-token"
+      },
+      payload: {
+        model: "auto",
+        stream: true,
+        messages: [{ role: "user", content: "hello" }]
+      }
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.headers["content-type"]).toContain("application/json");
+    expect(response.json().error).toEqual(
+      expect.objectContaining({
+        code: "provider_server_error",
+        message: expect.stringContaining("no available channel")
+      })
+    );
+
+    await gateway.close();
+  });
+
+  it("returns a JSON error when every responses stream candidate fails before the first byte", async () => {
+    const adapter: ProviderAdapter = {
+      type: "openai_compatible",
+      async chatCompletion() {
+        throw new Error("not used");
+      },
+      async responseCompletion() {
+        throw new Error("not used");
+      },
+      async *streamResponse(_request, target: RouteTarget) {
+        throw new HttpError(
+          503,
+          "provider_server_error",
+          `no available channel for ${target.endpoint.id}`,
+          true
+        );
+        yield { raw: "unreachable" };
+      }
+    };
+    const state = createState({ adapter, traceDatabasePath, traceDirectory });
+    const gateway = await createServer(state);
+
+    const response = await gateway.inject({
+      method: "POST",
+      url: "/v1/responses",
+      headers: {
+        authorization: "Bearer test-token"
+      },
+      payload: {
+        model: "auto",
+        stream: true,
+        input: "hello"
+      }
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.headers["content-type"]).toContain("application/json");
+    expect(response.json().error).toEqual(
+      expect.objectContaining({ code: "provider_server_error" })
+    );
 
     await gateway.close();
   });
