@@ -74,8 +74,8 @@ interface ProviderFormData {
   provider_key: string;
   display_name: string;
   endpoints: Array<{
-    endpoint_key: string;
-    protocol: "openai" | "anthropic";
+    endpoint_key?: string;
+    protocol: "openai" | "anthropic" | "all";
     base_url: string;
     custom_headers?: Array<{ key: string; value: string }>;
   }>;
@@ -99,8 +99,8 @@ const providerFormSchema = z.object({
   provider_key: z.string().trim().min(1, "请填写 Provider Key"),
   display_name: z.string().trim().min(1, "请填写 Display Name"),
   endpoints: z.array(z.object({
-    endpoint_key: z.string().trim().min(1, "请填写 Endpoint Key"),
-    protocol: z.enum(["openai", "anthropic"]),
+    endpoint_key: z.string().optional(),
+    protocol: z.enum(["openai", "anthropic", "all"]),
     base_url: z.string().trim().url("Base URL 必须是有效网址"),
     custom_headers: z.array(z.object({
       key: z.string(),
@@ -129,7 +129,78 @@ const providerFormSchema = z.object({
     remaining_usd: z.string(),
     enabled: z.boolean()
   })).min(1, "至少添加一个 Account")
-}).strict();
+}).strict().superRefine((value, ctx) => {
+  const seen = new Map<string, number>();
+  value.endpoints.forEach((endpoint, index) => {
+    for (const protocol of expandFormEndpointProtocols(endpoint)) {
+      const previous = seen.get(protocol);
+      if (previous !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["endpoints", index, "protocol"],
+          message: `${protocolDisplayLabel(protocol)} 协议已配置`
+        });
+      }
+      seen.set(protocol, index);
+    }
+  });
+});
+
+function protocolDisplayLabel(protocol: "openai" | "anthropic" | "all") {
+  switch (protocol) {
+    case "all":
+      return "OpenAI + Anthropic";
+    case "anthropic":
+      return "Anthropic";
+    case "openai":
+    default:
+      return "OpenAI";
+  }
+}
+
+function expandFormEndpointProtocols(endpoint: { protocol: "openai" | "anthropic" | "all" }) {
+  return endpoint.protocol === "all" ? ["openai", "anthropic"] as const : [endpoint.protocol] as const;
+}
+
+function providerEndpointsToForm(
+  endpoints: ProviderDetails["endpoints"]
+): ProviderFormData["endpoints"] {
+  const allBundle = endpoints.filter((endpoint) => endpoint.protocol_bundle_key === "all");
+  const allProtocols = new Set(allBundle.map((endpoint) => endpoint.protocol));
+  const hasAllBundle = allProtocols.has("openai") && allProtocols.has("anthropic");
+  const consumed = new Set<string>();
+  const result: ProviderFormData["endpoints"] = [];
+
+  if (hasAllBundle) {
+    const representative = allBundle[0]!;
+    for (const endpoint of allBundle) {
+      consumed.add(endpoint.endpoint_key);
+    }
+    result.push({
+      protocol: "all",
+      base_url: representative.base_url,
+      custom_headers: representative.custom_headers
+        ? Object.entries(representative.custom_headers).map(([key, value]) => ({ key, value }))
+        : []
+    });
+  }
+
+  for (const endpoint of endpoints) {
+    if (consumed.has(endpoint.endpoint_key)) {
+      continue;
+    }
+    result.push({
+      endpoint_key: endpoint.endpoint_key,
+      protocol: endpoint.protocol as "openai" | "anthropic",
+      base_url: endpoint.base_url,
+      custom_headers: endpoint.custom_headers
+        ? Object.entries(endpoint.custom_headers).map(([key, value]) => ({ key, value }))
+        : []
+    });
+  }
+
+  return result;
+}
 
 function toDatetimeLocal(value: string | null | undefined): string {
   if (!value) return "";
@@ -1100,17 +1171,9 @@ function ProviderFormPage(props: {
 
   useEffect(() => {
     const nextEndpoints = props.provider?.endpoints.length
-      ? props.provider.endpoints.map((endpoint, index) => ({
-          endpoint_key: endpoint.endpoint_key || `endpoint-${index + 1}`,
-          protocol: endpoint.protocol as "openai" | "anthropic",
-          base_url: endpoint.base_url,
-          custom_headers: endpoint.custom_headers
-            ? Object.entries(endpoint.custom_headers).map(([key, value]) => ({ key, value }))
-            : []
-        }))
+      ? providerEndpointsToForm(props.provider.endpoints)
       : [
           {
-            endpoint_key: "default",
             protocol: "openai" as const,
             base_url: "",
             custom_headers: []
@@ -1160,7 +1223,7 @@ function ProviderFormPage(props: {
   }, [isEditing, props.token]);
 
   async function submitProvider(values: ProviderFormData, options?: { skipMergeCheck?: boolean }) {
-    const normalizedEndpoints = values.endpoints.map((endpoint, index) => {
+    const normalizedEndpoints = values.endpoints.map((endpoint) => {
       let customHeaders: Record<string, string> | undefined;
       if (endpoint.custom_headers && endpoint.custom_headers.length > 0) {
         customHeaders = {};
@@ -1176,10 +1239,12 @@ function ProviderFormPage(props: {
         }
       }
       return {
-        endpoint_key: endpoint.endpoint_key.trim() || `endpoint-${index + 1}`,
         protocol: endpoint.protocol,
         base_url: endpoint.base_url.trim(),
-        custom_headers: customHeaders
+        custom_headers: customHeaders,
+        ...(endpoint.endpoint_key?.trim() && endpoint.protocol !== "all"
+          ? { endpoint_key: endpoint.endpoint_key.trim() }
+          : {})
       };
     });
     const normalizedAccounts = values.accounts.map((account) => ({
@@ -1263,7 +1328,7 @@ function ProviderFormPage(props: {
     if (!options?.skipMergeCheck && normalized.endpoints[0]) {
       const first = normalized.endpoints[0];
       const merge = await mergeCheckProvider(props.token, {
-        protocol: first.protocol,
+        protocol: first.protocol === "all" ? "openai" : first.protocol,
         base_url: first.base_url
       });
       if (merge.matches.length > 0) {
@@ -1465,14 +1530,13 @@ function ProviderFormPage(props: {
         <div className="field endpoint-group">
           <div className="field-group-header">
             <span>
-              Endpoints <RequiredMark />
+              协议配置 <RequiredMark />
             </span>
             <button
               type="button"
               className="ghost-action small-action"
               onClick={() =>
                 append({
-                  endpoint_key: `endpoint-${fields.length + 1}`,
                   protocol: "openai",
                   base_url: "",
                   custom_headers: []
@@ -1480,7 +1544,7 @@ function ProviderFormPage(props: {
               }
             >
               <Plus size={14} />
-              添加 Endpoint
+              添加协议
             </button>
           </div>
 
@@ -1492,16 +1556,11 @@ function ProviderFormPage(props: {
               return (
                 <div className="endpoint-editor-row" key={field.id}>
                   <label className="field">
-                    <span>Endpoint Key</span>
-                    <input {...form.register(`endpoints.${index}.endpoint_key`)} placeholder={`endpoint-${index + 1}`} />
-                    {endpointErrors?.endpoint_key ? <small>{endpointErrors.endpoint_key.message}</small> : null}
-                  </label>
-
-                  <label className="field">
                     <span>协议类型</span>
                     <select {...form.register(`endpoints.${index}.protocol`)}>
-                      <option value="openai">openai</option>
-                      <option value="anthropic">anthropic</option>
+                      <option value="openai">OpenAI</option>
+                      <option value="anthropic">Anthropic</option>
+                      <option value="all">OpenAI + Anthropic</option>
                     </select>
                     {endpointErrors?.protocol ? <small>{endpointErrors.protocol.message}</small> : null}
                   </label>
@@ -1567,14 +1626,19 @@ function ProviderFormPage(props: {
                   <input {...form.register(`accounts.${index}.account_key`)} placeholder={`key-${index + 1}`} />
                 </label>
                 <label className="field">
-                  <span>绑定 Endpoint</span>
+                  <span>绑定协议</span>
                   <select {...form.register(`accounts.${index}.endpoint_key`)}>
-                    <option value="">全部 Endpoint</option>
-                    {form.watch("endpoints").map((endpoint, endpointIndex) => (
-                      <option key={endpointIndex} value={endpoint.endpoint_key}>
-                        {endpoint.endpoint_key || "未命名 Endpoint"}
-                      </option>
-                    ))}
+                    <option value="">全部协议</option>
+                    {form.watch("endpoints").flatMap((endpoint, endpointIndex) =>
+                      expandFormEndpointProtocols(endpoint).map((protocol) => (
+                        <option
+                          key={`${endpointIndex}-${protocol}`}
+                          value={endpoint.protocol === "all" ? protocol : endpoint.endpoint_key ?? protocol}
+                        >
+                          {protocolDisplayLabel(protocol)}
+                        </option>
+                      ))
+                    )}
                   </select>
                 </label>
                 <label className="field">
@@ -1973,14 +2037,18 @@ function ProviderCard(props: {
   const accounts = props.provider.accounts ?? [];
   const isPerAccountModels = props.provider.model_availability_scope !== "shared_by_provider";
   const visibleModelLimit = 12;
+  const modelEndpoint = (model: ProviderModel) =>
+    props.provider.endpoints.find((item) => item.endpoint_key === model.endpoint_key);
   const modelEndpointLabel = (model: ProviderModel) => {
-    const endpoint = props.provider.endpoints.find((item) => item.endpoint_key === model.endpoint_key);
+    return modelEndpoint(model)?.protocol ?? model.endpoint_key;
+  };
+  const modelItemTitle = (model: ProviderModel, modelAvailable: boolean, unavailableReason: string) => {
+    const availability = modelAvailable ? "可用" : unavailableReason || "不可用";
+    const endpoint = modelEndpoint(model);
     if (!endpoint) {
-      return model.endpoint_key;
+      return `${availability}\nEndpoint: ${model.endpoint_key}`;
     }
-    return endpoint.endpoint_key === endpoint.protocol
-      ? endpoint.endpoint_key
-      : `${endpoint.endpoint_key}/${endpoint.protocol}`;
+    return `${availability}\nEndpoint: ${endpoint.endpoint_key}\nProtocol: ${endpoint.protocol}\nBase URL: ${endpoint.base_url}`;
   };
   const renderModelList = (
     models: ProviderModel[],
@@ -2011,7 +2079,7 @@ function ProviderCard(props: {
               <li
                 key={model.model_key}
                 className={modelAvailable ? "available" : "unavailable"}
-                title={modelAvailable ? "可用" : unavailableReason || "不可用"}
+                title={modelItemTitle(model, modelAvailable, unavailableReason)}
               >
                 <span className="model-chip-name">{model.model_name}</span>
                 <span className="model-chip-endpoint">{modelEndpointLabel(model)}</span>
