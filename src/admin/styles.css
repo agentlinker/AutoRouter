@@ -1140,6 +1140,12 @@ button:disabled {
   font-weight: 600;
 }
 
+.provider-accounts-table .page-actions .small-action {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .provider-model-table .page-actions {
   display: grid;
   justify-items: start;
