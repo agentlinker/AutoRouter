@@ -992,7 +992,7 @@ export function ProviderDetailPage() {
             <div className="model-capability-row" key={endpoint.key}>
               <span className="detail-table-text endpoint-protocol-cell">{endpoint.protocolLabel}</span>
               <div className="model-name-cell">
-                <code>{endpoint.baseUrl}</code>
+                <span className="detail-table-text endpoint-base-url-cell">{endpoint.baseUrl}</span>
               </div>
               <span className="detail-table-text">{endpoint.enabled ? "已启用" : "已停用"}</span>
               <span className="detail-table-text endpoint-headers-cell">{formatCustomHeaders(endpoint.customHeaders)}</span>
