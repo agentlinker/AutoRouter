@@ -2410,7 +2410,7 @@ function ProviderAccountsPanel(props: {
   return (
     <div className="panel detail-card">
       <h3>Accounts / API Keys</h3>
-      <div className="model-capability-table provider-model-table">
+      <div className="model-capability-table provider-model-table provider-accounts-table">
         <div className="model-capability-header">
           <span>Account</span>
           <span>启用</span>
@@ -2422,29 +2422,31 @@ function ProviderAccountsPanel(props: {
         {accounts.map((account) => (
           <div className="model-capability-row" key={account.account_key}>
             <div className="model-name-cell">
-              <strong>{account.account_key}</strong>
-              <code>{account.key_hint ?? "hidden"}</code>
-              <span className="badge">{account.endpoint_key ?? "全部协议"}</span>
+              <span className="detail-table-text">{account.account_key}</span>
+              <span className="detail-table-text">{account.key_hint ?? "hidden"}</span>
+              <span className="detail-table-text">{account.endpoint_key ?? "全部协议"}</span>
             </div>
-            <SwitchControl
-              checked={account.enabled}
-              disabled={toggleMutation.isPending}
-              label={`${account.account_key} 启用开关`}
-              onChange={(checked) =>
-                toggleMutation.mutate({
-                  account_key: account.account_key,
-                  enabled: checked
-                })
-              }
-            />
+            <div className="detail-table-text provider-model-enabled-cell">
+              <SwitchControl
+                checked={account.enabled}
+                disabled={toggleMutation.isPending}
+                label={`${account.account_key} 启用开关`}
+                onChange={(checked) =>
+                  toggleMutation.mutate({
+                    account_key: account.account_key,
+                    enabled: checked
+                  })
+                }
+              />
+            </div>
             <span
-              className={runtimeStatusBadgeClass(account)}
+              className={`${runtimeStatusBadgeClass(account)} detail-status-badge`}
               title={runtimeStatusDetail(account)}
             >
               {runtimeStatusDisplayLabel(account)}
             </span>
-            <span>{account.expires_at ? formatDateTime(account.expires_at) : "未设置"}</span>
-            <span>{formatQuotaSummary(account.quota)}</span>
+            <span className="detail-table-text">{account.expires_at ? formatDateTime(account.expires_at) : "未设置"}</span>
+            <span className="detail-table-text">{formatQuotaSummary(account.quota)}</span>
             <div className="page-actions">
               {isManualRecoveryRequired(account) ? (
                 <button

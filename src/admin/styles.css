@@ -1130,6 +1130,16 @@ button:disabled {
   align-items: center;
 }
 
+.provider-accounts-table .model-name-cell {
+  gap: 6px;
+}
+
+.provider-accounts-table .detail-status-badge {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .provider-model-table .page-actions {
   display: grid;
   justify-items: start;
