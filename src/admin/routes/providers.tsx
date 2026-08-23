@@ -204,12 +204,10 @@ function providerEndpointsToForm(
 
 interface ProviderEndpointDisplayRow {
   key: string;
-  label: string;
   protocolLabel: string;
   baseUrl: string;
   customHeaders?: Record<string, string>;
   enabled: boolean;
-  endpointKeys: string[];
 }
 
 function providerEndpointsToDisplayRows(
@@ -228,12 +226,10 @@ function providerEndpointsToDisplayRows(
     }
     rows.push({
       key: "bundle:all",
-      label: protocolDisplayLabel("all"),
       protocolLabel: protocolDisplayLabel("all"),
       baseUrl: representative.base_url,
       customHeaders: representative.custom_headers,
-      enabled: allBundle.every((endpoint) => endpoint.enabled),
-      endpointKeys: allBundle.map((endpoint) => endpoint.endpoint_key)
+      enabled: allBundle.every((endpoint) => endpoint.enabled)
     });
   }
 
@@ -243,12 +239,10 @@ function providerEndpointsToDisplayRows(
     }
     rows.push({
       key: endpoint.endpoint_key,
-      label: endpoint.endpoint_key,
       protocolLabel: protocolDisplayLabel(endpoint.protocol as "openai" | "anthropic"),
       baseUrl: endpoint.base_url,
       customHeaders: endpoint.custom_headers,
-      enabled: endpoint.enabled,
-      endpointKeys: [endpoint.endpoint_key]
+      enabled: endpoint.enabled
     });
   }
 
@@ -969,28 +963,22 @@ export function ProviderDetailPage() {
         </dl>
         <div className="model-capability-table endpoint-table">
           <div className="model-capability-header">
-            <span>Endpoint</span>
-            <span>协议</span>
+            <span>Base URL</span>
+            <span>协议配置</span>
             <span>状态</span>
             <span>自定义 Headers</span>
           </div>
           {providerEndpointsToDisplayRows(provider.endpoints).map((endpoint) => (
             <div className="model-capability-row" key={endpoint.key}>
               <div className="model-name-cell">
-                <strong>{endpoint.label}</strong>
                 <code>{endpoint.baseUrl}</code>
-                {endpoint.endpointKeys.length > 1 ? (
-                  <small className="muted">
-                    内部协议: {endpoint.endpointKeys.join(", ")}
-                  </small>
-                ) : null}
                 {endpoint.customHeaders && Object.keys(endpoint.customHeaders).length > 0 ? (
                   <small className="muted">
                     Headers: {Object.keys(endpoint.customHeaders).join(", ")}
                   </small>
                 ) : null}
               </div>
-              <span>{endpoint.protocolLabel}</span>
+              <span className="endpoint-protocol-cell">{endpoint.protocolLabel}</span>
               <span>{endpoint.enabled ? "已启用" : "已停用"}</span>
               <span>{endpoint.customHeaders && Object.keys(endpoint.customHeaders).length > 0 ? "已配置" : "无"}</span>
             </div>
