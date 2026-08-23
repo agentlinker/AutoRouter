@@ -273,7 +273,9 @@ describe("admin providers integration", () => {
         endpoints: {},
         accounts: {},
         models: {},
-        policies: {}
+        policies: {
+          balanced: {}
+        }
       }
     });
 
@@ -357,13 +359,13 @@ describe("admin providers integration", () => {
       expect.arrayContaining([
         expect.objectContaining({
           account_key: "primary",
-          endpoint_key: "default",
+          endpoint_key: "openai",
           expires_at: "2030-01-02T03:04:05.000Z",
           quota: expect.objectContaining({ remaining_usd: 12 })
         }),
         expect.objectContaining({
           account_key: "backup",
-          endpoint_key: "default",
+          endpoint_key: "openai",
           quota: expect.objectContaining({ remaining_usd: 4 })
         })
       ])
@@ -411,7 +413,7 @@ describe("admin providers integration", () => {
     expect(modelsResponse.statusCode).toBe(200);
     const listedModels = modelsResponse.json().data.map((item: { id: string }) => item.id);
     expect(listedModels).toContain("managed-model");
-    expect(listedModels).toContain("managed/managed-model");
+    expect(listedModels).toContain("managed/openai/managed-model");
 
     const chatResponse = await server.inject({
       method: "POST",
@@ -532,7 +534,7 @@ describe("admin providers integration", () => {
     expect(createEndpointResponse.json().endpoints).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          endpoint_key: "default",
+          endpoint_key: "openai",
           protocol: "openai"
         }),
         expect.objectContaining({
@@ -584,7 +586,7 @@ describe("admin providers integration", () => {
         authorization: "Bearer admin-token"
       },
       payload: {
-        model_key: "managed/managed-model-v2",
+        model_key: "managed/openai/managed-model-v2",
         supports_tools: false,
         supports_json_mode: true
       }
@@ -592,7 +594,7 @@ describe("admin providers integration", () => {
 
     expect(modelCapabilityResponse.statusCode).toBe(200);
     const editedModel = modelCapabilityResponse.json().models.find(
-      (model: { model_key: string }) => model.model_key === "managed/managed-model-v2"
+      (model: { model_key: string }) => model.model_key === "managed/openai/managed-model-v2"
     );
     expect(editedModel.supports_tools).toBe(false);
     expect(editedModel.supports_json_mode).toBe(true);
@@ -1203,7 +1205,98 @@ describe("admin providers integration", () => {
     await server.close();
   });
 
-  it("rejects provider creation when any endpoint cannot list models", async () => {
+  it("expands all protocol providers into bundled openai and anthropic endpoints", async () => {
+    const pool = mockAgent.get("https://bundle.example.com");
+
+    pool
+      .intercept({ path: "/v1/models", method: "GET" })
+      .reply(200, {
+        data: [{ id: "shared-model", object: "model", supports_tools: true }]
+      });
+    pool
+      .intercept({ path: "/v1/models", method: "GET" })
+      .reply(200, {
+        data: [{ id: "claude-shared", type: "model" }]
+      });
+
+    const config = loadConfig({
+      override: {
+        server: {
+          host: "127.0.0.1",
+          port: 8811,
+          request_timeout_ms: 120000,
+          gateway_token_env: "AUTO_ROUTER_TOKEN",
+          admin_token_env: "AUTO_ROUTER_ADMIN_TOKEN"
+        },
+        database: { path: join(tempDir, "autorouter-all-protocol.db") },
+        trace: { directory: join(tempDir, "traces-all-protocol"), log_prompts: false },
+        routes: {},
+        providers: {},
+        endpoints: {},
+        accounts: {},
+        models: {},
+        policies: {}
+      }
+    });
+
+    const databaseClient = createDatabaseClient(config.database.path);
+    const repository = new ManagedProviderRepository(databaseClient.db);
+    const routeTraceRepository = new RouteTraceRepository(databaseClient.db);
+    const secretCipher = new SecretCipher(process.env.AUTO_ROUTER_MASTER_KEY);
+    const runtimeManager = new RuntimeManager({
+      baseConfig: config,
+      managedProviderRepository: repository,
+      secretCipher,
+      adapters: new AdapterRegistry(),
+      stickySessions: new StickySessionStore(),
+      traceStore: new TraceStore(routeTraceRepository),
+      logger: createLogger()
+    });
+    const server = await createServer(runtimeManager, {
+      managedProviderRepository: repository,
+      discoveryService: new ProviderModelDiscoveryService(),
+      secretCipher
+    });
+
+    const createResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers",
+      headers: { authorization: "Bearer admin-token" },
+      payload: {
+        provider_key: "bundle",
+        display_name: "Bundle Provider",
+        protocol: "all",
+        base_url: "https://bundle.example.com/v1",
+        api_key: "bundle-secret"
+      }
+    });
+
+    expect(createResponse.statusCode).toBe(201);
+    expect(createResponse.json().endpoints).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          endpoint_key: "openai",
+          protocol: "openai",
+          protocol_bundle_key: "all"
+        }),
+        expect.objectContaining({
+          endpoint_key: "anthropic",
+          protocol: "anthropic",
+          protocol_bundle_key: "all"
+        })
+      ])
+    );
+    expect(createResponse.json().models).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ endpoint_key: "openai", model_name: "shared-model" }),
+        expect.objectContaining({ endpoint_key: "anthropic", model_name: "claude-shared" })
+      ])
+    );
+
+    await server.close();
+  });
+
+  it("rejects duplicate protocol endpoints before discovery", async () => {
     const pool = mockAgent.get("https://shared-models.example.com");
 
     pool
@@ -1299,17 +1392,8 @@ describe("admin providers integration", () => {
       }
     });
 
-    // 一个 endpoint 成功、一个失败时也必须整体失败：否则 provider 建好了但
-    // alt endpoint 永远空着，用户只能从 model_sync_runs 里才看得到失败
-    expect(createResponse.statusCode).toBe(503);
-    expect(createResponse.json().error.code).toBe("provider_discovery_failed");
-    expect(createResponse.json().error.message).toContain("alt");
-    expect(createResponse.json().error.details.failed_endpoints).toEqual([
-      expect.objectContaining({
-        endpoint_key: "alt",
-        base_url: "https://shared-models.example.com/alt"
-      })
-    ]);
+    expect(createResponse.statusCode).toBe(400);
+    expect(createResponse.json().error.code).toBe("duplicate_protocol");
     expect(repository.getProviderDetails("shared")).toBeNull();
 
     await server.close();
@@ -1425,13 +1509,13 @@ describe("admin providers integration", () => {
     expect(createResponse.json().endpoints).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          endpoint_key: "default",
+          endpoint_key: "anthropic",
           protocol: "anthropic",
           base_url: "https://anthropic-create.example.com/v1"
         })
       ])
     );
-    expect(createResponse.json().models[0].model_key).toBe("anthropic-create/claude-create");
+    expect(createResponse.json().models[0].model_key).toBe("anthropic-create/anthropic/claude-create");
 
     const modelsResponse = await server.inject({
       method: "GET",
@@ -1442,7 +1526,7 @@ describe("admin providers integration", () => {
     });
     expect(modelsResponse.statusCode).toBe(200);
     expect(modelsResponse.json().data.map((item: { id: string }) => item.id)).toContain(
-      "anthropic-create/claude-create"
+      "claude-create"
     );
 
     const chatResponse = await server.inject({
@@ -1546,7 +1630,7 @@ describe("admin providers integration", () => {
     expect(addAnthropicResponse.json().endpoints).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          endpoint_key: "default",
+          endpoint_key: "openai",
           protocol: "openai",
           base_url: "https://relay-dual.example.com/v1"
         }),
