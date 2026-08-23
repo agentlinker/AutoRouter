@@ -202,6 +202,59 @@ function providerEndpointsToForm(
   return result;
 }
 
+interface ProviderEndpointDisplayRow {
+  key: string;
+  label: string;
+  protocolLabel: string;
+  baseUrl: string;
+  customHeaders?: Record<string, string>;
+  enabled: boolean;
+  endpointKeys: string[];
+}
+
+function providerEndpointsToDisplayRows(
+  endpoints: ProviderDetails["endpoints"]
+): ProviderEndpointDisplayRow[] {
+  const allBundle = endpoints.filter((endpoint) => endpoint.protocol_bundle_key === "all");
+  const allProtocols = new Set(allBundle.map((endpoint) => endpoint.protocol));
+  const hasAllBundle = allProtocols.has("openai") && allProtocols.has("anthropic");
+  const consumed = new Set<string>();
+  const rows: ProviderEndpointDisplayRow[] = [];
+
+  if (hasAllBundle) {
+    const representative = allBundle[0]!;
+    for (const endpoint of allBundle) {
+      consumed.add(endpoint.endpoint_key);
+    }
+    rows.push({
+      key: "bundle:all",
+      label: protocolDisplayLabel("all"),
+      protocolLabel: protocolDisplayLabel("all"),
+      baseUrl: representative.base_url,
+      customHeaders: representative.custom_headers,
+      enabled: allBundle.every((endpoint) => endpoint.enabled),
+      endpointKeys: allBundle.map((endpoint) => endpoint.endpoint_key)
+    });
+  }
+
+  for (const endpoint of endpoints) {
+    if (consumed.has(endpoint.endpoint_key)) {
+      continue;
+    }
+    rows.push({
+      key: endpoint.endpoint_key,
+      label: endpoint.endpoint_key,
+      protocolLabel: protocolDisplayLabel(endpoint.protocol as "openai" | "anthropic"),
+      baseUrl: endpoint.base_url,
+      customHeaders: endpoint.custom_headers,
+      enabled: endpoint.enabled,
+      endpointKeys: [endpoint.endpoint_key]
+    });
+  }
+
+  return rows;
+}
+
 function toDatetimeLocal(value: string | null | undefined): string {
   if (!value) return "";
   const date = new Date(value);
@@ -921,20 +974,25 @@ export function ProviderDetailPage() {
             <span>状态</span>
             <span>自定义 Headers</span>
           </div>
-          {provider.endpoints.map((endpoint) => (
-            <div className="model-capability-row" key={endpoint.endpoint_key}>
+          {providerEndpointsToDisplayRows(provider.endpoints).map((endpoint) => (
+            <div className="model-capability-row" key={endpoint.key}>
               <div className="model-name-cell">
-                <strong>{endpoint.endpoint_key}</strong>
-                <code>{endpoint.base_url}</code>
-                {endpoint.custom_headers && Object.keys(endpoint.custom_headers).length > 0 ? (
+                <strong>{endpoint.label}</strong>
+                <code>{endpoint.baseUrl}</code>
+                {endpoint.endpointKeys.length > 1 ? (
                   <small className="muted">
-                    Headers: {Object.keys(endpoint.custom_headers).join(", ")}
+                    内部协议: {endpoint.endpointKeys.join(", ")}
+                  </small>
+                ) : null}
+                {endpoint.customHeaders && Object.keys(endpoint.customHeaders).length > 0 ? (
+                  <small className="muted">
+                    Headers: {Object.keys(endpoint.customHeaders).join(", ")}
                   </small>
                 ) : null}
               </div>
-              <span>{endpoint.protocol}</span>
+              <span>{endpoint.protocolLabel}</span>
               <span>{endpoint.enabled ? "已启用" : "已停用"}</span>
-              <span>{endpoint.custom_headers && Object.keys(endpoint.custom_headers).length > 0 ? "已配置" : "无"}</span>
+              <span>{endpoint.customHeaders && Object.keys(endpoint.customHeaders).length > 0 ? "已配置" : "无"}</span>
             </div>
           ))}
         </div>
@@ -2361,7 +2419,7 @@ function ProviderAccountsPanel(props: {
             <div className="model-name-cell">
               <strong>{account.account_key}</strong>
               <code>{account.key_hint ?? "hidden"}</code>
-              <span className="badge">{account.endpoint_key ?? "全部 Endpoint"}</span>
+              <span className="badge">{account.endpoint_key ?? "全部协议"}</span>
             </div>
             <SwitchControl
               checked={account.enabled}
