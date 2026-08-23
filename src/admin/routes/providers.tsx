@@ -46,6 +46,7 @@ import {
   updateProviderAccount,
   updateProviderModelCapabilities,
   type CreateProviderPayload,
+  type ProviderAccount,
   type ProviderDetails,
   type ProviderListParams,
   type ProviderModel,
@@ -263,6 +264,19 @@ function providerModelProtocolLabel(provider: ProviderDetails, model: ProviderMo
   const endpoint = provider.endpoints.find((item) => item.endpoint_key === model.endpoint_key);
   if (!endpoint) {
     return model.endpoint_key;
+  }
+
+  return protocolDisplayLabel(endpoint.protocol as "openai" | "anthropic");
+}
+
+function accountEndpointProtocolLabel(provider: ProviderDetails, account: ProviderAccount): string {
+  if (!account.endpoint_key) {
+    return "全部协议";
+  }
+
+  const endpoint = provider.endpoints.find((item) => item.endpoint_key === account.endpoint_key);
+  if (!endpoint) {
+    return account.endpoint_key;
   }
 
   return protocolDisplayLabel(endpoint.protocol as "openai" | "anthropic");
@@ -2424,7 +2438,7 @@ function ProviderAccountsPanel(props: {
             <div className="model-name-cell">
               <span className="detail-table-text">{account.account_key}</span>
               <span className="detail-table-text">{account.key_hint ?? "hidden"}</span>
-              <span className="detail-table-text">{account.endpoint_key ?? "全部协议"}</span>
+              <span className="detail-table-text">{accountEndpointProtocolLabel(props.provider, account)}</span>
             </div>
             <div className="detail-table-text provider-model-enabled-cell">
               <SwitchControl
