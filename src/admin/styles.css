@@ -1076,7 +1076,11 @@ button:disabled {
 /* endpoint 列表：名称 + protocol + enabled + 操作按钮 */
 .endpoint-table .model-capability-header,
 .endpoint-table .model-capability-row {
-  grid-template-columns: minmax(200px, 1fr) repeat(2, minmax(86px, 110px)) minmax(150px, auto);
+  grid-template-columns: minmax(240px, 1fr) minmax(150px, max-content) minmax(86px, 110px) minmax(150px, auto);
+}
+
+.endpoint-protocol-cell {
+  white-space: nowrap;
 }
 
 .provider-model-table .model-capability-header,
