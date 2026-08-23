@@ -1073,14 +1073,21 @@ button:disabled {
   align-items: center;
 }
 
-/* endpoint 列表：base url + protocol + enabled + headers */
+/* endpoint 列表：protocol + base url + enabled + headers */
 .endpoint-table .model-capability-header,
 .endpoint-table .model-capability-row {
-  grid-template-columns: minmax(260px, 1.2fr) minmax(150px, 0.7fr) minmax(86px, 0.45fr) minmax(220px, 1fr);
+  grid-template-columns: minmax(150px, 0.7fr) minmax(260px, 1.2fr) minmax(86px, 0.45fr) minmax(220px, 1fr);
 }
 
 .endpoint-protocol-cell {
   white-space: nowrap;
+}
+
+.detail-table-text {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .endpoint-headers-cell {
@@ -1111,6 +1118,11 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.provider-detail-model-table .provider-model-enabled-cell {
+  display: inline-flex;
+  align-items: center;
 }
 
 .provider-model-table .page-actions {
