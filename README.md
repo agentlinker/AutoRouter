@@ -236,7 +236,10 @@ after the upstream response completes rather than token by token.
 
 ### Managed Provider Endpoints
 
-Managed providers can expose more than one protocol surface. Keep one provider for the vendor, then add one endpoint per protocol/base URL.
+Managed providers expose one protocol configuration per provider protocol. For
+relay providers that serve OpenAI-compatible and Anthropic-compatible APIs from
+the same base URL, use `protocol: "all"`; AutoRouter stores separate internal
+OpenAI and Anthropic endpoints under one bundle.
 
 ```bash
 curl -s \
@@ -245,20 +248,19 @@ curl -s \
   -H "Content-Type: application/json" \
   http://127.0.0.1:8811/admin/api/providers/my-provider/endpoints \
   -d '{
-    "endpoint_key": "anthropic",
-    "protocol": "anthropic",
-    "adapter_type": "anthropic",
-    "base_url": "https://example.com/anthropic/v1"
+    "protocol": "all",
+    "base_url": "https://example.com/v1"
   }'
 ```
 
 Expected:
 
 - The original provider remains one logical vendor entry
-- Each endpoint carries its own `protocol`, `adapter_type`, `base_url`, enabled flag, and capabilities
-- Models discovered from non-default endpoints are keyed as `provider/endpoint/model`
-- If one endpoint cannot list models but another endpoint for the same provider can, runtime routing reuses the provider's discovered models for that endpoint
-- Runtime routing creates separate accounts/endpoints internally while preserving provider-level trust, privacy, and credential settings
+- Each stored endpoint carries one concrete `protocol`, `base_url`, enabled flag, capabilities, and optional `protocol_bundle_key`
+- `protocol: "all"` expands to OpenAI and Anthropic stored endpoints with `protocol_bundle_key: "all"`
+- New provider data allows only one endpoint per protocol under the same provider
+- Models discovered from protocol endpoints are keyed as `provider/protocol/model`
+- Runtime routing creates separate protocol endpoints internally while preserving provider-level trust, privacy, and credential settings
 
 ### Catalog And Logical Models
 

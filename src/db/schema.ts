@@ -64,6 +64,7 @@ export const managedProviderEndpointsTable = sqliteTable("managed_provider_endpo
   protocol: text("protocol").notNull().default("openai"),
   baseUrl: text("base_url").notNull(),
   customHeadersJson: text("custom_headers_json"),
+  protocolBundleKey: text("protocol_bundle_key"),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
   supportsStreaming: integer("supports_streaming", { mode: "boolean" }).notNull().default(true),
   supportsTools: integer("supports_tools", { mode: "boolean" }).notNull().default(false),
@@ -74,6 +75,10 @@ export const managedProviderEndpointsTable = sqliteTable("managed_provider_endpo
   providerEndpointUnique: uniqueIndex("managed_provider_endpoints_provider_endpoint_unique").on(
     table.providerId,
     table.endpointKey
+  ),
+  providerProtocolUnique: uniqueIndex("managed_provider_endpoints_provider_protocol_unique").on(
+    table.providerId,
+    table.protocol
   )
 }));
 

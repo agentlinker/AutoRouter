@@ -25,6 +25,7 @@ export interface ProviderEndpoint {
   protocol: string;
   base_url: string;
   custom_headers?: Record<string, string>;
+  protocol_bundle_key?: string | null;
   enabled: boolean;
   supports_streaming: boolean;
   supports_tools: boolean;
@@ -76,6 +77,7 @@ export interface ProviderTemplate {
     protocol: "openai" | "anthropic";
     base_url: string;
     custom_headers?: Record<string, string>;
+    protocol_bundle_key?: string | null;
     enabled?: boolean;
   }>;
   notes?: string;
@@ -162,10 +164,11 @@ export interface ProviderFormValues {
 }
 
 export interface ProviderEndpointInput {
-  endpoint_key: string;
-  protocol: "openai" | "anthropic";
+  endpoint_key?: string;
+  protocol: "openai" | "anthropic" | "all";
   base_url: string;
   custom_headers?: string | Record<string, string>;
+  protocol_bundle_key?: string | null;
   enabled?: boolean;
 }
 
@@ -259,8 +262,8 @@ export function createProviderEndpoint(
   token: string,
   providerKey: string,
   payload: {
-    endpoint_key: string;
-    protocol: "openai" | "anthropic";
+    endpoint_key?: string;
+    protocol: "openai" | "anthropic" | "all";
     base_url: string;
     custom_headers?: Record<string, string>;
     enabled?: boolean;
