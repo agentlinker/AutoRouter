@@ -983,19 +983,19 @@ export function ProviderDetailPage() {
         <h3>协议配置</h3>
         <div className="model-capability-table endpoint-table">
           <div className="model-capability-header">
-            <span>Base URL</span>
             <span>协议类型</span>
+            <span>Base URL</span>
             <span>状态</span>
             <span>自定义 Headers</span>
           </div>
           {providerEndpointsToDisplayRows(provider.endpoints).map((endpoint) => (
             <div className="model-capability-row" key={endpoint.key}>
+              <span className="detail-table-text endpoint-protocol-cell">{endpoint.protocolLabel}</span>
               <div className="model-name-cell">
                 <code>{endpoint.baseUrl}</code>
               </div>
-              <span className="endpoint-protocol-cell">{endpoint.protocolLabel}</span>
-              <span>{endpoint.enabled ? "已启用" : "已停用"}</span>
-              <span className="endpoint-headers-cell">{formatCustomHeaders(endpoint.customHeaders)}</span>
+              <span className="detail-table-text">{endpoint.enabled ? "已启用" : "已停用"}</span>
+              <span className="detail-table-text endpoint-headers-cell">{formatCustomHeaders(endpoint.customHeaders)}</span>
             </div>
           ))}
         </div>
@@ -1026,18 +1026,20 @@ export function ProviderDetailPage() {
               <div className="model-name-cell">
                 <strong title={model.model_name}>{model.model_name}</strong>
               </div>
-              <span className="endpoint-protocol-cell">{providerModelProtocolLabel(provider, model)}</span>
-              <SwitchControl
-                checked={model.enabled !== false}
-                disabled={modelMutation.isPending}
-                label={`${model.model_name} 启用开关`}
-                onChange={(checked) =>
-                  modelMutation.mutate({
-                    model_key: model.model_key,
-                    enabled: checked
-                  })
-                }
-              />
+              <span className="detail-table-text endpoint-protocol-cell">{providerModelProtocolLabel(provider, model)}</span>
+              <div className="detail-table-text provider-model-enabled-cell">
+                <SwitchControl
+                  checked={model.enabled !== false}
+                  disabled={modelMutation.isPending}
+                  label={`${model.model_name} 启用开关`}
+                  onChange={(checked) =>
+                    modelMutation.mutate({
+                      model_key: model.model_key,
+                      enabled: checked
+                    })
+                  }
+                />
+              </div>
               <div className="runtime-status-cell">
                 <span className={runtimeStatusBadgeClass(model)} title={runtimeStatusDetail(model)}>
                   {runtimeStatusDisplayLabel(model)}
