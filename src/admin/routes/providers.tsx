@@ -249,6 +249,25 @@ function providerEndpointsToDisplayRows(
   return rows;
 }
 
+function formatCustomHeaders(headers: Record<string, string> | undefined): string {
+  if (!headers || Object.keys(headers).length === 0) {
+    return "无";
+  }
+
+  return Object.entries(headers)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join("\n");
+}
+
+function providerModelProtocolLabel(provider: ProviderDetails, model: ProviderModel): string {
+  const endpoint = provider.endpoints.find((item) => item.endpoint_key === model.endpoint_key);
+  if (!endpoint) {
+    return model.endpoint_key;
+  }
+
+  return protocolDisplayLabel(endpoint.protocol as "openai" | "anthropic");
+}
+
 function toDatetimeLocal(value: string | null | undefined): string {
   if (!value) return "";
   const date = new Date(value);
@@ -961,10 +980,11 @@ export function ProviderDetailPage() {
           <dt>最近同步</dt>
           <dd>{provider.latest_sync?.status ?? "暂无记录"}</dd>
         </dl>
+        <h3>协议配置</h3>
         <div className="model-capability-table endpoint-table">
           <div className="model-capability-header">
             <span>Base URL</span>
-            <span>协议配置</span>
+            <span>协议类型</span>
             <span>状态</span>
             <span>自定义 Headers</span>
           </div>
@@ -972,15 +992,10 @@ export function ProviderDetailPage() {
             <div className="model-capability-row" key={endpoint.key}>
               <div className="model-name-cell">
                 <code>{endpoint.baseUrl}</code>
-                {endpoint.customHeaders && Object.keys(endpoint.customHeaders).length > 0 ? (
-                  <small className="muted">
-                    Headers: {Object.keys(endpoint.customHeaders).join(", ")}
-                  </small>
-                ) : null}
               </div>
               <span className="endpoint-protocol-cell">{endpoint.protocolLabel}</span>
               <span>{endpoint.enabled ? "已启用" : "已停用"}</span>
-              <span>{endpoint.customHeaders && Object.keys(endpoint.customHeaders).length > 0 ? "已配置" : "无"}</span>
+              <span className="endpoint-headers-cell">{formatCustomHeaders(endpoint.customHeaders)}</span>
             </div>
           ))}
         </div>
@@ -996,9 +1011,10 @@ export function ProviderDetailPage() {
 
       <div className="panel detail-card">
         <h3>模型列表</h3>
-        <div className="model-capability-table provider-model-table">
+        <div className="model-capability-table provider-model-table provider-detail-model-table">
           <div className="model-capability-header">
             <span>模型</span>
+            <span>协议类型</span>
             <span>启用</span>
             <span>调度状态</span>
             <span>Streaming</span>
@@ -1008,10 +1024,9 @@ export function ProviderDetailPage() {
           {provider.models.map((model) => (
             <div className="model-capability-row" key={model.model_key}>
               <div className="model-name-cell">
-                <strong>{model.model_name}</strong>
-                <code>{model.model_key}</code>
-                <span className="badge">{model.endpoint_key}</span>
+                <strong title={model.model_name}>{model.model_name}</strong>
               </div>
+              <span className="endpoint-protocol-cell">{providerModelProtocolLabel(provider, model)}</span>
               <SwitchControl
                 checked={model.enabled !== false}
                 disabled={modelMutation.isPending}
