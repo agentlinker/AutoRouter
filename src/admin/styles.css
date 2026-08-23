@@ -1073,14 +1073,19 @@ button:disabled {
   align-items: center;
 }
 
-/* endpoint 列表：名称 + protocol + enabled + 操作按钮 */
+/* endpoint 列表：base url + protocol + enabled + headers */
 .endpoint-table .model-capability-header,
 .endpoint-table .model-capability-row {
-  grid-template-columns: minmax(240px, 1fr) minmax(150px, max-content) minmax(86px, 110px) minmax(150px, auto);
+  grid-template-columns: minmax(260px, 1.2fr) minmax(150px, 0.7fr) minmax(86px, 0.45fr) minmax(220px, 1fr);
 }
 
 .endpoint-protocol-cell {
   white-space: nowrap;
+}
+
+.endpoint-headers-cell {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .provider-model-table .model-capability-header,
@@ -1090,6 +1095,22 @@ button:disabled {
     minmax(92px, 0.55fr)
     minmax(112px, 0.65fr)
     repeat(3, minmax(86px, 0.5fr));
+}
+
+.provider-detail-model-table .model-capability-header,
+.provider-detail-model-table .model-capability-row {
+  grid-template-columns:
+    minmax(180px, 1.2fr)
+    minmax(150px, 0.7fr)
+    minmax(92px, 0.45fr)
+    minmax(112px, 0.65fr)
+    repeat(3, minmax(86px, 0.45fr));
+}
+
+.provider-detail-model-table .model-name-cell strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .provider-model-table .page-actions {
