@@ -1084,15 +1084,20 @@ button:disabled {
 }
 
 .detail-table-text {
-  color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  font-size: 12px;
-  line-height: 1.45;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.endpoint-base-url-cell,
+.endpoint-headers-cell {
+  word-break: break-word;
 }
 
 .endpoint-headers-cell {
   white-space: pre-wrap;
-  word-break: break-word;
 }
 
 .provider-model-table .model-capability-header,
