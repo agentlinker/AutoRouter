@@ -774,6 +774,7 @@ export function runMigrations(sqlite: Database.Database) {
         recent_error_count INTEGER NOT NULL DEFAULT 0,
         expires_at TEXT,
         quota_json TEXT,
+        remark TEXT,
         last_error_at TEXT,
         last_error_code TEXT,
         last_error_message TEXT,
@@ -885,6 +886,7 @@ export function runMigrations(sqlite: Database.Database) {
       { name: "recent_error_count", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN recent_error_count INTEGER NOT NULL DEFAULT 0;" },
       { name: "expires_at", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN expires_at TEXT;" },
       { name: "quota_json", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN quota_json TEXT;" },
+      { name: "remark", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN remark TEXT;" },
       { name: "last_error_at", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN last_error_at TEXT;" },
       { name: "last_error_code", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN last_error_code TEXT;" },
       { name: "last_error_message", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN last_error_message TEXT;" }

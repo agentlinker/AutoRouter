@@ -103,7 +103,7 @@ const accountQuotaSchema = z.object({
 }).strict();
 
 const createProviderBodySchema = z.object({
-  provider_key: z.string().min(1),
+  provider_key: z.string().min(1).optional(),
   display_name: z.string().min(1),
   protocol: protocolInputSchema.optional(),
   base_url: z.string().url().optional(),
@@ -122,6 +122,7 @@ const createProviderBodySchema = z.object({
     api_key: z.string().min(1),
     expires_at: z.string().min(1).optional().nullable(),
     quota: accountQuotaSchema.optional().nullable(),
+    remark: z.string().optional().nullable(),
     enabled: z.boolean().optional()
   }).strict()).min(1).optional(),
   provider_kind: providerKindSchema.optional(),
@@ -173,6 +174,7 @@ const createAccountBodySchema = z.object({
   api_key: z.string().min(1),
   expires_at: z.string().min(1).optional().nullable(),
   quota: accountQuotaSchema.optional().nullable(),
+  remark: z.string().optional().nullable(),
   enabled: z.boolean().optional()
 }).strict();
 
@@ -181,6 +183,7 @@ const patchAccountBodySchema = z.object({
   api_key: z.string().min(1).optional(),
   expires_at: z.string().min(1).optional().nullable(),
   quota: accountQuotaSchema.optional().nullable(),
+  remark: z.string().optional().nullable(),
   enabled: z.boolean().optional()
 }).strict();
 
@@ -376,6 +379,30 @@ function buildProviderInput(input: {
   };
 }
 
+function providerKeyBaseFromUrl(baseUrl: string): string {
+  const hostname = new URL(baseUrl).hostname;
+  const normalized = hostname
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || "provider";
+}
+
+function uniqueProviderKey(
+  repository: ManagedProviderRepository,
+  preferredKey: string | undefined,
+  baseUrl: string
+): string {
+  const base = preferredKey?.trim() || providerKeyBaseFromUrl(baseUrl);
+  let candidate = base;
+  let suffix = 2;
+  while (repository.getProviderDetails(candidate)) {
+    candidate = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
 function ensureUniqueEndpointKeys(
   endpoints: NormalizedEndpointInput[]
 ) {
@@ -569,6 +596,7 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
       recent_error_count: account.recentErrorCount ?? 0,
       expires_at: account.expiresAt ?? null,
       quota,
+      remark: account.remark ?? null,
       key_hint: account.keyHint ?? null,
       last_error_at: account.lastErrorAt ?? null,
       last_error_code: account.lastErrorCode ?? null,
@@ -957,10 +985,6 @@ export async function registerAdminProvidersRoutes(
   fastify.post<{ Body: unknown }>("/admin/api/providers", async (request, reply) => {
     const body = createProviderBodySchema.parse(request.body);
 
-    if (dependencies.repository.getProviderDetails(body.provider_key)) {
-      throw new HttpError(409, "provider_exists", "Provider already exists");
-    }
-
     const template = body.template_id ? getOfficialProviderTemplate(body.template_id) : null;
     if (body.template_id && !template) {
       throw new HttpError(404, "template_not_found", "Provider template not found");
@@ -981,6 +1005,11 @@ export async function registerAdminProvidersRoutes(
       throw new HttpError(400, "invalid_request", "At least one endpoint is required");
     }
     ensureUniqueEndpointKeys(endpointInputs);
+    const providerKey = uniqueProviderKey(
+      dependencies.repository,
+      body.provider_key ?? template?.suggested_provider_key,
+      endpointInputs[0]!.base_url
+    );
 
     const primaryAccount = body.accounts?.[0];
     if (body.accounts) {
@@ -994,7 +1023,7 @@ export async function registerAdminProvidersRoutes(
     }
     const discoveryApiKey = primaryAccount?.api_key ?? body.api_key;
     const endpointBundles = await discoverEndpointBundles(dependencies.discoveryService, {
-      providerKey: body.provider_key,
+      providerKey,
       apiKey: discoveryApiKey,
       endpoints: endpointInputs
     });
@@ -1003,6 +1032,7 @@ export async function registerAdminProvidersRoutes(
     const details = dependencies.repository.createProviderWithEndpointBundles({
       provider: buildProviderInput({
         ...body,
+        provider_key: providerKey,
         website_url: body.website_url || template?.website_url || "",
         provider_kind: body.provider_kind ?? template?.provider_kind,
         model_availability_scope:
@@ -1016,21 +1046,23 @@ export async function registerAdminProvidersRoutes(
             endpointKey: normalizeSubmittedAccountEndpointKey(primaryAccount.endpoint_key, endpointInputs),
             enabled: primaryAccount.enabled,
             expiresAt: primaryAccount.expires_at ?? null,
-            quotaJson: primaryAccount.quota ? JSON.stringify(primaryAccount.quota) : null
+            quotaJson: primaryAccount.quota ? JSON.stringify(primaryAccount.quota) : null,
+            remark: primaryAccount.remark?.trim() || null
           }
         : undefined,
       endpointBundles
     });
 
     for (const account of body.accounts?.slice(1) ?? []) {
-      const created = dependencies.repository.createAccount(body.provider_key, {
+      const created = dependencies.repository.createAccount(providerKey, {
         accountKey: account.account_key,
         endpointKey: normalizeSubmittedAccountEndpointKey(account.endpoint_key, endpointInputs),
         encryptedApiKey: dependencies.secretCipher.encrypt(account.api_key),
         apiKeyHint: ManagedProviderRepository.toApiKeyHint(account.api_key),
         enabled: account.enabled,
         expiresAt: account.expires_at ?? null,
-        quotaJson: account.quota ? JSON.stringify(account.quota) : null
+        quotaJson: account.quota ? JSON.stringify(account.quota) : null,
+        remark: account.remark?.trim() || null
       });
       if (!created) {
         throw new HttpError(400, "invalid_account", `Unable to create account ${account.account_key}`);
@@ -1040,7 +1072,7 @@ export async function registerAdminProvidersRoutes(
     await dependencies.runtimeManager.reload();
     reply.status(201);
     return serializeProviderDetails(
-      dependencies.repository.getProviderDetails(body.provider_key) ?? details
+      dependencies.repository.getProviderDetails(providerKey) ?? details
     );
   });
 
@@ -1412,7 +1444,8 @@ export async function registerAdminProvidersRoutes(
         apiKeyHint: ManagedProviderRepository.toApiKeyHint(body.api_key),
         enabled: body.enabled,
         expiresAt: body.expires_at ?? null,
-        quotaJson: body.quota ? JSON.stringify(body.quota) : null
+        quotaJson: body.quota ? JSON.stringify(body.quota) : null,
+        remark: body.remark?.trim() || null
       });
       if (!created) {
         throw new HttpError(400, "invalid_request", "Failed to create account");
@@ -1463,7 +1496,8 @@ export async function registerAdminProvidersRoutes(
               ? undefined
               : body.quota === null
                 ? null
-                : JSON.stringify(body.quota)
+                : JSON.stringify(body.quota),
+          remark: body.remark === undefined ? undefined : body.remark?.trim() || null
         }
       );
       if (!updated) {

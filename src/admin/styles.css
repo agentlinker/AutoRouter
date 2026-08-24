@@ -35,7 +35,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -1130,6 +1131,19 @@ button:disabled {
   align-items: center;
 }
 
+.provider-accounts-table .model-capability-header,
+.provider-accounts-table .model-capability-row {
+  grid-template-columns:
+    minmax(120px, 0.7fr)
+    minmax(110px, 0.65fr)
+    minmax(80px, 0.45fr)
+    minmax(100px, 0.55fr)
+    minmax(130px, 0.7fr)
+    minmax(100px, 0.55fr)
+    minmax(140px, 0.85fr)
+    minmax(120px, 0.7fr);
+}
+
 .provider-accounts-table .model-name-cell {
   gap: 6px;
 }
@@ -1140,10 +1154,12 @@ button:disabled {
   font-weight: 600;
 }
 
-.provider-accounts-table .page-actions .small-action {
+.provider-accounts-table .account-action-select {
   font-family: inherit;
   font-size: 13px;
   font-weight: 600;
+  width: 100%;
+  min-width: 0;
 }
 
 .provider-model-table .page-actions {

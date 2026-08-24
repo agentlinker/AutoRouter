@@ -51,6 +51,7 @@ export interface ProviderAccount {
     reset_at?: string;
     source?: string;
   } | null;
+  remark?: string | null;
   key_hint: string | null;
   last_error_at?: string | null;
   last_error_code?: string | null;
@@ -152,7 +153,7 @@ export interface ProviderModelTestResult {
 }
 
 export interface ProviderFormValues {
-  provider_key: string;
+  provider_key?: string;
   display_name: string;
   endpoints: ProviderEndpointInput[];
   website_url?: string;
@@ -181,6 +182,7 @@ export interface CreateProviderPayload extends ProviderFormValues {
     api_key: string;
     expires_at?: string | null;
     quota?: ProviderAccount["quota"];
+    remark?: string | null;
     enabled?: boolean;
   }>;
 }
@@ -373,6 +375,7 @@ export function createProviderAccount(
     api_key: string;
     expires_at?: string | null;
     quota?: ProviderAccount["quota"];
+    remark?: string | null;
     enabled?: boolean;
   }
 ): Promise<ProviderDetails> {
@@ -391,6 +394,7 @@ export function updateProviderAccount(
     api_key?: string;
     expires_at?: string | null;
     quota?: ProviderAccount["quota"] | null;
+    remark?: string | null;
     enabled?: boolean;
   }
 ): Promise<ProviderDetails> {

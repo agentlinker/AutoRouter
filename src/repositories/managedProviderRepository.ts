@@ -45,6 +45,7 @@ export interface ManagedAccountInput {
   enabled?: boolean;
   expiresAt?: string | null;
   quotaJson?: string | null;
+  remark?: string | null;
 }
 
 export interface ManagedAccountUpdateInput {
@@ -54,6 +55,7 @@ export interface ManagedAccountUpdateInput {
   enabled?: boolean;
   expiresAt?: string | null;
   quotaJson?: string | null;
+  remark?: string | null;
 }
 
 export interface AccountQuota {
@@ -1013,6 +1015,7 @@ export class ManagedProviderRepository {
       enabled?: boolean;
       expiresAt?: string | null;
       quotaJson?: string | null;
+      remark?: string | null;
     };
     endpointBundles: ManagedEndpointBundleInput[];
   }): ManagedProviderDetails {
@@ -1103,6 +1106,7 @@ export class ManagedProviderRepository {
         recentErrorCount: 0,
         expiresAt: input.defaultAccount?.expiresAt ?? null,
         quotaJson: input.defaultAccount?.quotaJson ?? null,
+        remark: input.defaultAccount?.remark ?? null,
         apiKeyEncrypted: input.encryptedApiKey,
         keyHint: input.apiKeyHint ?? null,
         createdAt: now,
@@ -1712,6 +1716,7 @@ export class ManagedProviderRepository {
       recentErrorCount: 0,
       expiresAt: input.expiresAt ?? null,
       quotaJson: input.quotaJson ?? null,
+      remark: input.remark ?? null,
       apiKeyEncrypted: input.encryptedApiKey,
       keyHint: input.apiKeyHint ?? null,
       createdAt: now,
@@ -1766,6 +1771,7 @@ export class ManagedProviderRepository {
         endpointId,
         expiresAt: input.expiresAt !== undefined ? input.expiresAt : account.expiresAt,
         quotaJson: input.quotaJson !== undefined ? input.quotaJson : account.quotaJson,
+        remark: input.remark !== undefined ? input.remark : account.remark,
         apiKeyEncrypted: input.encryptedApiKey ?? account.apiKeyEncrypted,
         keyHint: input.apiKeyHint !== undefined ? input.apiKeyHint : account.keyHint,
         updatedAt: now

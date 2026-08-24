@@ -176,6 +176,112 @@ describe("admin providers integration", () => {
     await server.close();
   });
 
+  it("generates unique provider keys from base URL host when omitted", async () => {
+    const pool = mockAgent.get("https://api.example.com");
+
+    for (const modelId of ["first-model", "second-model"]) {
+      pool
+        .intercept({
+          path: "/v1/models",
+          method: "GET"
+        })
+        .reply(200, {
+          object: "list",
+          data: [
+            {
+              id: modelId,
+              object: "model",
+              context_window: 64000
+            }
+          ]
+        });
+    }
+
+    const config = loadConfig({
+      override: {
+        server: {
+          host: "127.0.0.1",
+          port: 8811,
+          request_timeout_ms: 120000,
+          gateway_token_env: "AUTO_ROUTER_TOKEN",
+          admin_token_env: "AUTO_ROUTER_ADMIN_TOKEN"
+        },
+        database: {
+          path: join(tempDir, "autorouter-generated-key.db")
+        },
+        trace: {
+          directory: join(tempDir, "traces-generated-key"),
+          log_prompts: false
+        },
+        routes: {},
+        providers: {},
+        endpoints: {},
+        accounts: {},
+        models: {},
+        policies: {}
+      }
+    });
+
+    const databaseClient = createDatabaseClient(config.database.path);
+    const repository = new ManagedProviderRepository(databaseClient.db);
+    const routeTraceRepository = new RouteTraceRepository(databaseClient.db);
+    const adapters = new AdapterRegistry();
+    const stickySessions = new StickySessionStore();
+    const traceStore = new TraceStore(routeTraceRepository);
+    const secretCipher = new SecretCipher(process.env.AUTO_ROUTER_MASTER_KEY);
+    const runtimeManager = new RuntimeManager({
+      baseConfig: config,
+      managedProviderRepository: repository,
+      secretCipher,
+      adapters,
+      stickySessions,
+      traceStore,
+      logger: createLogger()
+    });
+    const discoveryService = new ProviderModelDiscoveryService();
+
+    const server = await createServer(runtimeManager, {
+      managedProviderRepository: repository,
+      discoveryService,
+      secretCipher
+    });
+
+    const firstResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        display_name: "First Generated",
+        base_url: "https://api.example.com/v1",
+        api_key: "first-secret"
+      }
+    });
+
+    const secondResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        display_name: "Second Generated",
+        base_url: "https://api.example.com/v1",
+        api_key: "second-secret"
+      }
+    });
+
+    expect(firstResponse.statusCode).toBe(201);
+    expect(firstResponse.json().provider_key).toBe("api-example-com");
+    expect(secondResponse.statusCode).toBe(201);
+    expect(secondResponse.json().provider_key).toBe("api-example-com-2");
+    expect(repository.getProviderDetails("api-example-com")).not.toBeNull();
+    expect(repository.getProviderDetails("api-example-com-2")).not.toBeNull();
+
+    await server.close();
+  });
+
   it("creates a managed provider, reloads runtime, and serves bare model requests", async () => {
     const pool = mockAgent.get("https://managed.example.com");
 
@@ -340,6 +446,7 @@ describe("admin providers integration", () => {
             api_key: "managed-secret",
             expires_at: "2030-01-02T03:04:05.000Z",
             quota: { remaining_usd: 12, source: "manual" },
+            remark: "主用 Key",
             enabled: true
           },
           {
@@ -361,7 +468,8 @@ describe("admin providers integration", () => {
           account_key: "primary",
           endpoint_key: "openai",
           expires_at: "2030-01-02T03:04:05.000Z",
-          quota: expect.objectContaining({ remaining_usd: 12 })
+          quota: expect.objectContaining({ remaining_usd: 12 }),
+          remark: "主用 Key"
         }),
         expect.objectContaining({
           account_key: "backup",
@@ -374,6 +482,27 @@ describe("admin providers integration", () => {
     expect(createResponse.json().models[0].model_name).toBe("managed-model");
     expect(createResponse.json()).not.toHaveProperty("runtime_status");
     expect(createResponse.json()).not.toHaveProperty("status_reason");
+
+    const updateAccountResponse = await server.inject({
+      method: "PATCH",
+      url: "/admin/api/providers/managed/accounts/backup",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        remark: "备用 Key"
+      }
+    });
+
+    expect(updateAccountResponse.statusCode).toBe(200);
+    expect(updateAccountResponse.json().accounts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          account_key: "backup",
+          remark: "备用 Key"
+        })
+      ])
+    );
 
     const testModelResponse = await server.inject({
       method: "POST",

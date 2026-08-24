@@ -16,7 +16,6 @@ import {
   Network,
   Plus,
   RefreshCw,
-  RotateCcw,
   Route,
   ScrollText,
   Settings,
@@ -92,12 +91,13 @@ interface ProviderFormData {
     api_key: string;
     expires_at: string;
     remaining_usd: string;
+    remark: string;
     enabled: boolean;
   }>;
 }
 
 const providerFormSchema = z.object({
-  provider_key: z.string().trim().min(1, "请填写 Provider Key"),
+  provider_key: z.string().trim().optional(),
   display_name: z.string().trim().min(1, "请填写 Display Name"),
   endpoints: z.array(z.object({
     endpoint_key: z.string().optional(),
@@ -128,6 +128,7 @@ const providerFormSchema = z.object({
     api_key: z.string(),
     expires_at: z.string(),
     remaining_usd: z.string(),
+    remark: z.string(),
     enabled: z.boolean()
   })).min(1, "至少添加一个 Account")
 }).strict().superRefine((value, ctx) => {
@@ -156,6 +157,40 @@ function protocolDisplayLabel(protocol: "openai" | "anthropic" | "all") {
     case "openai":
     default:
       return "OpenAI";
+  }
+}
+
+function nextGeneratedAccountKey(accounts: Array<{ account_key?: string }>) {
+  const existing = new Set(accounts.map((account) => account.account_key).filter(Boolean));
+  let index = 1;
+  while (existing.has(`account-${index}`)) {
+    index += 1;
+  }
+  return `account-${index}`;
+}
+
+function providerKeyBaseFromUrl(baseUrl: string): string {
+  const hostname = new URL(baseUrl).hostname;
+  const normalized = hostname
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || "provider";
+}
+
+function generatedProviderKey(values: ProviderFormData): string {
+  const preferred = values.provider_key.trim();
+  if (preferred) {
+    return preferred;
+  }
+  const firstBaseUrl = values.endpoints[0]?.base_url.trim();
+  if (!firstBaseUrl) {
+    return "provider";
+  }
+  try {
+    return providerKeyBaseFromUrl(firstBaseUrl);
+  } catch {
+    return "provider";
   }
 }
 
@@ -949,7 +984,7 @@ export function ProviderDetailPage() {
       </div>
 
       <div className="panel detail-card">
-        <h3>连接信息</h3>
+        <h3>基础信息</h3>
         <dl>
           <dt>启用</dt>
           <dd>
@@ -1219,11 +1254,12 @@ function ProviderFormPage(props: {
       website_url: "",
       accounts: [
         {
-          account_key: "default",
+          account_key: "account-1",
           endpoint_key: "",
           api_key: "",
           expires_at: "",
           remaining_usd: "",
+          remark: "",
           enabled: true
         }
       ],
@@ -1269,15 +1305,17 @@ function ProviderFormPage(props: {
             api_key: "",
             expires_at: toDatetimeLocal(account.expires_at),
             remaining_usd: account.quota?.remaining_usd?.toString() ?? "",
+            remark: account.remark ?? "",
             enabled: account.enabled
           }))
         : [
             {
-              account_key: "default",
+              account_key: "account-1",
               endpoint_key: "",
               api_key: "",
               expires_at: "",
               remaining_usd: "",
+              remark: "",
               enabled: true
             }
           ],
@@ -1332,15 +1370,16 @@ function ProviderFormPage(props: {
       quota: account.remaining_usd
         ? { remaining_usd: Number(account.remaining_usd), source: "manual" as const }
         : undefined,
+      remark: account.remark.trim() || null,
       enabled: account.enabled
     }));
 
     if (!isEditing && normalizedAccounts.some((account) => !account.account_key || !account.api_key)) {
-      throw new Error("请填写每个 Account 的 Account Key 和 API Key");
+      throw new Error("请填写每个 API Key");
     }
 
     const normalized: CreateProviderPayload = {
-      provider_key: values.provider_key.trim(),
+      provider_key: generatedProviderKey(values),
       display_name: values.display_name.trim(),
       endpoints: normalizedEndpoints,
       website_url: values.website_url?.trim() ?? "",
@@ -1364,15 +1403,13 @@ function ProviderFormPage(props: {
       const updated = await updateProvider(props.token, props.provider.provider_key, payload);
       const existingAccounts = new Set((props.provider.accounts ?? []).map((account) => account.account_key));
       for (const account of normalizedAccounts) {
-        if (!account.account_key) {
-          throw new Error("请填写 Account Key");
-        }
         if (existingAccounts.has(account.account_key)) {
           await updateProviderAccount(props.token, props.provider.provider_key, account.account_key, {
             endpoint_key: account.endpoint_key ?? null,
             api_key: account.api_key || undefined,
             expires_at: account.expires_at,
             quota: account.quota,
+            remark: account.remark,
             enabled: account.enabled
           });
         } else {
@@ -1385,13 +1422,9 @@ function ProviderFormPage(props: {
             api_key: account.api_key,
             expires_at: account.expires_at,
             quota: account.quota,
+            remark: account.remark,
             enabled: account.enabled
           });
-        }
-      }
-      for (const existingAccount of props.provider.accounts ?? []) {
-        if (!normalizedAccounts.some((account) => account.account_key === existingAccount.account_key)) {
-          await deleteProviderAccount(props.token, props.provider.provider_key, existingAccount.account_key);
         }
       }
       for (const existingAccount of props.provider.accounts ?? []) {
@@ -1467,13 +1500,20 @@ function ProviderFormPage(props: {
     mutationFn: async () => {
       const values = mergeDialog.pendingValues;
       const target = mergeDialog.matches[0];
-      if (!values || !target || !values.api_key) {
+      const account = values?.accounts[0];
+      if (!values || !target || !account?.api_key) {
         throw new Error("缺少合并所需信息");
       }
       return createProviderAccount(props.token, target.provider_key, {
-        account_key: `key-${Date.now().toString(36)}`,
+        account_key: `account-${Date.now().toString(36)}`,
         endpoint_key: target.endpoint_key,
-        api_key: values.api_key
+        api_key: account.api_key.trim(),
+        expires_at: account.expires_at ? new Date(account.expires_at).toISOString() : null,
+        quota: account.remaining_usd
+          ? { remaining_usd: Number(account.remaining_usd), source: "manual" as const }
+          : undefined,
+        remark: account.remark.trim() || null,
+        enabled: account.enabled
       });
     },
     onSuccess: () => {
@@ -1552,13 +1592,12 @@ function ProviderFormPage(props: {
           </label>
         ) : null}
 
-        <label className="field">
-          <span>
-            Provider Key <RequiredMark />
-          </span>
-          <input {...form.register("provider_key")} readOnly={isEditing} placeholder="my-provider" />
-          {errors.provider_key ? <small>{errors.provider_key.message}</small> : null}
-        </label>
+        {isEditing ? (
+          <label className="field">
+            <span>Provider Key</span>
+            <input {...form.register("provider_key")} readOnly placeholder="my-provider" />
+          </label>
+        ) : null}
 
         <label className="field">
           <span>
@@ -1675,33 +1714,30 @@ function ProviderFormPage(props: {
         <div className="field account-group">
           <div className="field-group-header">
             <span>
-              Accounts / API Keys <RequiredMark />
+              API Keys <RequiredMark />
             </span>
             <button
               type="button"
               className="ghost-action small-action"
               onClick={() =>
                 appendAccount({
-                  account_key: `key-${accountFields.length + 1}`,
+                  account_key: nextGeneratedAccountKey(form.getValues("accounts")),
                   endpoint_key: "",
                   api_key: "",
                   expires_at: "",
                   remaining_usd: "",
+                  remark: "",
                   enabled: true
                 })
               }
             >
               <Plus size={14} />
-              添加 Account
+              添加 API Key
             </button>
           </div>
           <div className="account-editor">
             {accountFields.map((field, index) => (
               <div className="account-editor-row" key={field.id}>
-                <label className="field">
-                  <span>Account Key</span>
-                  <input {...form.register(`accounts.${index}.account_key`)} placeholder={`key-${index + 1}`} />
-                </label>
                 <label className="field">
                   <span>绑定协议</span>
                   <select {...form.register(`accounts.${index}.endpoint_key`)}>
@@ -1748,6 +1784,10 @@ function ProviderFormPage(props: {
                   <span>剩余额度 USD</span>
                   <input {...form.register(`accounts.${index}.remaining_usd`)} placeholder="可选" />
                 </label>
+                <label className="field">
+                  <span>备注</span>
+                  <input {...form.register(`accounts.${index}.remark`)} placeholder="可选" />
+                </label>
                 <label className="capability-toggle">
                   <input type="checkbox" {...form.register(`accounts.${index}.enabled`)} />
                   <span>启用</span>
@@ -1784,6 +1824,9 @@ function ProviderFormPage(props: {
       >
         <p>
           已有 Provider “{mergeDialog.matches[0]?.display_name}” 使用了相同 base_url / 协议。
+        </p>
+        <p className="muted">
+          可以合并为该 Provider 的一个新 API Key；如果需要独立限额、独立模型或独立优先级，也可以继续新建。
         </p>
         <p className="muted">
           {mergeDialog.matches[0]?.endpoint_key}: {mergeDialog.matches[0]?.base_url}
@@ -2422,24 +2465,25 @@ function ProviderAccountsPanel(props: {
   });
 
   return (
-    <div className="panel detail-card">
-      <h3>Accounts / API Keys</h3>
+    <>
+      <h3>API Keys</h3>
       <div className="model-capability-table provider-model-table provider-accounts-table">
         <div className="model-capability-header">
-          <span>Account</span>
+          <span>API Key</span>
+          <span>绑定协议</span>
           <span>启用</span>
           <span>调度状态</span>
           <span>过期时间</span>
           <span>额度</span>
+          <span>备注</span>
           <span>操作</span>
         </div>
         {accounts.map((account) => (
           <div className="model-capability-row" key={account.account_key}>
             <div className="model-name-cell">
-              <span className="detail-table-text">{account.account_key}</span>
               <span className="detail-table-text">{account.key_hint ?? "hidden"}</span>
-              <span className="detail-table-text">{accountEndpointProtocolLabel(props.provider, account)}</span>
             </div>
+            <span className="detail-table-text">{accountEndpointProtocolLabel(props.provider, account)}</span>
             <div className="detail-table-text provider-model-enabled-cell">
               <SwitchControl
                 checked={account.enabled}
@@ -2461,42 +2505,36 @@ function ProviderAccountsPanel(props: {
             </span>
             <span className="detail-table-text">{account.expires_at ? formatDateTime(account.expires_at) : "未设置"}</span>
             <span className="detail-table-text">{formatQuotaSummary(account.quota)}</span>
-            <div className="page-actions">
-              {isManualRecoveryRequired(account) ? (
-                <button
-                  type="button"
-                  className="ghost-action small-action"
-                  disabled={toggleMutation.isPending}
-                  onClick={() => toggleMutation.mutate({ account_key: account.account_key, enabled: true })}
-                >
-                  <RotateCcw size={14} />
-                  恢复调度
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="ghost-action small-action"
-                disabled={syncMutation.isPending}
-                onClick={() => syncMutation.mutate(account.account_key)}
-              >
-                <RefreshCw size={14} />
-                同步模型
-              </button>
-              <button
-                type="button"
-                className="ghost-action small-action"
-                disabled={deleteMutation.isPending || accounts.length <= 1}
-                onClick={() => deleteMutation.mutate(account.account_key)}
-              >
-                <Trash2 size={14} />
-                删除
-              </button>
-            </div>
+            <span className="detail-table-text">{account.remark?.trim() || "未填写"}</span>
+            <select
+              className="account-action-select"
+              aria-label={`${account.account_key} 操作`}
+              disabled={toggleMutation.isPending || syncMutation.isPending || deleteMutation.isPending}
+              defaultValue=""
+              onChange={(event) => {
+                const action = event.currentTarget.value;
+                event.currentTarget.value = "";
+                if (action === "recover") {
+                  toggleMutation.mutate({ account_key: account.account_key, enabled: true });
+                }
+                if (action === "sync") {
+                  syncMutation.mutate(account.account_key);
+                }
+                if (action === "delete") {
+                  deleteMutation.mutate(account.account_key);
+                }
+              }}
+            >
+              <option value="" disabled>选择操作</option>
+              {isManualRecoveryRequired(account) ? <option value="recover">恢复调度</option> : null}
+              <option value="sync">同步模型</option>
+              <option value="delete" disabled={accounts.length <= 1}>删除</option>
+            </select>
           </div>
         ))}
       </div>
       {message ? <p className={`status ${message.mode ?? ""}`}>{message.text}</p> : null}
-    </div>
+    </>
   );
 }
 

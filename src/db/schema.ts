@@ -43,6 +43,7 @@ export const managedProviderCredentialsTable = sqliteTable("managed_provider_cre
   recentErrorCount: integer("recent_error_count").notNull().default(0),
   expiresAt: text("expires_at"),
   quotaJson: text("quota_json"),
+  remark: text("remark"),
   lastErrorAt: text("last_error_at"),
   lastErrorCode: text("last_error_code"),
   lastErrorMessage: text("last_error_message"),
