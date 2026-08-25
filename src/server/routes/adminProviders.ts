@@ -101,6 +101,16 @@ const accountQuotaSchema = z.object({
   source: z.enum(["manual", "discovered", "unknown"]).optional()
 }).strict();
 
+const manualModelInputSchema = z.object({
+  endpoint_key: endpointKeySchema.optional(),
+  model_name: z.string().trim().min(1),
+  provider_model_id: z.string().trim().min(1).optional(),
+  context_window: z.number().int().positive().optional(),
+  supports_streaming: z.boolean().optional(),
+  supports_tools: z.boolean().optional(),
+  supports_json_mode: z.boolean().optional()
+}).strict();
+
 const createProviderBodySchema = z.object({
   provider_key: z.string().min(1).optional(),
   display_name: z.string().min(1),
@@ -125,6 +135,7 @@ const createProviderBodySchema = z.object({
     enabled: z.boolean().optional()
   }).strict()).min(1).optional(),
   provider_kind: providerKindSchema.optional(),
+  models: z.array(manualModelInputSchema).optional(),
   priority: z.number().int().nonnegative().default(0),
   template_id: z.string().min(1).optional(),
   trust_level: z.enum(["low", "medium", "high"]).default("low"),
@@ -147,7 +158,8 @@ const patchProviderBodySchema = z.object({
   }).strict()).min(1).optional(),
   website_url: z.string().url().optional().or(z.literal("")),
   api_key: z.string().min(1).optional(),
-  provider_kind: providerKindSchema.optional()
+  provider_kind: providerKindSchema.optional(),
+  models: z.array(manualModelInputSchema).optional()
 }).strict();
 
 const providerListQuerySchema = z.object({
@@ -236,6 +248,10 @@ const patchModelCapabilitiesBodySchema = z.object({
   supports_streaming: z.boolean().optional(),
   supports_tools: z.boolean().optional(),
   supports_json_mode: z.boolean().optional()
+}).strict();
+
+const createProviderModelBodySchema = manualModelInputSchema.extend({
+  model_key: z.string().min(1).optional()
 }).strict();
 
 async function discoverModelsForEndpoint(
@@ -454,6 +470,83 @@ function normalizeSubmittedAccountEndpointKeyFromDetails(
     return "openai";
   }
   return endpointKey;
+}
+
+function buildManualModel(
+  providerKey: string,
+  endpoint: { endpoint_key: string },
+  input: z.infer<typeof manualModelInputSchema> & { model_key?: string }
+): ManagedDiscoveredModelInput {
+  const providerModelId = input.provider_model_id?.trim() || input.model_name.trim();
+  const modelKey = input.model_key?.trim() ||
+    (endpoint.endpoint_key === "default"
+      ? `${providerKey}/${providerModelId}`
+      : `${providerKey}/${endpoint.endpoint_key}/${providerModelId}`);
+
+  return {
+    modelKey,
+    providerModelId,
+    modelName: input.model_name.trim(),
+    contextWindow: input.context_window,
+    supportsStreaming: input.supports_streaming ?? true,
+    supportsTools: input.supports_tools ?? false,
+    supportsJsonMode: input.supports_json_mode ?? false,
+    rawMetadataJson: JSON.stringify({
+      source: "manual",
+      provider_model_id: providerModelId,
+      model_name: input.model_name.trim()
+    })
+  };
+}
+
+function mergeManualModelsIntoBundles(
+  providerKey: string,
+  endpointBundles: EndpointDiscoveryBundle[],
+  manualModels: Array<z.infer<typeof manualModelInputSchema> & { model_key?: string }> | undefined
+) {
+  if (!manualModels || manualModels.length === 0) {
+    return endpointBundles;
+  }
+
+  const bundlesByEndpointKey = new Map(
+    endpointBundles.map((bundle) => [bundle.endpoint.endpointKey, bundle])
+  );
+  for (const model of manualModels) {
+    const endpointKey = model.endpoint_key ?? endpointBundles[0]?.endpoint.endpointKey ?? "default";
+    const bundle = bundlesByEndpointKey.get(endpointKey);
+    if (!bundle) {
+      throw new HttpError(400, "invalid_model_endpoint", `Model endpoint ${endpointKey} does not exist`);
+    }
+
+    const manual = buildManualModel(providerKey, { endpoint_key: endpointKey }, model);
+    const existingIndex = bundle.models.findIndex(
+      (item) => item.modelKey === manual.modelKey || item.providerModelId === manual.providerModelId
+    );
+    if (existingIndex >= 0) {
+      bundle.models[existingIndex] = manual;
+    } else {
+      bundle.models.push(manual);
+    }
+  }
+
+  return endpointBundles;
+}
+
+function ensureProviderDiscoveryUsableOrManual(
+  endpointBundles: EndpointDiscoveryBundle[],
+  manualModels: Array<z.infer<typeof manualModelInputSchema> & { model_key?: string }> | undefined
+): void {
+  if (!manualModels || manualModels.length === 0) {
+    ensureProviderDiscoveryUsable(endpointBundles);
+    return;
+  }
+
+  const failedWithoutModels = endpointBundles.filter(
+    (bundle) => bundle.error !== undefined && bundle.models.length === 0
+  );
+  if (failedWithoutModels.length > 0) {
+    ensureProviderDiscoveryUsable(failedWithoutModels);
+  }
 }
 
 async function discoverEndpointBundles(
@@ -1012,12 +1105,12 @@ export async function registerAdminProvidersRoutes(
       }
     }
     const discoveryApiKey = primaryAccount?.api_key ?? body.api_key;
-    const endpointBundles = await discoverEndpointBundles(dependencies.discoveryService, {
+    const endpointBundles = mergeManualModelsIntoBundles(providerKey, await discoverEndpointBundles(dependencies.discoveryService, {
       providerKey,
       apiKey: discoveryApiKey,
       endpoints: endpointInputs
-    });
-    ensureProviderDiscoveryUsable(endpointBundles);
+    }), body.models);
+    ensureProviderDiscoveryUsableOrManual(endpointBundles, body.models);
 
     const details = dependencies.repository.createProviderWithEndpointBundles({
       provider: buildProviderInput({
@@ -1161,12 +1254,16 @@ export async function registerAdminProvidersRoutes(
           throw new HttpError(400, "credential_required", "API key is required when changing endpoints");
         }
 
-        const endpointBundles = await discoverEndpointBundles(dependencies.discoveryService, {
-          providerKey: existing.provider.providerKey,
-          apiKey: credentialForSync,
-          endpoints: endpointInputs
-        });
-        ensureProviderDiscoveryUsable(endpointBundles);
+        const endpointBundles = mergeManualModelsIntoBundles(
+          existing.provider.providerKey,
+          await discoverEndpointBundles(dependencies.discoveryService, {
+            providerKey: existing.provider.providerKey,
+            apiKey: credentialForSync,
+            endpoints: endpointInputs
+          }),
+          body.models
+        );
+        ensureProviderDiscoveryUsableOrManual(endpointBundles, body.models);
 
         const updated = dependencies.repository.replaceProviderWithEndpointBundles({
           providerKey: existing.provider.providerKey,
@@ -1209,6 +1306,16 @@ export async function registerAdminProvidersRoutes(
           dependencies.secretCipher.encrypt(body.api_key),
           ManagedProviderRepository.toApiKeyHint(body.api_key)
         );
+      }
+
+      for (const model of body.models ?? []) {
+        const endpointKey = model.endpoint_key ?? existing.endpoints[0]?.endpointKey ?? "default";
+        dependencies.repository.upsertManualModel(request.params.providerKey, {
+          endpointKey,
+          model: buildManualModel(request.params.providerKey, {
+            endpoint_key: endpointKey
+          }, model)
+        });
       }
 
       const updated = dependencies.repository.getProviderDetails(request.params.providerKey);
@@ -1389,6 +1496,31 @@ export async function registerAdminProvidersRoutes(
       }
 
       await dependencies.runtimeManager.reload();
+      return serializeProviderDetails(updated);
+    }
+  );
+
+  fastify.post<{ Params: { providerKey: string }; Body: unknown }>(
+    "/admin/api/providers/:providerKey/models",
+    async (request, reply) => {
+      const body = createProviderModelBodySchema.parse(request.body);
+      const existing = dependencies.repository.getProviderDetails(request.params.providerKey);
+      if (!existing) {
+        throw new HttpError(404, "provider_not_found", "Provider not found");
+      }
+
+      const endpointKey = body.endpoint_key ?? existing.endpoints[0]?.endpointKey ?? "default";
+      const updated = dependencies.repository.upsertManualModel(request.params.providerKey, {
+        endpointKey,
+        model: buildManualModel(request.params.providerKey, { endpoint_key: endpointKey }, body)
+      });
+
+      if (!updated) {
+        throw new HttpError(404, "endpoint_not_found", "Provider endpoint not found");
+      }
+
+      await dependencies.runtimeManager.reload();
+      reply.status(201);
       return serializeProviderDetails(updated);
     }
   );

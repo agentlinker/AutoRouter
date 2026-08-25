@@ -1457,6 +1457,82 @@ export class ManagedProviderRepository {
     return provider ? this.getProviderDetails(provider.providerKey) : null;
   }
 
+  public upsertManualModel(providerKey: string, input: {
+    endpointKey?: string;
+    accountKey?: string;
+    model: ManagedDiscoveredModelInput;
+  }): ManagedProviderDetails | null {
+    const provider = this.db.select().from(managedProvidersTable)
+      .where(eq(managedProvidersTable.providerKey, providerKey))
+      .get();
+    if (!provider) {
+      return null;
+    }
+
+    const endpoint = this.getProviderEndpoint(providerKey, input.endpointKey ?? "default");
+    if (!endpoint) {
+      return null;
+    }
+
+    const account = this.getAccount(providerKey, input.accountKey ?? "default") ??
+      this.listAccounts(providerKey)[0] ??
+      null;
+    const now = nowIso();
+
+    this.db.transaction((tx) => {
+      const existing = tx.select().from(managedModelsTable)
+        .where(and(
+          eq(managedModelsTable.providerId, provider.id),
+          eq(managedModelsTable.modelKey, input.model.modelKey)
+        ))
+        .get() ?? tx.select().from(managedModelsTable)
+        .where(and(
+          eq(managedModelsTable.providerId, provider.id),
+          eq(managedModelsTable.endpointId, endpoint.id),
+          eq(managedModelsTable.providerModelId, input.model.providerModelId)
+        ))
+        .get();
+
+      let modelId: number;
+      if (existing) {
+        tx.update(managedModelsTable)
+          .set({
+            endpointId: endpoint.id,
+            modelKey: input.model.modelKey,
+            providerModelId: input.model.providerModelId,
+            modelName: input.model.modelName,
+            contextWindow: input.model.contextWindow,
+            supportsStreaming: input.model.supportsStreaming,
+            supportsTools: input.model.supportsTools,
+            supportsJsonMode: input.model.supportsJsonMode,
+            pricingJson: input.model.pricingJson ?? null,
+            rawMetadataJson: input.model.rawMetadataJson ?? null,
+            updatedAt: now
+          })
+          .where(eq(managedModelsTable.id, existing.id))
+          .run();
+        modelId = existing.id;
+      } else {
+        const inserted = tx.insert(managedModelsTable).values(
+          this.buildManagedModelInsert({
+            db: tx as unknown as Db,
+            providerId: provider.id,
+            endpointId: endpoint.id,
+            model: input.model,
+            now
+          })
+        ).returning().get();
+        modelId = inserted.id;
+      }
+
+      if (account) {
+        this.upsertAccountModelLinks(tx as unknown as Db, account.id, [modelId], now);
+      }
+    });
+
+    return this.getProviderDetails(providerKey);
+  }
+
   public updateModelCapabilities(
     providerKey: string,
     input: ManagedModelCapabilitiesUpdateInput

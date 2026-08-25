@@ -79,6 +79,15 @@ interface ProviderFormData {
     base_url: string;
     custom_headers?: Array<{ key: string; value: string }>;
   }>;
+  models: Array<{
+    endpoint_key: string;
+    model_name: string;
+    provider_model_id: string;
+    context_window: string;
+    supports_streaming: boolean;
+    supports_tools: boolean;
+    supports_json_mode: boolean;
+  }>;
   website_url?: string;
   api_key?: string;
   provider_kind?: "official" | "relay" | "custom";
@@ -107,6 +116,15 @@ const providerFormSchema = z.object({
       value: z.string()
     })).optional()
   }).strict()).min(1, "至少添加一个 Endpoint"),
+  models: z.array(z.object({
+    endpoint_key: z.string(),
+    model_name: z.string(),
+    provider_model_id: z.string(),
+    context_window: z.string(),
+    supports_streaming: z.boolean(),
+    supports_tools: z.boolean(),
+    supports_json_mode: z.boolean()
+  })),
   website_url: z
     .string()
     .trim()
@@ -1243,6 +1261,7 @@ function ProviderFormPage(props: {
           custom_headers: []
         }
       ],
+      models: [],
       website_url: "",
       accounts: [
         {
@@ -1272,6 +1291,14 @@ function ProviderFormPage(props: {
     control: form.control,
     name: "accounts"
   });
+  const {
+    fields: modelFields,
+    append: appendModel,
+    remove: removeModel
+  } = useFieldArray({
+    control: form.control,
+    name: "models"
+  });
 
   useEffect(() => {
     const nextEndpoints = props.provider?.endpoints.length
@@ -1288,6 +1315,7 @@ function ProviderFormPage(props: {
       provider_key: props.provider?.provider_key ?? "",
       display_name: props.provider?.display_name ?? "",
       endpoints: nextEndpoints,
+      models: [],
       website_url: props.provider?.website_url ?? "",
       accounts: props.provider?.accounts?.length
         ? props.provider.accounts.map((account) => ({
@@ -1363,6 +1391,17 @@ function ProviderFormPage(props: {
       remark: account.remark.trim() || null,
       enabled: account.enabled
     }));
+    const normalizedModels = values.models
+      .filter((model) => model.model_name.trim())
+      .map((model) => ({
+        endpoint_key: model.endpoint_key || undefined,
+        model_name: model.model_name.trim(),
+        provider_model_id: model.provider_model_id.trim() || undefined,
+        context_window: model.context_window ? Number(model.context_window) : undefined,
+        supports_streaming: model.supports_streaming,
+        supports_tools: model.supports_tools,
+        supports_json_mode: model.supports_json_mode
+      }));
 
     if (!isEditing && normalizedAccounts.some((account) => !account.account_key || !account.api_key)) {
       throw new Error("请填写每个 API Key");
@@ -1377,7 +1416,8 @@ function ProviderFormPage(props: {
       accounts: normalizedAccounts,
       provider_kind: values.provider_kind,
       priority: values.priority === "" ? 0 : Number(values.priority),
-      template_id: values.template_id || undefined
+      template_id: values.template_id || undefined,
+      models: normalizedModels
     };
 
     if (isEditing && props.provider) {
@@ -1386,7 +1426,8 @@ function ProviderFormPage(props: {
         endpoints: normalized.endpoints,
         website_url: normalized.website_url,
         provider_kind: normalized.provider_kind,
-        priority: normalized.priority
+        priority: normalized.priority,
+        models: normalized.models
       };
       const updated = await updateProvider(props.token, props.provider.provider_key, payload);
       const existingAccounts = new Set((props.provider.accounts ?? []).map((account) => account.account_key));
@@ -1456,7 +1497,7 @@ function ProviderFormPage(props: {
     },
     onError: (error) => {
       setMessage({
-        text: error instanceof Error ? error.message : "保存失败���",
+        text: error instanceof Error ? error.message : "保存失败",
         mode: "error"
       });
     }
@@ -1479,6 +1520,25 @@ function ProviderFormPage(props: {
     onError: (error) => {
       setMessage({
         text: error instanceof Error ? error.message : "保存失败",
+        mode: "error"
+      });
+    }
+  });
+
+  const formSyncMutation = useMutation({
+    mutationFn: async () => {
+      if (!props.provider) {
+        throw new Error("Provider 尚未创建");
+      }
+      return syncProvider(props.token, props.provider.provider_key);
+    },
+    onSuccess: () => {
+      setMessage({ text: "模型已同步", mode: "success" });
+      props.onDone();
+    },
+    onError: (error) => {
+      setMessage({
+        text: error instanceof Error ? error.message : "同步失败",
         mode: "error"
       });
     }
@@ -1519,6 +1579,7 @@ function ProviderFormPage(props: {
 
   const errors = form.formState.errors;
   const endpointsError = form.formState.errors.endpoints;
+  const modelsError = form.formState.errors.models;
 
   return (
     <section className="page-panel form-page">
@@ -1688,6 +1749,110 @@ function ProviderFormPage(props: {
           </div>
 
           {!Array.isArray(endpointsError) && endpointsError?.message ? <small>{endpointsError.message}</small> : null}
+        </div>
+
+        <div className="field model-group">
+          <div className="field-group-header">
+            <span>模型</span>
+            <div className="inline-actions">
+              {isEditing ? (
+                <button
+                  type="button"
+                  className="ghost-action small-action"
+                  disabled={formSyncMutation.isPending}
+                  onClick={() => formSyncMutation.mutate()}
+                >
+                  <RefreshCw size={14} />
+                  {formSyncMutation.isPending ? "同步中..." : "同步模型"}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="ghost-action small-action"
+                onClick={() =>
+                  appendModel({
+                    endpoint_key: "",
+                    model_name: "",
+                    provider_model_id: "",
+                    context_window: "",
+                    supports_streaming: true,
+                    supports_tools: false,
+                    supports_json_mode: false
+                  })
+                }
+              >
+                <Plus size={14} />
+                手动添加
+              </button>
+            </div>
+          </div>
+
+          {modelFields.length > 0 ? (
+            <div className="model-editor">
+              {modelFields.map((field, index) => (
+                <div className="model-editor-row" key={field.id}>
+                  <label className="field">
+                    <span>绑定协议</span>
+                    <select {...form.register(`models.${index}.endpoint_key`)}>
+                      <option value="">默认协议</option>
+                      {form.watch("endpoints").flatMap((endpoint, endpointIndex) =>
+                        expandFormEndpointProtocols(endpoint).map((protocol) => (
+                          <option
+                            key={`${endpointIndex}-${protocol}`}
+                            value={endpoint.protocol === "all" ? protocol : endpoint.endpoint_key ?? protocol}
+                          >
+                            {protocolDisplayLabel(protocol)}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>模型名</span>
+                    <input {...form.register(`models.${index}.model_name`)} placeholder="Deepseek-v4-flash" />
+                  </label>
+                  <label className="field">
+                    <span>上游模型 ID</span>
+                    <input {...form.register(`models.${index}.provider_model_id`)} placeholder="默认同模型名" />
+                  </label>
+                  <label className="field">
+                    <span>上下文长度</span>
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      inputMode="numeric"
+                      {...form.register(`models.${index}.context_window`)}
+                      placeholder="可选"
+                    />
+                  </label>
+                  <label className="capability-toggle">
+                    <input type="checkbox" {...form.register(`models.${index}.supports_streaming`)} />
+                    <span>流式</span>
+                  </label>
+                  <label className="capability-toggle">
+                    <input type="checkbox" {...form.register(`models.${index}.supports_tools`)} />
+                    <span>Tools</span>
+                  </label>
+                  <label className="capability-toggle">
+                    <input type="checkbox" {...form.register(`models.${index}.supports_json_mode`)} />
+                    <span>JSON</span>
+                  </label>
+                  <button
+                    type="button"
+                    className="ghost-action small-action"
+                    onClick={() => removeModel(index)}
+                  >
+                    <Trash2 size={14} />
+                    删除
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="muted compact-note">未手动指定模型，保存时仅使用自动同步结果。</p>
+          )}
+          {!Array.isArray(modelsError) && modelsError?.message ? <small>{modelsError.message}</small> : null}
         </div>
 
         <div className="field account-group">
