@@ -60,16 +60,14 @@ describe("endpoint model isolation", () => {
   /** openai endpoint 有模型、anthropic endpoint 发现为空的 provider */
   function seedLopsidedProvider(
     repo: ManagedProviderRepository,
-    cipher: SecretCipher,
-    scope: "per_account" | "shared_by_provider"
+    cipher: SecretCipher
   ) {
     repo.createProviderWithEndpointBundles({
       provider: {
         providerKey: "relay",
         displayName: "Relay",
         baseUrl: "https://relay.example.com/v1",
-        providerKind: "relay",
-        modelAvailabilityScope: scope
+        providerKind: "relay"
       },
       encryptedApiKey: cipher.encrypt("key-a"),
       apiKeyHint: "...y-a",
@@ -106,7 +104,7 @@ describe("endpoint model isolation", () => {
 
   it("keeps an empty endpoint empty instead of borrowing sibling endpoint models", () => {
     const { repo, cipher } = createRepo();
-    seedLopsidedProvider(repo, cipher, "per_account");
+    seedLopsidedProvider(repo, cipher);
 
     const bundles = repo.listEnabledProviderBundles();
     const anthropicBundles = bundles.filter(
@@ -122,7 +120,7 @@ describe("endpoint model isolation", () => {
 
   it("does not project phantom candidates onto the model-less endpoint", () => {
     const { config, db, repo, cipher } = createRepo();
-    seedLopsidedProvider(repo, cipher, "per_account");
+    seedLopsidedProvider(repo, cipher);
 
     const projector = new RuntimeConfigProjector({
       baseConfig: config,
@@ -141,22 +139,9 @@ describe("endpoint model isolation", () => {
     expect(modelIds.some((id) => id.includes("/anthropic/"))).toBe(false);
   });
 
-  it("applies the same isolation under shared_by_provider scope", () => {
-    const { repo, cipher } = createRepo();
-    seedLopsidedProvider(repo, cipher, "shared_by_provider");
-
-    const bundles = repo.listEnabledProviderBundles();
-    const anthropicBundles = bundles.filter(
-      (bundle) => bundle.endpoint.endpointKey === "anthropic"
-    );
-
-    expect(anthropicBundles.length).toBeGreaterThan(0);
-    expect(anthropicBundles.flatMap((bundle) => bundle.models)).toEqual([]);
-  });
-
   it("still serves models once the endpoint syncs its own", () => {
     const { repo, cipher } = createRepo();
-    seedLopsidedProvider(repo, cipher, "per_account");
+    seedLopsidedProvider(repo, cipher);
 
     repo.syncProviderModels("relay", {
       endpointKey: "anthropic",

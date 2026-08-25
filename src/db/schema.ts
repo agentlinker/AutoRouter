@@ -7,7 +7,6 @@ export const managedProvidersTable = sqliteTable("managed_providers", {
   baseUrl: text("base_url").notNull(),
   websiteUrl: text("website_url"),
   providerKind: text("provider_kind").notNull().default("custom"),
-  modelAvailabilityScope: text("model_availability_scope").notNull().default("per_account"),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
   runtimeStatus: text("runtime_status").notNull().default("normal"),
   statusReason: text("status_reason"),

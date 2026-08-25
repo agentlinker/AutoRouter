@@ -52,8 +52,7 @@ describe("managed provider multi-account", () => {
         providerKey: "demo",
         displayName: "Demo",
         baseUrl: "https://demo.example.com/v1",
-        providerKind: "official",
-        modelAvailabilityScope: "shared_by_provider"
+        providerKind: "official"
       },
       encryptedApiKey: cipher.encrypt("key-1"),
       apiKeyHint: "...y-1",
@@ -100,7 +99,9 @@ describe("managed provider multi-account", () => {
 
     const bundles = repo.listEnabledProviderBundles();
     expect(bundles.some((item) => item.credential.accountKey === "default")).toBe(true);
-    expect(bundles.some((item) => item.credential.accountKey === "backup")).toBe(true);
+    expect(
+      bundles.some((item) => item.credential.accountKey === "backup" && item.models.length > 0)
+    ).toBe(false);
 
     repo.markAccountAuthFailed("demo", "backup", "Invalid API key");
     expect(repo.getAccount("demo", "backup")?.runtimeStatus).toBe("disabled");
@@ -177,7 +178,7 @@ describe("managed provider multi-account", () => {
     expect(matches[0]?.provider.providerKey).toBe("bigmodel");
   });
 
-  it("per_account isolates models so one key does not inherit another key discovery", () => {
+  it("isolates models so one key does not inherit another key discovery", () => {
     const config = loadConfig({
       override: {
         database: { path: join(tempDir, "autorouter.db") },
@@ -199,8 +200,7 @@ describe("managed provider multi-account", () => {
         providerKey: "relay",
         displayName: "Relay",
         baseUrl: "https://relay.example.com/v1",
-        providerKind: "relay",
-        modelAvailabilityScope: "per_account"
+        providerKind: "relay"
       },
       encryptedApiKey: cipher.encrypt("key-a"),
       apiKeyHint: "...y-a",
@@ -395,8 +395,7 @@ describe("managed provider multi-account", () => {
         providerKey: "large-catalog",
         displayName: "Large Catalog",
         baseUrl: "https://old.example.com/v1",
-        providerKind: "relay",
-        modelAvailabilityScope: "per_account"
+        providerKind: "relay"
       },
       encryptedApiKey: cipher.encrypt("large-key"),
       endpointBundles: [
@@ -426,8 +425,7 @@ describe("managed provider multi-account", () => {
         providerKey: "large-catalog",
         displayName: "Large Catalog",
         baseUrl: "https://new.example.com/v1",
-        providerKind: "relay",
-        modelAvailabilityScope: "per_account"
+        providerKind: "relay"
       },
       endpointBundles: [
         {

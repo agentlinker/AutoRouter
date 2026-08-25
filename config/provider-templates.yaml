@@ -9,7 +9,6 @@ templates:
     website_url: https://bigmodel.cn
     docs_url: https://docs.bigmodel.cn
     provider_kind: official
-    model_availability_scope: shared_by_provider
     endpoints:
       - endpoint_key: openai
         protocol: openai
@@ -28,7 +27,6 @@ templates:
     suggested_provider_key: xiaomi-token-plan-cn
     website_url: https://token-plan-cn.xiaomimimo.com
     provider_kind: official
-    model_availability_scope: shared_by_provider
     endpoints:
       - endpoint_key: openai
         protocol: openai
@@ -47,7 +45,6 @@ templates:
     suggested_provider_key: xiaomi-token-plan-sgp
     website_url: https://token-plan-sgp.xiaomimimo.com
     provider_kind: official
-    model_availability_scope: shared_by_provider
     endpoints:
       - endpoint_key: openai
         protocol: openai
@@ -66,7 +63,6 @@ templates:
     suggested_provider_key: volcengine-ark-coding
     website_url: https://www.volcengine.com/product/ark
     provider_kind: official
-    model_availability_scope: shared_by_provider
     endpoints:
       - endpoint_key: openai
         protocol: openai
@@ -84,7 +80,6 @@ templates:
     suggested_provider_key: longcat
     website_url: https://longcat.chat
     provider_kind: official
-    model_availability_scope: shared_by_provider
     endpoints:
       - endpoint_key: openai
         protocol: openai
@@ -101,7 +96,6 @@ templates:
     suggested_provider_key: openrouter
     website_url: https://openrouter.ai
     provider_kind: relay
-    model_availability_scope: per_account
     endpoints:
       - endpoint_key: openai
         protocol: openai
@@ -119,7 +113,6 @@ templates:
     suggested_provider_key: local-ollama
     website_url: https://ollama.com
     provider_kind: custom
-    model_availability_scope: per_account
     endpoints:
       - endpoint_key: openai
         protocol: openai

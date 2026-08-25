@@ -20,7 +20,6 @@ import {
 import { displayNameFromLogicalName, mergeAliases, toLogicalModelName } from "../catalog/logicalModelNames.js";
 
 export type ProviderKind = "official" | "relay" | "custom";
-export type ModelAvailabilityScope = "shared_by_provider" | "per_account";
 
 export interface ManagedProviderInput {
   providerKey: string;
@@ -29,7 +28,6 @@ export interface ManagedProviderInput {
   baseUrl: string;
   websiteUrl?: string | null;
   providerKind?: ProviderKind;
-  modelAvailabilityScope?: ModelAvailabilityScope;
   enabled?: boolean;
   priority?: number;
   trustLevel?: "low" | "medium" | "high";
@@ -101,7 +99,6 @@ export interface ManagedProviderUpdateInput {
   baseUrl?: string;
   websiteUrl?: string | null;
   providerKind?: ProviderKind;
-  modelAvailabilityScope?: ModelAvailabilityScope;
   enabled?: boolean;
   priority?: number;
 }
@@ -201,16 +198,6 @@ function keyHintFromApiKey(apiKey: string): string {
 
 function defaultProviderKind(kind?: ProviderKind): ProviderKind {
   return kind ?? "custom";
-}
-
-function defaultModelAvailabilityScope(
-  scope: ModelAvailabilityScope | undefined,
-  kind: ProviderKind
-): ModelAvailabilityScope {
-  if (scope) {
-    return scope;
-  }
-  return kind === "official" ? "shared_by_provider" : "per_account";
 }
 
 export function parseAccountQuota(quotaJson: string | null | undefined): AccountQuota | undefined {
@@ -409,10 +396,6 @@ export class ManagedProviderRepository {
     ]));
   }
 
-
-  private isPerAccountScope(provider: Pick<ManagedProviderRow, "modelAvailabilityScope">): boolean {
-    return provider.modelAvailabilityScope === "per_account";
-  }
 
   private listAccountModelIds(accountId: number): Set<number> {
     return new Set(this.listAccountModelRows(accountId).map((row) => row.managedModelId));
@@ -620,62 +603,33 @@ export class ManagedProviderRepository {
                 )
               )
             )
-            AND (
-              (
-                ${managedProvidersTable.modelAvailabilityScope} = 'per_account'
-                AND EXISTS (
-                  SELECT 1
-                  FROM managed_account_models AS account_model
-                  WHERE account_model.account_id = account.id
-                    AND account_model.managed_model_id = model.id
-                    AND account_model.enabled = 1
-                    AND account_model.runtime_status NOT IN ('disabled', 'abnormal')
-                    AND NOT (
-                      account_model.runtime_status = 'cooling_down'
-                      AND (
-                        coalesce(account_model.status_reason, '') GLOB '*_permanent'
-                        OR (
-                          account_model.status_cooldown_until IS NOT NULL
-                          AND account_model.status_cooldown_until > ${nowValue}
-                        )
-                      )
-                    )
-                    AND NOT (
-                      account_model.runtime_status = 'rate_limited'
-                      AND (
-                        account_model.status_reason = 'rate_limited_permanent'
-                        OR (
-                          account_model.status_cooldown_until IS NOT NULL
-                          AND account_model.status_cooldown_until > ${nowValue}
-                        )
-                      )
-                    )
-                )
-              )
-              OR (
-                ${managedProvidersTable.modelAvailabilityScope} != 'per_account'
-                AND model.runtime_status NOT IN ('disabled', 'abnormal')
+            AND EXISTS (
+              SELECT 1
+              FROM managed_account_models AS account_model
+              WHERE account_model.account_id = account.id
+                AND account_model.managed_model_id = model.id
+                AND account_model.enabled = 1
+                AND account_model.runtime_status NOT IN ('disabled', 'abnormal')
                 AND NOT (
-                  model.runtime_status = 'cooling_down'
+                  account_model.runtime_status = 'cooling_down'
                   AND (
-                    coalesce(model.status_reason, '') GLOB '*_permanent'
+                    coalesce(account_model.status_reason, '') GLOB '*_permanent'
                     OR (
-                      model.status_cooldown_until IS NOT NULL
-                      AND model.status_cooldown_until > ${nowValue}
+                      account_model.status_cooldown_until IS NOT NULL
+                      AND account_model.status_cooldown_until > ${nowValue}
                     )
                   )
                 )
                 AND NOT (
-                  model.runtime_status = 'rate_limited'
+                  account_model.runtime_status = 'rate_limited'
                   AND (
-                    model.status_reason = 'rate_limited_permanent'
+                    account_model.status_reason = 'rate_limited_permanent'
                     OR (
-                      model.status_cooldown_until IS NOT NULL
-                      AND model.status_cooldown_until > ${nowValue}
+                      account_model.status_cooldown_until IS NOT NULL
+                      AND account_model.status_cooldown_until > ${nowValue}
                     )
                   )
                 )
-              )
             )
         )
       `)
@@ -717,9 +671,6 @@ export class ManagedProviderRepository {
       .all();
 
     const accountModels = accounts.map((account) => {
-      if (!this.isPerAccountScope(provider)) {
-        return { accountId: account.id, models };
-      }
       const accountModelRows = this.listAccountModelRows(account.id);
       const accountModelByModelId = new Map(
         accountModelRows.map((row) => [row.managedModelId, row] as const)
@@ -854,11 +805,6 @@ export class ManagedProviderRepository {
     const providerKind = defaultProviderKind(
       input.provider.providerKind ?? (existing.provider.providerKind as ProviderKind | undefined)
     );
-    const modelAvailabilityScope = defaultModelAvailabilityScope(
-      input.provider.modelAvailabilityScope ??
-        (existing.provider.modelAvailabilityScope as ModelAvailabilityScope | undefined),
-      providerKind
-    );
 
     return this.db.transaction((tx) => {
       tx.update(managedProvidersTable)
@@ -867,7 +813,6 @@ export class ManagedProviderRepository {
           baseUrl: representativeEndpoint?.baseUrl ?? input.provider.baseUrl,
           websiteUrl: input.provider.websiteUrl ?? null,
           providerKind,
-          modelAvailabilityScope,
           enabled: input.provider.enabled ?? existing.provider.enabled,
           priority:
             normalizeProviderPriority(input.provider.priority) ?? existing.provider.priority,
@@ -983,22 +928,20 @@ export class ManagedProviderRepository {
         discoveredCount
       }).run();
 
-      if (modelAvailabilityScope === "per_account") {
-        const modelIds = tx.select().from(managedModelsTable)
-          .where(eq(managedModelsTable.providerId, existing.provider.id))
-          .all()
-          .map((model) => model.id);
-        const accounts = tx.select().from(managedProviderCredentialsTable)
-          .where(eq(managedProviderCredentialsTable.providerId, existing.provider.id))
-          .all();
-        for (const account of accounts) {
-          this.replaceAccountModelLinks(
-            tx as unknown as Db,
-            account.id,
-            modelIds,
-            now
-          );
-        }
+      const modelIds = tx.select().from(managedModelsTable)
+        .where(eq(managedModelsTable.providerId, existing.provider.id))
+        .all()
+        .map((model) => model.id);
+      const accounts = tx.select().from(managedProviderCredentialsTable)
+        .where(eq(managedProviderCredentialsTable.providerId, existing.provider.id))
+        .all();
+      for (const account of accounts) {
+        this.replaceAccountModelLinks(
+          tx as unknown as Db,
+          account.id,
+          modelIds,
+          now
+        );
       }
 
       return this.getProviderDetails(input.providerKey);
@@ -1022,10 +965,6 @@ export class ManagedProviderRepository {
     const now = nowIso();
 
     const providerKind = defaultProviderKind(input.provider.providerKind);
-    const modelAvailabilityScope = defaultModelAvailabilityScope(
-      input.provider.modelAvailabilityScope,
-      providerKind
-    );
 
     return this.db.transaction((tx) => {
       const providerInsert = tx.insert(managedProvidersTable)
@@ -1035,7 +974,6 @@ export class ManagedProviderRepository {
           baseUrl: input.provider.baseUrl,
           websiteUrl: input.provider.websiteUrl ?? null,
           providerKind,
-          modelAvailabilityScope,
           enabled: input.provider.enabled ?? true,
           priority: normalizeProviderPriority(input.provider.priority) ?? 0,
           trustLevel: input.provider.trustLevel ?? "low",
@@ -1113,18 +1051,16 @@ export class ManagedProviderRepository {
         updatedAt: now
       }).returning().get();
 
-      if (modelAvailabilityScope === "per_account") {
-        const modelIds = tx.select().from(managedModelsTable)
-          .where(eq(managedModelsTable.providerId, providerInsert.id))
-          .all()
-          .map((model) => model.id);
-        this.replaceAccountModelLinks(
-          tx as unknown as Db,
-          defaultAccount.id,
-          modelIds,
-          now
-        );
-      }
+      const modelIds = tx.select().from(managedModelsTable)
+        .where(eq(managedModelsTable.providerId, providerInsert.id))
+        .all()
+        .map((model) => model.id);
+      this.replaceAccountModelLinks(
+        tx as unknown as Db,
+        defaultAccount.id,
+        modelIds,
+        now
+      );
 
       tx.insert(modelSyncRunsTable).values({
         providerId: providerInsert.id,
@@ -1162,7 +1098,6 @@ export class ManagedProviderRepository {
     const accountKey = input.accountKey ?? "default";
     const account = this.getAccount(providerKey, accountKey);
     const now = nowIso();
-    const perAccount = this.isPerAccountScope(provider);
 
     this.db.transaction((tx) => {
       tx.insert(modelSyncRunsTable).values({
@@ -1186,77 +1121,52 @@ export class ManagedProviderRepository {
         .all();
       const preservedByModelKey = this.preservedFieldsByModelKey(existingEndpointModels);
 
-      if (perAccount) {
-        // Upsert models so other accounts keep their links.
-        const touchedIds: number[] = [];
-        for (const model of input.models) {
-          const existing = existingEndpointModels.find(
-            (item) => item.modelKey === model.modelKey || item.providerModelId === model.providerModelId
-          );
-          if (existing) {
-            tx.update(managedModelsTable)
-              .set({
-                modelKey: model.modelKey,
-                providerModelId: model.providerModelId,
-                modelName: model.modelName,
-                contextWindow: model.contextWindow,
-                supportsStreaming: model.supportsStreaming,
-                supportsTools: model.supportsTools,
-                supportsJsonMode: model.supportsJsonMode,
-                pricingJson: model.pricingJson ?? null,
-                rawMetadataJson: model.rawMetadataJson ?? null,
-                updatedAt: now
-              })
-              .where(eq(managedModelsTable.id, existing.id))
-              .run();
-            touchedIds.push(existing.id);
-          } else {
-            const inserted = tx.insert(managedModelsTable).values(
-              this.buildManagedModelInsert({
-                db: tx as unknown as Db,
-                providerId: provider.id,
-                endpointId: endpoint.id,
-                model,
-                now,
-                preserved: preservedByModelKey.get(model.modelKey)
-              })
-            ).returning().get();
-            touchedIds.push(inserted.id);
-          }
+      // Upsert models so other accounts keep their links.
+      const touchedIds: number[] = [];
+      for (const model of input.models) {
+        const existing = existingEndpointModels.find(
+          (item) => item.modelKey === model.modelKey || item.providerModelId === model.providerModelId
+        );
+        if (existing) {
+          tx.update(managedModelsTable)
+            .set({
+              modelKey: model.modelKey,
+              providerModelId: model.providerModelId,
+              modelName: model.modelName,
+              contextWindow: model.contextWindow,
+              supportsStreaming: model.supportsStreaming,
+              supportsTools: model.supportsTools,
+              supportsJsonMode: model.supportsJsonMode,
+              pricingJson: model.pricingJson ?? null,
+              rawMetadataJson: model.rawMetadataJson ?? null,
+              updatedAt: now
+            })
+            .where(eq(managedModelsTable.id, existing.id))
+            .run();
+          touchedIds.push(existing.id);
+        } else {
+          const inserted = tx.insert(managedModelsTable).values(
+            this.buildManagedModelInsert({
+              db: tx as unknown as Db,
+              providerId: provider.id,
+              endpointId: endpoint.id,
+              model,
+              now,
+              preserved: preservedByModelKey.get(model.modelKey)
+            })
+          ).returning().get();
+          touchedIds.push(inserted.id);
         }
+      }
 
-        if (account) {
-          this.upsertAccountModelLinks(
-            tx as unknown as Db,
-            account.id,
-            touchedIds,
-            now,
-            { replaceEndpointModelIds: existingEndpointModels.map((model) => model.id) }
-          );
-        }
-      } else {
-        tx.delete(managedModelsTable)
-          .where(and(
-            eq(managedModelsTable.providerId, provider.id),
-            eq(managedModelsTable.endpointId, endpoint.id)
-          ))
-          .run();
-
-        if (input.models.length > 0) {
-          this.insertManagedModels(
-            tx as unknown as Db,
-            input.models.map((model) =>
-              this.buildManagedModelInsert({
-                db: tx as unknown as Db,
-                providerId: provider.id,
-                endpointId: endpoint.id,
-                model,
-                now,
-                preserved: preservedByModelKey.get(model.modelKey)
-              })
-            )
-          );
-        }
+      if (account) {
+        this.upsertAccountModelLinks(
+          tx as unknown as Db,
+          account.id,
+          touchedIds,
+          now,
+          { replaceEndpointModelIds: existingEndpointModels.map((model) => model.id) }
+        );
       }
     });
 
@@ -1297,23 +1207,17 @@ export class ManagedProviderRepository {
           eq(managedModelsTable.enabled, true)
         ))
         .all();
-      const perAccount = this.isPerAccountScope(provider);
-
       return accounts.flatMap((account) => {
         const boundEndpoints = account.endpointId == null
           ? endpoints
           : endpoints.filter((endpoint) => endpoint.id === account.endpointId);
-        const accountModelIds = perAccount
-          ? this.listAccountModelIds(account.id)
-          : null;
+        const accountModelIds = this.listAccountModelIds(account.id);
 
         return boundEndpoints.map((endpoint) => {
           // 模型必须属于本 endpoint：借用兄弟 endpoint 的模型会造出打不通的候选
           const endpointModels = providerModels
             .filter((model) => model.endpointId === endpoint.id);
-          const models = accountModelIds
-            ? endpointModels.filter((model) => accountModelIds.has(model.id))
-            : endpointModels;
+          const models = endpointModels.filter((model) => accountModelIds.has(model.id));
 
           return {
             provider,
@@ -1415,11 +1319,6 @@ export class ManagedProviderRepository {
     }
 
     const now = nowIso();
-    const nextScope =
-      input.modelAvailabilityScope ?? existing.provider.modelAvailabilityScope;
-    const scopeChangedToPerAccount =
-      existing.provider.modelAvailabilityScope !== "per_account" &&
-      nextScope === "per_account";
 
     this.db.update(managedProvidersTable)
       .set({
@@ -1428,20 +1327,12 @@ export class ManagedProviderRepository {
         websiteUrl:
           input.websiteUrl !== undefined ? input.websiteUrl : existing.provider.websiteUrl,
         providerKind: input.providerKind ?? existing.provider.providerKind,
-        modelAvailabilityScope: nextScope,
         enabled: input.enabled ?? existing.provider.enabled,
         priority: normalizeProviderPriority(input.priority) ?? existing.provider.priority,
         updatedAt: now
       })
       .where(eq(managedProvidersTable.providerKey, providerKey))
       .run();
-
-    if (scopeChangedToPerAccount) {
-      const modelIds = existing.models.map((model) => model.id);
-      for (const account of existing.accounts) {
-        this.replaceAccountModelLinks(this.db, account.id, modelIds, now);
-      }
-    }
 
     if (input.baseUrl !== undefined || input.protocol !== undefined || input.enabled !== undefined) {
       this.db.update(managedProviderEndpointsTable)
@@ -2036,7 +1927,7 @@ export class ManagedProviderRepository {
     const provider = this.db.select().from(managedProvidersTable)
       .where(eq(managedProvidersTable.providerKey, providerKey))
       .get();
-    if (!provider || !this.isPerAccountScope(provider)) {
+    if (!provider) {
       return null;
     }
     const account = this.db.select().from(managedProviderCredentialsTable)
@@ -2199,10 +2090,7 @@ export class ManagedProviderRepository {
     return this.db.select().from(managedModelsTable).where(eq(managedModelsTable.id, model.id)).get() ?? null;
   }
 
-  /**
-   * 404 / 410：这个模型在该 provider 上不存在或已下线，与 account 无关。
-   * 走独立的长冷却阶梯，仍可自愈。
-   */
+  /** 旧 provider-model 运行态兜底；正常调度路径使用 Account-Model。 */
   public applyModelUnavailable(
     providerKey: string,
     modelKey: string,
@@ -2262,8 +2150,7 @@ export class ManagedProviderRepository {
   }
 
   /**
-   * 上游 5xx / 超时：冷却打在 account 层（节点级），这里只累加模型侧计数做兜底归因。
-   * 累计到阈值才把模型判成永久熔断 —— 即 account 反复冷却也救不回来时才怪模型。
+   * 旧 provider-model 运行态兜底：正常调度路径使用 Account-Model。
    * 注意：不得降级已有运行态（历史实现会把 cooling_down / rate_limited 覆盖成 normal）。
    */
   public applyModelOtherError(

@@ -74,7 +74,6 @@ function serializeCatalogModel(details: CatalogLogicalModelDetails) {
         rate_limit_strike: instance.model.rateLimitStrike ?? 0,
         recent_error_count: instance.model.recentErrorCount ?? 0,
         provider_kind: instance.provider.providerKind ?? "custom",
-        model_availability_scope: instance.provider.modelAvailabilityScope ?? "per_account",
         available_accounts: instance.available_accounts ?? [],
         available_account_count: instance.available_account_count ?? 0,
         context_window: instance.model.contextWindow,

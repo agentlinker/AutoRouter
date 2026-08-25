@@ -1,7 +1,6 @@
 import { z } from "zod";
 
 const providerKindSchema = z.enum(["official", "relay", "custom"]);
-const modelAvailabilityScopeSchema = z.enum(["shared_by_provider", "per_account"]);
 const protocolSchema = z.enum(["openai", "anthropic"]);
 
 export const providerTemplateEndpointSchema = z.object({
@@ -23,7 +22,6 @@ export const providerTemplateSchema = z.object({
   website_url: z.string().url().optional(),
   docs_url: z.string().url().optional(),
   provider_kind: providerKindSchema,
-  model_availability_scope: modelAvailabilityScopeSchema,
   endpoints: z.array(providerTemplateEndpointSchema).min(1),
   notes: z.string().optional()
 }).strict();

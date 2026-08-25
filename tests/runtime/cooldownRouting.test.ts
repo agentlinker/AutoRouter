@@ -27,7 +27,6 @@ function createHarness(
   tempDir: string,
   options: {
     secondAccount?: boolean;
-    modelAvailabilityScope?: "shared_by_provider" | "per_account";
   } = {}
 ) {
   const config = loadConfig({
@@ -55,8 +54,7 @@ function createHarness(
       baseUrl: "https://demo.example.com/v1",
       trustLevel: "medium",
       privacyLevel: "normal",
-      usageTrust: "medium",
-      modelAvailabilityScope: options.modelAvailabilityScope ?? "per_account"
+      usageTrust: "medium"
     },
     encryptedApiKey: secretCipher.encrypt("secret"),
     endpointBundles: [
@@ -327,8 +325,8 @@ describe("cooling_down routing", () => {
     expect((await harness.routeAfterReload("demo-model")).ok).toBe(false);
   });
 
-  it("uses provider-model cooldown for shared model availability", async () => {
-    const harness = createHarness(tempDir, { modelAvailabilityScope: "shared_by_provider" });
+  it("records transient model failures on the selected account-model", async () => {
+    const harness = createHarness(tempDir);
 
     harness.service.recordFailure({
       snapshot: harness.runtimeManager.getSnapshot(),
@@ -338,10 +336,12 @@ describe("cooling_down routing", () => {
       error: transientError(503)
     });
 
-    expect(harness.managedProviders.getAccountModel("demo", "default", "demo-model")).toBeNull();
+    expect(
+      harness.managedProviders.getAccountModel("demo", "default", "demo-model")?.runtimeStatus
+    ).toBe("cooling_down");
     expect(
       harness.managedProviders.getModelByProviderAndKey("demo", "demo-model")?.runtimeStatus
-    ).toBe("cooling_down");
+    ).toBe("normal");
     expect(harness.managedProviders.getAccount("demo", "default")?.runtimeStatus).toBe("normal");
     expect((await harness.routeAfterReload("demo-model")).ok).toBe(false);
     expect((await harness.routeAfterReload("demo-model-b")).ok).toBe(true);

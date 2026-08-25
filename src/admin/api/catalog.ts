@@ -18,7 +18,6 @@ export interface CatalogModelInstance {
   rate_limit_strike?: number;
   recent_error_count?: number;
   provider_kind?: string;
-  model_availability_scope?: string;
   available_accounts?: string[];
   available_account_count?: number;
   context_window: number | null;

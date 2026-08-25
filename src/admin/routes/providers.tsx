@@ -71,7 +71,7 @@ export const providerTokenStorageKey = "autorouter_admin_token";
 
 // Form 内部状态：custom_headers 是 key-value 数组
 interface ProviderFormData {
-  provider_key: string;
+  provider_key?: string;
   display_name: string;
   endpoints: Array<{
     endpoint_key?: string;
@@ -82,7 +82,6 @@ interface ProviderFormData {
   website_url?: string;
   api_key?: string;
   provider_kind?: "official" | "relay" | "custom";
-  model_availability_scope?: "shared_by_provider" | "per_account";
   priority: string;
   template_id?: string;
   accounts: Array<{
@@ -117,7 +116,6 @@ const providerFormSchema = z.object({
     }),
   api_key: z.string().optional(),
   provider_kind: z.enum(["official", "relay", "custom"]).optional(),
-  model_availability_scope: z.enum(["shared_by_provider", "per_account"]).optional(),
   priority: z.string().refine((value) => value === "" || /^\d+$/.test(value), {
     message: "优先级必须是非负整数"
   }),
@@ -179,7 +177,7 @@ function providerKeyBaseFromUrl(baseUrl: string): string {
 }
 
 function generatedProviderKey(values: ProviderFormData): string {
-  const preferred = values.provider_key.trim();
+  const preferred = (values.provider_key ?? "").trim();
   if (preferred) {
     return preferred;
   }
@@ -997,12 +995,6 @@ export function ProviderDetailPage() {
           </dd>
           <dt>Provider 类型</dt>
           <dd>{providerKindLabel(provider.provider_kind)}</dd>
-          <dt>模型可用性</dt>
-          <dd>
-            {provider.model_availability_scope === "shared_by_provider"
-              ? "按 Provider 共享"
-              : "按 Account 独立"}
-          </dd>
           <dt>Accounts</dt>
           <dd>
             {provider.account_count ?? provider.accounts?.length ?? 1} keys /
@@ -1264,7 +1256,6 @@ function ProviderFormPage(props: {
         }
       ],
       provider_kind: "custom",
-      model_availability_scope: "per_account",
       priority: "0",
       template_id: ""
     }
@@ -1320,7 +1311,6 @@ function ProviderFormPage(props: {
             }
           ],
       provider_kind: props.provider?.provider_kind ?? "custom",
-      model_availability_scope: props.provider?.model_availability_scope ?? "per_account",
       priority: String(props.provider?.priority ?? 0),
       template_id: ""
     });
@@ -1386,7 +1376,6 @@ function ProviderFormPage(props: {
       api_key: normalizedAccounts[0]?.api_key ?? "",
       accounts: normalizedAccounts,
       provider_kind: values.provider_kind,
-      model_availability_scope: values.model_availability_scope,
       priority: values.priority === "" ? 0 : Number(values.priority),
       template_id: values.template_id || undefined
     };
@@ -1397,7 +1386,6 @@ function ProviderFormPage(props: {
         endpoints: normalized.endpoints,
         website_url: normalized.website_url,
         provider_kind: normalized.provider_kind,
-        model_availability_scope: normalized.model_availability_scope,
         priority: normalized.priority
       };
       const updated = await updateProvider(props.token, props.provider.provider_key, payload);
@@ -1567,7 +1555,6 @@ function ProviderFormPage(props: {
                 form.setValue("display_name", template.display_name);
                 form.setValue("website_url", template.website_url ?? "");
                 form.setValue("provider_kind", template.provider_kind);
-                form.setValue("model_availability_scope", template.model_availability_scope);
                 form.setValue(
                   "endpoints",
                   template.endpoints.map((endpoint) => ({
@@ -1619,14 +1606,6 @@ function ProviderFormPage(props: {
             <option value="official">官方 (official)</option>
             <option value="relay">中转站 (relay)</option>
             <option value="custom">自定义 (custom)</option>
-          </select>
-        </label>
-
-        <label className="field">
-          <span>模型可用性范围</span>
-          <select {...form.register("model_availability_scope")}>
-            <option value="shared_by_provider">按 Provider 共享</option>
-            <option value="per_account">按 Account 独立</option>
           </select>
         </label>
 
@@ -1939,10 +1918,7 @@ function ProviderModelTestDialog(props: {
   const accounts = props.provider.accounts ?? [];
   const [accountKey, setAccountKey] = useState(accounts[0]?.account_key ?? "");
   const selectedAccount = accounts.find((account) => account.account_key === accountKey);
-  const models =
-    props.provider.model_availability_scope === "per_account"
-      ? selectedAccount?.models ?? []
-      : props.provider.models;
+  const models = selectedAccount?.models ?? [];
   const [modelKey, setModelKey] = useState(models[0]?.model_key ?? "");
   const [prompt, setPrompt] = useState("Reply with OK.");
   const [endpointKey, setEndpointKey] = useState("");
@@ -2155,7 +2131,6 @@ function ProviderCard(props: {
     setPriority(String(props.provider.priority ?? 0));
   }, [props.provider.priority]);
   const accounts = props.provider.accounts ?? [];
-  const isPerAccountModels = props.provider.model_availability_scope !== "shared_by_provider";
   const visibleModelLimit = 12;
   const modelEndpoint = (model: ProviderModel) =>
     props.provider.endpoints.find((item) => item.endpoint_key === model.endpoint_key);
@@ -2380,38 +2355,20 @@ function ProviderCard(props: {
       </div>
 
       <div className="provider-key-models">
-        {isPerAccountModels ? (
-          accounts.length > 0 ? (
-            accounts.map((account) => (
-              <div className="provider-key-model-group" key={account.account_key}>
-                {renderAccountRow(account)}
-                {renderModelList(account.models ?? [], account)}
-              </div>
-            ))
-          ) : (
-            <div className="provider-key-model-group">
-              <div className="provider-key-row">
-                <div className="provider-key-title">
-                  <strong>default</strong>
-                  <code>{props.provider.key_hint ?? "hidden"}</code>
-                </div>
-              </div>
-              {renderModelList(props.provider.models)}
+        {accounts.length > 0 ? (
+          accounts.map((account) => (
+            <div className="provider-key-model-group" key={account.account_key}>
+              {renderAccountRow(account)}
+              {renderModelList(account.models ?? [], account)}
             </div>
-          )
+          ))
         ) : (
           <div className="provider-key-model-group">
-            <div className="provider-key-rows">
-              {accounts.length > 0 ? (
-                accounts.map(renderAccountRow)
-              ) : (
-                <div className="provider-key-row">
-                  <div className="provider-key-title">
-                    <strong>default</strong>
-                    <code>{props.provider.key_hint ?? "hidden"}</code>
-                  </div>
-                </div>
-              )}
+            <div className="provider-key-row">
+              <div className="provider-key-title">
+                <strong>default</strong>
+                <code>{props.provider.key_hint ?? "hidden"}</code>
+              </div>
             </div>
             {renderModelList(props.provider.models)}
           </div>

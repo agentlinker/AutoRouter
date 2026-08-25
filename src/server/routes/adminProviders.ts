@@ -92,7 +92,6 @@ function extractTestResponseBody(body: unknown, raw?: string): string | null {
 }
 
 const providerKindSchema = z.enum(["official", "relay", "custom"]);
-const modelAvailabilityScopeSchema = z.enum(["shared_by_provider", "per_account"]);
 const accountKeySchema = z.string().min(1).regex(/^[A-Za-z0-9_.-]+$/);
 const accountQuotaSchema = z.object({
   monthly_usd_limit: z.number().nonnegative().optional(),
@@ -126,7 +125,6 @@ const createProviderBodySchema = z.object({
     enabled: z.boolean().optional()
   }).strict()).min(1).optional(),
   provider_kind: providerKindSchema.optional(),
-  model_availability_scope: modelAvailabilityScopeSchema.optional(),
   priority: z.number().int().nonnegative().default(0),
   template_id: z.string().min(1).optional(),
   trust_level: z.enum(["low", "medium", "high"]).default("low"),
@@ -149,8 +147,7 @@ const patchProviderBodySchema = z.object({
   }).strict()).min(1).optional(),
   website_url: z.string().url().optional().or(z.literal("")),
   api_key: z.string().min(1).optional(),
-  provider_kind: providerKindSchema.optional(),
-  model_availability_scope: modelAvailabilityScopeSchema.optional()
+  provider_kind: providerKindSchema.optional()
 }).strict();
 
 const providerListQuerySchema = z.object({
@@ -341,7 +338,6 @@ function buildProviderInput(input: {
   display_name: string;
   website_url?: string | null;
   provider_kind?: "official" | "relay" | "custom";
-  model_availability_scope?: "shared_by_provider" | "per_account";
   trust_level: "low" | "medium" | "high";
   privacy_level: "public_only" | "normal" | "private";
   usage_trust: "low" | "medium" | "high";
@@ -354,7 +350,6 @@ function buildProviderInput(input: {
   baseUrl: string;
   websiteUrl: string | null;
   providerKind?: "official" | "relay" | "custom";
-  modelAvailabilityScope?: "shared_by_provider" | "per_account";
   enabled?: boolean;
   priority?: number;
   trustLevel: "low" | "medium" | "high";
@@ -370,7 +365,6 @@ function buildProviderInput(input: {
     baseUrl: representativeEndpoint?.base_url ?? "",
     websiteUrl: input.website_url || null,
     providerKind: input.provider_kind,
-    modelAvailabilityScope: input.model_availability_scope,
     enabled: input.enabled,
     priority: input.priority,
     trustLevel: input.trust_level,
@@ -644,7 +638,6 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
     base_url: details.provider.baseUrl,
     website_url: details.provider.websiteUrl,
     provider_kind: details.provider.providerKind ?? "custom",
-    model_availability_scope: details.provider.modelAvailabilityScope ?? "per_account",
     enabled: details.provider.enabled,
     priority: details.provider.priority ?? 0,
     trust_level: details.provider.trustLevel,
@@ -744,7 +737,6 @@ export async function registerAdminProvidersRoutes(
         provider_key: item.provider.providerKey,
         display_name: item.provider.displayName,
         provider_kind: item.provider.providerKind ?? "custom",
-        model_availability_scope: item.provider.modelAvailabilityScope ?? "per_account",
         endpoint_key: item.endpoint.endpointKey,
         protocol: item.endpoint.protocol,
         base_url: item.endpoint.baseUrl
@@ -781,15 +773,13 @@ export async function registerAdminProvidersRoutes(
       throw new HttpError(404, "model_not_found", "Provider model not found");
     }
 
-    if (details.provider.modelAvailabilityScope === "per_account") {
-      const accountModels = details.accountModels.find((item) => item.accountId === account.id);
-      if (!accountModels?.models.some((item) => item.id === model.id)) {
-        throw new HttpError(
-          400,
-          "account_model_not_available",
-          "Selected model is not available for this account"
-        );
-      }
+    const accountModels = details.accountModels.find((item) => item.accountId === account.id);
+    if (!accountModels?.models.some((item) => item.id === model.id)) {
+      throw new HttpError(
+        400,
+        "account_model_not_available",
+        "Selected model is not available for this account"
+      );
     }
 
     const accountEndpoint = account.endpointId
@@ -1034,9 +1024,7 @@ export async function registerAdminProvidersRoutes(
         ...body,
         provider_key: providerKey,
         website_url: body.website_url || template?.website_url || "",
-        provider_kind: body.provider_kind ?? template?.provider_kind,
-        model_availability_scope:
-          body.model_availability_scope ?? template?.model_availability_scope
+        provider_kind: body.provider_kind ?? template?.provider_kind
       }, endpointInputs),
       encryptedApiKey: dependencies.secretCipher.encrypt(discoveryApiKey),
       apiKeyHint: ManagedProviderRepository.toApiKeyHint(discoveryApiKey),
@@ -1190,12 +1178,6 @@ export async function registerAdminProvidersRoutes(
               provider_kind:
                 body.provider_kind ??
                 (existing.provider.providerKind as "official" | "relay" | "custom" | undefined),
-              model_availability_scope:
-                body.model_availability_scope ??
-                (existing.provider.modelAvailabilityScope as
-                  | "shared_by_provider"
-                  | "per_account"
-                  | undefined),
               priority: body.priority ?? existing.provider.priority ?? 0,
               trust_level: existing.provider.trustLevel as "low" | "medium" | "high",
               privacy_level: existing.provider.privacyLevel as "public_only" | "normal" | "private",
@@ -1218,8 +1200,7 @@ export async function registerAdminProvidersRoutes(
         displayName: body.display_name,
         priority: body.priority,
         websiteUrl: body.website_url === "" ? null : body.website_url,
-        providerKind: body.provider_kind,
-        modelAvailabilityScope: body.model_availability_scope
+        providerKind: body.provider_kind
       });
 
       if (body.api_key) {

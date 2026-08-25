@@ -29,6 +29,7 @@ describe("officialProviderTemplates", () => {
       expect(["official", "relay", "custom"]).toContain(template.provider_kind);
       expect(template.endpoints.length).toBeGreaterThan(0);
       expect(template.suggested_provider_key.length).toBeGreaterThan(0);
+      expect(template).not.toHaveProperty("model_availability_scope");
     }
 
     expect(getOfficialProviderTemplate("openrouter")?.provider_kind).toBe("relay");
@@ -41,11 +42,11 @@ describe("officialProviderTemplates", () => {
       mkdirSync(join(cwd, "config"));
       writeFileSync(
         join(cwd, "config/provider-templates.yaml"),
-        "templates:\n  - template_id: base\n    vendor_id: base\n    vendor_name: Base\n    product_line: API\n    display_name: Base\n    suggested_provider_key: base\n    provider_kind: official\n    model_availability_scope: shared_by_provider\n    endpoints:\n      - endpoint_key: openai\n        protocol: openai\n        base_url: https://base.example.com/v1\n"
+        "templates:\n  - template_id: base\n    vendor_id: base\n    vendor_name: Base\n    product_line: API\n    display_name: Base\n    suggested_provider_key: base\n    provider_kind: official\n    endpoints:\n      - endpoint_key: openai\n        protocol: openai\n        base_url: https://base.example.com/v1\n"
       );
       writeFileSync(
         join(cwd, "config/provider-templates.user.yaml"),
-        "templates:\n  - template_id: base\n    vendor_id: user\n    vendor_name: User\n    product_line: Relay\n    display_name: User Base\n    suggested_provider_key: user-base\n    provider_kind: relay\n    model_availability_scope: per_account\n    endpoints:\n      - endpoint_key: openai\n        protocol: openai\n        base_url: https://user.example.com/v1\n  - template_id: extra\n    vendor_id: extra\n    vendor_name: Extra\n    product_line: Custom\n    display_name: Extra\n    suggested_provider_key: extra\n    provider_kind: custom\n    model_availability_scope: per_account\n    endpoints:\n      - endpoint_key: openai\n        protocol: openai\n        base_url: https://extra.example.com/v1\n"
+        "templates:\n  - template_id: base\n    vendor_id: user\n    vendor_name: User\n    product_line: Relay\n    display_name: User Base\n    suggested_provider_key: user-base\n    provider_kind: relay\n    endpoints:\n      - endpoint_key: openai\n        protocol: openai\n        base_url: https://user.example.com/v1\n  - template_id: extra\n    vendor_id: extra\n    vendor_name: Extra\n    product_line: Custom\n    display_name: Extra\n    suggested_provider_key: extra\n    provider_kind: custom\n    endpoints:\n      - endpoint_key: openai\n        protocol: openai\n        base_url: https://extra.example.com/v1\n"
       );
       const result = loadProviderTemplates(cwd);
       expect(result.errors).toEqual([]);

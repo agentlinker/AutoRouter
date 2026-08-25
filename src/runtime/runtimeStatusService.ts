@@ -227,7 +227,7 @@ export class RuntimeStatusService {
     }
   }
 
-  /** 429：维持 model 级限流阶梯 */
+  /** 429：维持 account-model 级限流阶梯；provider-model 只作旧数据兜底 */
   private handleRateLimit(context: FailureContext): void {
     const currentAccountModel = this.managedProviders.getAccountModel(
       context.providerKey,
@@ -298,7 +298,7 @@ export class RuntimeStatusService {
     }
   }
 
-  /** 404/410：模型在该 provider 上不可用，与 account 无关 */
+  /** 404/410：优先判定为当前 account-model 不可用；provider-model 只作旧数据兜底 */
   private handleModelUnavailable(context: FailureContext): void {
     const currentAccountModel = this.managedProviders.getAccountModel(
       context.providerKey,
@@ -371,7 +371,7 @@ export class RuntimeStatusService {
     }
   }
 
-  /** 上游返回的 HTTP 408/5xx 可能是中转站内部渠道错误，只冷却实际失败的模型。 */
+  /** 上游返回的 HTTP 408/5xx 可能是中转站内部渠道错误，只冷却实际失败的 account-model。 */
   private handleUpstreamError(context: FailureContext): void {
     const currentAccountModel = this.managedProviders.getAccountModel(
       context.providerKey,

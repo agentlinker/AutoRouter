@@ -741,11 +741,7 @@ export function runMigrations(sqlite: Database.Database) {
     name: string;
   }>;
   const managedProviderKindDefinitions: Array<{ name: string; sql: string }> = [
-    { name: "provider_kind", sql: "ALTER TABLE managed_providers ADD COLUMN provider_kind TEXT NOT NULL DEFAULT 'custom';" },
-    {
-      name: "model_availability_scope",
-      sql: "ALTER TABLE managed_providers ADD COLUMN model_availability_scope TEXT NOT NULL DEFAULT 'per_account';"
-    }
+    { name: "provider_kind", sql: "ALTER TABLE managed_providers ADD COLUMN provider_kind TEXT NOT NULL DEFAULT 'custom';" }
   ];
   for (const definition of managedProviderKindDefinitions) {
     if (!managedProviderKindColumns.some((column) => column.name === definition.name)) {
@@ -915,12 +911,10 @@ export function runMigrations(sqlite: Database.Database) {
   }
 
 
-  // Backfill official provider kind/scope from known official endpoint base urls.
+  // Backfill official provider kind from known official endpoint base urls.
   sqlite.exec(`
     UPDATE managed_providers
-    SET
-      provider_kind = 'official',
-      model_availability_scope = 'shared_by_provider'
+    SET provider_kind = 'official'
     WHERE id IN (
       SELECT DISTINCT provider_id
       FROM managed_provider_endpoints
@@ -989,7 +983,44 @@ export function runMigrations(sqlite: Database.Database) {
     }
   }
 
-  // For per_account providers, seed default account model availability from existing models.
+  const legacyProviderColumns = sqlite.pragma("table_info(managed_providers)") as Array<{
+    name: string;
+  }>;
+  const hasLegacyModelAvailabilityScope = legacyProviderColumns.some(
+    (column) => column.name === "model_availability_scope"
+  );
+  if (hasLegacyModelAvailabilityScope) {
+    // Preserve legacy shared-by-provider data before model availability becomes account-owned.
+    sqlite.exec(`
+      INSERT OR IGNORE INTO managed_account_models (
+        account_id,
+        managed_model_id,
+        enabled,
+        discovered_at,
+        last_seen_at
+      )
+      SELECT
+        credentials.id,
+        models.id,
+        1,
+        models.discovered_at,
+        models.updated_at
+      FROM managed_provider_credentials AS credentials
+      INNER JOIN managed_providers AS providers
+        ON providers.id = credentials.provider_id
+      INNER JOIN managed_models AS models
+        ON models.provider_id = providers.id
+      WHERE providers.model_availability_scope != 'per_account';
+    `);
+
+    sqlite.exec(`
+      UPDATE managed_providers
+      SET model_availability_scope = 'per_account'
+      WHERE model_availability_scope != 'per_account';
+    `);
+  }
+
+  // Seed default account model availability from existing account-owned models.
   sqlite.exec(`
     INSERT OR IGNORE INTO managed_account_models (
       account_id,
@@ -1009,8 +1040,7 @@ export function runMigrations(sqlite: Database.Database) {
       ON providers.id = credentials.provider_id
     INNER JOIN managed_models AS models
       ON models.provider_id = providers.id
-    WHERE providers.model_availability_scope = 'per_account'
-      AND credentials.account_key = 'default';
+    WHERE credentials.account_key = 'default';
   `);
 
   // Backfill logical models from provider model ids and bind all managed rows to canonical logical rows.

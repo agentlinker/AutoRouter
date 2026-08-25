@@ -185,7 +185,6 @@ export class RuntimeConfigProjector {
         bundle.provider.enabled &&
         bundle.endpoint.enabled &&
         bundle.credential.enabled !== false;
-      const perAccount = bundle.provider.modelAvailabilityScope === "per_account";
       const allowedModels: string[] = [];
 
       for (const model of bundle.models) {
@@ -220,19 +219,17 @@ export class RuntimeConfigProjector {
       }
 
       const existingAccount = mergedConfig.accounts[accountId];
-      const mergedAllowed = perAccount
-        ? Array.from(new Set([
-            ...(existingAccount?.allowed_models ?? []),
-            ...allowedModels
-          ]))
-        : undefined;
+      const mergedAllowed = Array.from(new Set([
+        ...(existingAccount?.allowed_models ?? []),
+        ...allowedModels
+      ]));
 
       mergedConfig.accounts[accountId] = {
         endpoint: endpointId,
         account_type: "api_key",
         enabled: accountEnabled,
         quota: parseAccountQuota(bundle.credential.quotaJson),
-        ...(mergedAllowed ? { allowed_models: mergedAllowed } : {})
+        allowed_models: mergedAllowed
       };
     }
 

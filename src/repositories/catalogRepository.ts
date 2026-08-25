@@ -342,17 +342,10 @@ export class CatalogRepository {
       }
 
       const providerAccounts = accountsByProvider.get(provider.id) ?? [];
-      let availableAccounts: string[];
-      if (provider.modelAvailabilityScope === "per_account") {
-        const linked = modelAccountIds.get(model.id) ?? new Set<number>();
-        availableAccounts = providerAccounts
-          .filter((account) => account.enabled && linked.has(account.id))
-          .map((account) => account.accountKey);
-      } else {
-        availableAccounts = providerAccounts
-          .filter((account) => account.enabled)
-          .map((account) => account.accountKey);
-      }
+      const linked = modelAccountIds.get(model.id) ?? new Set<number>();
+      const availableAccounts = providerAccounts
+        .filter((account) => account.enabled && linked.has(account.id))
+        .map((account) => account.accountKey);
 
       return [{
         model,

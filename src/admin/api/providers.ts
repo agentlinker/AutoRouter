@@ -72,7 +72,6 @@ export interface ProviderTemplate {
   website_url?: string;
   docs_url?: string;
   provider_kind: "official" | "relay" | "custom";
-  model_availability_scope: "shared_by_provider" | "per_account";
   endpoints: Array<{
     endpoint_key: string;
     protocol: "openai" | "anthropic";
@@ -91,7 +90,6 @@ export interface ProviderDetails {
   base_url: string;
   website_url: string | null;
   provider_kind?: "official" | "relay" | "custom";
-  model_availability_scope?: "shared_by_provider" | "per_account";
   enabled: boolean;
   priority: number;
   trust_level: string;
@@ -159,7 +157,6 @@ export interface ProviderFormValues {
   website_url?: string;
   api_key?: string;
   provider_kind?: "official" | "relay" | "custom";
-  model_availability_scope?: "shared_by_provider" | "per_account";
   priority?: number;
   template_id?: string;
 }
@@ -354,7 +351,6 @@ export function mergeCheckProvider(
     provider_key: string;
     display_name: string;
     provider_kind: string;
-    model_availability_scope: string;
     endpoint_key: string;
     protocol: string;
     base_url: string;
