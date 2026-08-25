@@ -282,6 +282,236 @@ describe("admin providers integration", () => {
     await server.close();
   });
 
+  it("creates a provider with manual models when discovery is unsupported", async () => {
+    const pool = mockAgent.get("https://manual-models.example.com");
+    pool
+      .intercept({
+        path: "/v1/models",
+        method: "GET"
+      })
+      .reply(400, {
+        error: {
+          message: "missing required parameter: model"
+        }
+      });
+
+    const config = loadConfig({
+      override: {
+        server: {
+          host: "127.0.0.1",
+          port: 8811,
+          request_timeout_ms: 120000,
+          gateway_token_env: "AUTO_ROUTER_TOKEN",
+          admin_token_env: "AUTO_ROUTER_ADMIN_TOKEN"
+        },
+        database: {
+          path: join(tempDir, "autorouter-manual-models.db")
+        },
+        trace: {
+          directory: join(tempDir, "traces-manual-models"),
+          log_prompts: false
+        },
+        routes: {},
+        providers: {},
+        endpoints: {},
+        accounts: {},
+        models: {},
+        policies: {}
+      }
+    });
+
+    const databaseClient = createDatabaseClient(config.database.path);
+    const repository = new ManagedProviderRepository(databaseClient.db);
+    const routeTraceRepository = new RouteTraceRepository(databaseClient.db);
+    const adapters = new AdapterRegistry();
+    const stickySessions = new StickySessionStore();
+    const traceStore = new TraceStore(routeTraceRepository);
+    const secretCipher = new SecretCipher(process.env.AUTO_ROUTER_MASTER_KEY);
+    const runtimeManager = new RuntimeManager({
+      baseConfig: config,
+      managedProviderRepository: repository,
+      secretCipher,
+      adapters,
+      stickySessions,
+      traceStore,
+      logger: createLogger()
+    });
+    const discoveryService = new ProviderModelDiscoveryService();
+
+    const server = await createServer(runtimeManager, {
+      managedProviderRepository: repository,
+      discoveryService,
+      secretCipher
+    });
+
+    const createResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        provider_key: "manual-provider",
+        display_name: "Manual Provider",
+        endpoints: [
+          {
+            endpoint_key: "default",
+            protocol: "openai",
+            base_url: "https://manual-models.example.com/v1"
+          }
+        ],
+        api_key: "manual-secret",
+        models: [
+          {
+            model_name: "Deepseek-v4-flash",
+            supports_streaming: true,
+            supports_tools: false,
+            supports_json_mode: false
+          }
+        ]
+      }
+    });
+
+    expect(createResponse.statusCode).toBe(201);
+    expect(createResponse.json().models).toEqual([
+      expect.objectContaining({
+        model_key: "manual-provider/Deepseek-v4-flash",
+        provider_model_id: "Deepseek-v4-flash",
+        model_name: "Deepseek-v4-flash",
+        supports_streaming: true
+      })
+    ]);
+    expect(createResponse.json().accounts[0].models).toHaveLength(1);
+
+    const modelsResponse = await server.inject({
+      method: "GET",
+      url: "/v1/models",
+      headers: {
+        authorization: "Bearer gateway-token"
+      }
+    });
+
+    expect(modelsResponse.statusCode).toBe(200);
+    expect(modelsResponse.json().data.map((item: { id: string }) => item.id)).toContain(
+      "manual-provider/Deepseek-v4-flash"
+    );
+
+    await server.close();
+  });
+
+  it("updates an existing provider with manual models", async () => {
+    const pool = mockAgent.get("https://manual-update.example.com");
+    pool
+      .intercept({
+        path: "/v1/models",
+        method: "GET"
+      })
+      .reply(200, {
+        object: "list",
+        data: [
+          {
+            id: "discovered-model",
+            object: "model"
+          }
+        ]
+      });
+
+    const config = loadConfig({
+      override: {
+        server: {
+          host: "127.0.0.1",
+          port: 8811,
+          request_timeout_ms: 120000,
+          gateway_token_env: "AUTO_ROUTER_TOKEN",
+          admin_token_env: "AUTO_ROUTER_ADMIN_TOKEN"
+        },
+        database: {
+          path: join(tempDir, "autorouter-manual-update.db")
+        },
+        trace: {
+          directory: join(tempDir, "traces-manual-update"),
+          log_prompts: false
+        },
+        routes: {},
+        providers: {},
+        endpoints: {},
+        accounts: {},
+        models: {},
+        policies: {}
+      }
+    });
+
+    const databaseClient = createDatabaseClient(config.database.path);
+    const repository = new ManagedProviderRepository(databaseClient.db);
+    const routeTraceRepository = new RouteTraceRepository(databaseClient.db);
+    const adapters = new AdapterRegistry();
+    const stickySessions = new StickySessionStore();
+    const traceStore = new TraceStore(routeTraceRepository);
+    const secretCipher = new SecretCipher(process.env.AUTO_ROUTER_MASTER_KEY);
+    const runtimeManager = new RuntimeManager({
+      baseConfig: config,
+      managedProviderRepository: repository,
+      secretCipher,
+      adapters,
+      stickySessions,
+      traceStore,
+      logger: createLogger()
+    });
+    const discoveryService = new ProviderModelDiscoveryService();
+
+    const server = await createServer(runtimeManager, {
+      managedProviderRepository: repository,
+      discoveryService,
+      secretCipher
+    });
+
+    const createResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        provider_key: "manual-update",
+        display_name: "Manual Update",
+        endpoints: [
+          {
+            endpoint_key: "default",
+            protocol: "openai",
+            base_url: "https://manual-update.example.com/v1"
+          }
+        ],
+        api_key: "manual-secret"
+      }
+    });
+    expect(createResponse.statusCode).toBe(201);
+
+    const patchResponse = await server.inject({
+      method: "PATCH",
+      url: "/admin/api/providers/manual-update",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        models: [
+          {
+            model_name: "Deepseek-v4-flash",
+            supports_streaming: true
+          }
+        ]
+      }
+    });
+
+    expect(patchResponse.statusCode).toBe(200);
+    expect(patchResponse.json().models.map((model: { model_key: string }) => model.model_key).sort()).toEqual([
+      "manual-update/Deepseek-v4-flash",
+      "manual-update/discovered-model",
+    ]);
+    expect(patchResponse.json().accounts[0].models).toHaveLength(2);
+
+    await server.close();
+  });
+
   it("creates a managed provider, reloads runtime, and serves bare model requests", async () => {
     const pool = mockAgent.get("https://managed.example.com");
 

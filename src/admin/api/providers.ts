@@ -159,6 +159,7 @@ export interface ProviderFormValues {
   provider_kind?: "official" | "relay" | "custom";
   priority?: number;
   template_id?: string;
+  models?: ProviderManualModelInput[];
 }
 
 export interface ProviderEndpointInput {
@@ -168,6 +169,16 @@ export interface ProviderEndpointInput {
   custom_headers?: string | Record<string, string>;
   protocol_bundle_key?: string | null;
   enabled?: boolean;
+}
+
+export interface ProviderManualModelInput {
+  endpoint_key?: string;
+  model_name: string;
+  provider_model_id?: string;
+  context_window?: number;
+  supports_streaming?: boolean;
+  supports_tools?: boolean;
+  supports_json_mode?: boolean;
 }
 
 export interface CreateProviderPayload extends ProviderFormValues {
@@ -328,6 +339,17 @@ export function updateProviderModelCapabilities(
 ): Promise<ProviderDetails> {
   return requestJson<ProviderDetails>(`/admin/api/providers/${providerKey}/models`, token, {
     method: "PATCH",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function createProviderModel(
+  token: string,
+  providerKey: string,
+  payload: ProviderManualModelInput & { model_key?: string }
+): Promise<ProviderDetails> {
+  return requestJson<ProviderDetails>(`/admin/api/providers/${providerKey}/models`, token, {
+    method: "POST",
     body: JSON.stringify(payload)
   });
 }
