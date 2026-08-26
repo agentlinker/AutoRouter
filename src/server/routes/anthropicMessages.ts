@@ -9,6 +9,8 @@ import {
 import { normalizeChatRequest } from "../../routing/normalizeRequest.js";
 import { selectRoute } from "../../routing/routeEngine.js";
 import { StreamUsageTap } from "../../routing/streamUsageTap.js";
+import type { ProviderAdapter, RouteTarget } from "../../providers/adapter.js";
+import { OpenAiToAnthropicStreamTranslator } from "../../providers/openAiToAnthropicStreamTranslator.js";
 import { sha256 } from "../../utils/hash.js";
 import { HttpError } from "../../utils/httpErrors.js";
 import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
@@ -466,13 +468,34 @@ export async function registerAnthropicMessagesRoute(
       feedback: null
     });
 
-    // 客户端要流式且存在原生 anthropic 候选时，直接把上游 SSE 字节透传，
-    // 拿回真实 TTFT（不再等完整响应后再合成 SSE）。
-    const hasNativeStreamCandidate = routeDecision.ordered.some((candidate) =>
-      Boolean(state.adapters.forProtocol(candidate.platform.protocol).streamMessage)
-    );
+    // 原生 Anthropic 流直接透传；OpenAI 流增量转换成 Anthropic SSE。
+    const hasStreamCandidate = routeDecision.ordered.some((candidate) => {
+      const adapter = state.adapters.forProtocol(candidate.platform.protocol);
+      return Boolean(adapter.streamMessage || adapter.streamChatCompletion);
+    });
 
-    if (clientWantsStream && hasNativeStreamCandidate) {
+    const streamForCandidate = (adapter: ProviderAdapter, target: RouteTarget) => {
+      if (adapter.streamMessage) {
+        return adapter.streamMessage(nativeMessagesRequest(), target);
+      }
+
+      const upstream = adapter.streamChatCompletion!(normalizedRequest, target);
+      const translator = new OpenAiToAnthropicStreamTranslator(request.body.model);
+      return (async function* () {
+        for await (const chunk of upstream) {
+          const translated = translator.push(chunk.raw);
+          if (translated.length > 0) {
+            yield { raw: translated };
+          }
+        }
+        const tail = translator.finish();
+        if (tail.length > 0) {
+          yield { raw: tail };
+        }
+      })();
+    };
+
+    if (clientWantsStream && hasStreamCandidate) {
       const streamOutcome = {
         selected: null as RoutedCandidate | null,
         attempts: [] as TraceAttempt[],
@@ -488,12 +511,12 @@ export async function registerAnthropicMessagesRoute(
           runtimeStatusService,
           candidates: routeDecision.ordered,
           requestHeaders: request.headers,
-          supportsCandidate: (_candidate, target) =>
-            Boolean(state.adapters.forProtocol(target.platform.protocol).streamMessage),
+          supportsCandidate: (_candidate, target) => {
+            const adapter = state.adapters.forProtocol(target.platform.protocol);
+            return Boolean(adapter.streamMessage || adapter.streamChatCompletion);
+          },
           invokeStream: (_candidate, target) =>
-            state.adapters
-              .forProtocol(target.platform.protocol)
-              .streamMessage!(nativeMessagesRequest(), target),
+            streamForCandidate(state.adapters.forProtocol(target.platform.protocol), target),
           onStreamStart: () => {
             if (!reply.raw.headersSent) {
               reply.raw.setHeader("content-type", "text/event-stream; charset=utf-8");
@@ -524,12 +547,16 @@ export async function registerAnthropicMessagesRoute(
           )
         : null;
 
+      const streamedNatively = Boolean(
+        streamOutcome.selected &&
+          state.adapters.forProtocol(streamOutcome.selected.platform.protocol).streamMessage
+      );
+
       state.traceStore.append({
         ...buildTraceBase(streamOutcome.selected, streamOutcome.attempts, streamOutcome.fallbacks),
         policy_hits: [
           "anthropic_inbound",
-          "anthropic_native",
-          "anthropic_native_stream",
+          ...(streamedNatively ? ["anthropic_native", "anthropic_native_stream"] : []),
           ...(routeDecision.sawProtocolMatch ? [] : ["protocol_mismatch"]),
           ...(sessionId ? ["session_sticky"] : []),
           ...(streamOutcome.fallbacks.length > 0 ? ["fallback_chain"] : []),

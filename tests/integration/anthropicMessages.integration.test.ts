@@ -210,6 +210,21 @@ describe("Anthropic Messages compatibility", () => {
       });
   }
 
+  function mockStreamResponse() {
+    const upstreamSse =
+      'data: {"id":"chatcmpl_anthropic_compat","object":"chat.completion.chunk","model":"claude-opus-5","choices":[{"index":0,"delta":{"role":"assistant","content":"OK"},"finish_reason":null}]}\n\n' +
+      'data: {"id":"chatcmpl_anthropic_compat","object":"chat.completion.chunk","model":"claude-opus-5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":1,"total_tokens":13}}\n\n' +
+      "data: [DONE]\n\n";
+
+    mockAgent
+      .get("https://upstream.example.com")
+      .intercept({
+        path: "/v1/chat/completions",
+        method: "POST"
+      })
+      .reply(200, upstreamSse, { headers: { "content-type": "text/event-stream" } });
+  }
+
   it("accepts x-api-key and returns an Anthropic message", async () => {
     mockTextResponse();
     const { gateway } = await createGateway();
@@ -245,7 +260,7 @@ describe("Anthropic Messages compatibility", () => {
   });
 
   it("wraps the routed result as Anthropic SSE when stream is requested", async () => {
-    mockTextResponse();
+    mockStreamResponse();
     const { gateway } = await createGateway();
     const response = await gateway.inject({
       method: "POST",
@@ -272,7 +287,7 @@ describe("Anthropic Messages compatibility", () => {
   });
 
   it("records anthropic inbound traces with the client's real stream intent", async () => {
-    mockTextResponse();
+    mockStreamResponse();
     const { gateway, state } = await createGateway();
     const response = await gateway.inject({
       method: "POST",
@@ -400,6 +415,79 @@ describe("Anthropic Messages compatibility", () => {
     // 流式 usage 由旁路从 Anthropic 事件里读出
     expect(trace?.execution.input_tokens).toBe(14);
     expect(trace?.execution.output_tokens).toBe(6);
+
+    await gateway.close();
+  });
+
+  it("falls back from native anthropic streaming to converted openai streaming", async () => {
+    mockAgent
+      .get("https://relay.example.com")
+      .intercept({ path: "/v1/messages", method: "POST" })
+      .reply(429, {
+        type: "error",
+        error: {
+          type: "rate_limit_error",
+          message: "rate limited"
+        }
+      });
+
+    const openAiSse =
+      'data: {"id":"chatcmpl_fallback","object":"chat.completion.chunk","model":"claude-opus-5","choices":[{"index":0,"delta":{"role":"assistant","content":"fallback ok"},"finish_reason":null}]}\n\n' +
+      'data: {"id":"chatcmpl_fallback","object":"chat.completion.chunk","model":"claude-opus-5","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}\n\n' +
+      "data: [DONE]\n\n";
+
+    mockAgent
+      .get("https://relay.example.com")
+      .intercept({ path: "/v1/chat/completions", method: "POST" })
+      .reply(200, openAiSse, { headers: { "content-type": "text/event-stream" } });
+
+    const { gateway, state } = await createDualProtocolGateway();
+    const response = await gateway.inject({
+      method: "POST",
+      url: "/v1/messages",
+      headers: { "x-api-key": "test-token", "anthropic-version": "2023-06-01" },
+      payload: {
+        model: "claude-opus-5[1m]",
+        max_tokens: 32,
+        stream: true,
+        messages: [{ role: "user", content: "Reply exactly fallback ok" }]
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toContain("text/event-stream");
+    expect(response.body).toContain("event: message_start");
+    expect(response.body).toContain("event: content_block_start");
+    expect(response.body).toContain("event: content_block_delta");
+    expect(response.body).toContain('"type":"text_delta","text":"fallback ok"');
+    expect(response.body).toContain("event: message_delta");
+    expect(response.body).toContain("event: message_stop");
+    expect(response.body).not.toContain("chat.completion.chunk");
+    expect(response.body).not.toContain("data: [DONE]");
+
+    const trace = state.traceStore.latest();
+    expect(trace?.attempts).toEqual([
+      expect.objectContaining({
+        endpoint: "relay-anthropic",
+        status: "failed",
+        error: "Anthropic streaming request failed with status 429",
+        retryable: true
+      }),
+      expect.objectContaining({
+        endpoint: "relay-openai",
+        status: "success"
+      })
+    ]);
+    expect(trace?.fallbacks).toEqual([
+      expect.objectContaining({
+        endpoint: "relay-anthropic"
+      })
+    ]);
+    expect(trace?.selected?.endpoint).toBe("relay-openai");
+    expect(trace?.execution.status).toBe("success_with_fallback");
+    expect(trace?.policy_hits).not.toContain("anthropic_native_stream");
+    expect(trace?.execution.input_tokens).toBe(10);
+    expect(trace?.execution.output_tokens).toBe(2);
 
     await gateway.close();
   });
