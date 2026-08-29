@@ -506,6 +506,83 @@ function ensureProviderDiscoveryUsableOrManual(
   }
 }
 
+function buildManualModel(
+  providerKey: string,
+  endpoint: { endpoint_key: string },
+  input: z.infer<typeof manualModelInputSchema> & { model_key?: string }
+): ManagedDiscoveredModelInput {
+  const providerModelId = input.provider_model_id?.trim() || input.model_name.trim();
+  const modelKey = input.model_key?.trim() ||
+    (endpoint.endpoint_key === "default"
+      ? `${providerKey}/${providerModelId}`
+      : `${providerKey}/${endpoint.endpoint_key}/${providerModelId}`);
+
+  return {
+    modelKey,
+    providerModelId,
+    modelName: input.model_name.trim(),
+    contextWindow: input.context_window,
+    supportsStreaming: input.supports_streaming ?? true,
+    supportsTools: input.supports_tools ?? false,
+    supportsJsonMode: input.supports_json_mode ?? false,
+    rawMetadataJson: JSON.stringify({
+      source: "manual",
+      provider_model_id: providerModelId,
+      model_name: input.model_name.trim()
+    })
+  };
+}
+
+function mergeManualModelsIntoBundles(
+  providerKey: string,
+  endpointBundles: EndpointDiscoveryBundle[],
+  manualModels: Array<z.infer<typeof manualModelInputSchema> & { model_key?: string }> | undefined
+) {
+  if (!manualModels || manualModels.length === 0) {
+    return endpointBundles;
+  }
+
+  const bundlesByEndpointKey = new Map(
+    endpointBundles.map((bundle) => [bundle.endpoint.endpointKey, bundle])
+  );
+  for (const model of manualModels) {
+    const endpointKey = model.endpoint_key ?? endpointBundles[0]?.endpoint.endpointKey ?? "default";
+    const bundle = bundlesByEndpointKey.get(endpointKey);
+    if (!bundle) {
+      throw new HttpError(400, "invalid_model_endpoint", `Model endpoint ${endpointKey} does not exist`);
+    }
+
+    const manual = buildManualModel(providerKey, { endpoint_key: endpointKey }, model);
+    const existingIndex = bundle.models.findIndex(
+      (item) => item.modelKey === manual.modelKey || item.providerModelId === manual.providerModelId
+    );
+    if (existingIndex >= 0) {
+      bundle.models[existingIndex] = manual;
+    } else {
+      bundle.models.push(manual);
+    }
+  }
+
+  return endpointBundles;
+}
+
+function ensureProviderDiscoveryUsableOrManual(
+  endpointBundles: EndpointDiscoveryBundle[],
+  manualModels: Array<z.infer<typeof manualModelInputSchema> & { model_key?: string }> | undefined
+): void {
+  if (!manualModels || manualModels.length === 0) {
+    ensureProviderDiscoveryUsable(endpointBundles);
+    return;
+  }
+
+  const failedWithoutModels = endpointBundles.filter(
+    (bundle) => bundle.error !== undefined && bundle.models.length === 0
+  );
+  if (failedWithoutModels.length > 0) {
+    ensureProviderDiscoveryUsable(failedWithoutModels);
+  }
+}
+
 async function discoverEndpointBundles(
   discoveryService: ProviderModelDiscoveryService,
   input: {
