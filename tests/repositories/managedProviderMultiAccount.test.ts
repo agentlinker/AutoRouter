@@ -87,7 +87,6 @@ describe("managed provider multi-account", () => {
 
     const created = repo.createAccount("demo", {
       accountKey: "backup",
-      endpointKey: "openai",
       encryptedApiKey: cipher.encrypt("key-2"),
       apiKeyHint: "...y-2"
     });

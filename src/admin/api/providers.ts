@@ -34,7 +34,6 @@ export interface ProviderEndpoint {
 
 export interface ProviderAccount {
   account_key: string;
-  endpoint_key: string | null;
   enabled: boolean;
   runtime_status?: string;
   status_reason?: string | null;
@@ -186,7 +185,6 @@ export interface CreateProviderPayload extends ProviderFormValues {
   base_url?: string;
   accounts?: Array<{
     account_key: string;
-    endpoint_key?: string;
     api_key: string;
     expires_at?: string | null;
     quota?: ProviderAccount["quota"];
@@ -389,7 +387,6 @@ export function createProviderAccount(
   providerKey: string,
   payload: {
     account_key: string;
-    endpoint_key?: string;
     api_key: string;
     expires_at?: string | null;
     quota?: ProviderAccount["quota"];
@@ -408,7 +405,6 @@ export function updateProviderAccount(
   providerKey: string,
   accountKey: string,
   payload: {
-    endpoint_key?: string | null;
     api_key?: string;
     expires_at?: string | null;
     quota?: ProviderAccount["quota"] | null;

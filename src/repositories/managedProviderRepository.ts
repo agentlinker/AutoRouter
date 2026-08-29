@@ -37,7 +37,6 @@ export interface ManagedProviderInput {
 
 export interface ManagedAccountInput {
   accountKey: string;
-  endpointKey?: string | null;
   encryptedApiKey: string;
   apiKeyHint?: string | null;
   enabled?: boolean;
@@ -47,7 +46,6 @@ export interface ManagedAccountInput {
 }
 
 export interface ManagedAccountUpdateInput {
-  endpointKey?: string | null;
   encryptedApiKey?: string;
   apiKeyHint?: string | null;
   enabled?: boolean;
@@ -559,7 +557,6 @@ export class ManagedProviderRepository {
           INNER JOIN managed_provider_credentials AS account
             ON account.provider_id = ${managedProvidersTable.id}
            AND account.enabled = 1
-           AND (account.endpoint_id IS NULL OR account.endpoint_id = endpoint.id)
           INNER JOIN managed_models AS model
             ON model.provider_id = ${managedProvidersTable.id}
            AND model.enabled = 1
@@ -824,12 +821,6 @@ export class ManagedProviderRepository {
         .where(eq(managedProvidersTable.providerKey, input.providerKey))
         .run();
 
-      // Endpoints are replaced; temporarily clear endpoint bindings on accounts.
-      tx.update(managedProviderCredentialsTable)
-        .set({ endpointId: null, updatedAt: now })
-        .where(eq(managedProviderCredentialsTable.providerId, existing.provider.id))
-        .run();
-
       tx.delete(managedModelsTable)
         .where(eq(managedModelsTable.providerId, existing.provider.id))
         .run();
@@ -897,7 +888,6 @@ export class ManagedProviderRepository {
             .set({
               apiKeyEncrypted: input.encryptedApiKey,
               keyHint: input.apiKeyHint ?? null,
-              // preserve unbound accounts so dual-protocol endpoints keep working
               updatedAt: now
             })
             .where(eq(managedProviderCredentialsTable.id, currentCredential.id))
@@ -906,7 +896,6 @@ export class ManagedProviderRepository {
           tx.insert(managedProviderCredentialsTable).values({
             providerId: existing.provider.id,
             accountKey: "default",
-            endpointId: null,
             enabled: true,
             runtimeStatus: "normal",
             statusSource: "system",
@@ -954,7 +943,6 @@ export class ManagedProviderRepository {
     apiKeyHint?: string;
     defaultAccount?: {
       accountKey: string;
-      endpointKey?: string;
       enabled?: boolean;
       expiresAt?: string | null;
       quotaJson?: string | null;
@@ -987,8 +975,6 @@ export class ManagedProviderRepository {
 
       let discoveredCount = 0;
       let firstEndpointId: number | null = null;
-      const endpointIdsByKey = new Map<string, number>();
-
       for (const bundle of input.endpointBundles) {
         const endpointInsert = tx.insert(managedProviderEndpointsTable)
           .values({
@@ -1011,8 +997,6 @@ export class ManagedProviderRepository {
         if (firstEndpointId === null) {
           firstEndpointId = endpointInsert.id;
         }
-        endpointIdsByKey.set(bundle.endpoint.endpointKey, endpointInsert.id);
-
         discoveredCount += bundle.models.length;
 
         if (bundle.models.length > 0) {
@@ -1034,10 +1018,6 @@ export class ManagedProviderRepository {
       const defaultAccount = tx.insert(managedProviderCredentialsTable).values({
         providerId: providerInsert.id,
         accountKey: input.defaultAccount?.accountKey ?? "default",
-        // null endpoint means this key can be used on all provider endpoints
-        endpointId: input.defaultAccount?.endpointKey
-          ? endpointIdsByKey.get(input.defaultAccount.endpointKey) ?? null
-          : null,
         enabled: input.defaultAccount?.enabled ?? true,
         runtimeStatus: "normal",
         statusSource: "system",
@@ -1208,12 +1188,9 @@ export class ManagedProviderRepository {
         ))
         .all();
       return accounts.flatMap((account) => {
-        const boundEndpoints = account.endpointId == null
-          ? endpoints
-          : endpoints.filter((endpoint) => endpoint.id === account.endpointId);
         const accountModelIds = this.listAccountModelIds(account.id);
 
-        return boundEndpoints.map((endpoint) => {
+        return endpoints.map((endpoint) => {
           // 模型必须属于本 endpoint：借用兄弟 endpoint 的模型会造出打不通的候选
           const endpointModels = providerModels
             .filter((model) => model.endpointId === endpoint.id);
@@ -1633,7 +1610,6 @@ export class ManagedProviderRepository {
     this.db.insert(managedProviderCredentialsTable).values({
       providerId: provider.id,
       accountKey: "default",
-      endpointId: null,
       enabled: true,
       runtimeStatus: "normal",
       statusSource: "system",
@@ -1663,20 +1639,10 @@ export class ManagedProviderRepository {
       return null;
     }
 
-    let endpointId: number | null = null;
-    if (input.endpointKey) {
-      const endpoint = this.getProviderEndpoint(providerKey, input.endpointKey);
-      if (!endpoint) {
-        return null;
-      }
-      endpointId = endpoint.id;
-    }
-
     const now = nowIso();
     return this.db.insert(managedProviderCredentialsTable).values({
       providerId: provider.id,
       accountKey: input.accountKey,
-      endpointId,
       enabled: input.enabled ?? true,
       runtimeStatus: "normal",
       statusSource: "system",
@@ -1701,19 +1667,6 @@ export class ManagedProviderRepository {
       return null;
     }
 
-    let endpointId = account.endpointId;
-    if (input.endpointKey !== undefined) {
-      if (input.endpointKey === null || input.endpointKey === "") {
-        endpointId = null;
-      } else {
-        const endpoint = this.getProviderEndpoint(providerKey, input.endpointKey);
-        if (!endpoint) {
-          return null;
-        }
-        endpointId = endpoint.id;
-      }
-    }
-
     const now = nowIso();
     const enableRecover =
       input.enabled === true
@@ -1735,7 +1688,6 @@ export class ManagedProviderRepository {
     this.db.update(managedProviderCredentialsTable)
       .set({
         ...enableRecover,
-        endpointId,
         expiresAt: input.expiresAt !== undefined ? input.expiresAt : account.expiresAt,
         quotaJson: input.quotaJson !== undefined ? input.quotaJson : account.quotaJson,
         remark: input.remark !== undefined ? input.remark : account.remark,

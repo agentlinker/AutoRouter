@@ -161,4 +161,91 @@ describe("database migrations", () => {
     expect(indexes).toHaveLength(0);
     sqlite.close();
   });
+
+  it("drops historical account endpoint bindings", () => {
+    const sqlite = new Database(":memory:");
+    createLegacyProviderTables(sqlite);
+    sqlite.exec(`
+      INSERT INTO managed_providers (
+        id,
+        provider_key,
+        display_name,
+        base_url,
+        created_at,
+        updated_at
+      ) VALUES (
+        1,
+        'relay',
+        'Relay',
+        'https://relay.example.com/v1',
+        '2026-08-23T00:00:00.000Z',
+        '2026-08-23T00:00:00.000Z'
+      );
+
+      INSERT INTO managed_provider_endpoints (
+        id,
+        provider_id,
+        endpoint_key,
+        protocol,
+        base_url,
+        created_at,
+        updated_at
+      ) VALUES (
+        7,
+        1,
+        'anthropic',
+        'anthropic',
+        'https://relay.example.com/anthropic',
+        '2026-08-23T00:00:00.000Z',
+        '2026-08-23T00:00:00.000Z'
+      );
+
+      CREATE TABLE managed_provider_credentials (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider_id INTEGER NOT NULL,
+        account_key TEXT NOT NULL DEFAULT 'default',
+        endpoint_id INTEGER,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        runtime_status TEXT NOT NULL DEFAULT 'normal',
+        status_source TEXT NOT NULL DEFAULT 'system',
+        recent_error_count INTEGER NOT NULL DEFAULT 0,
+        api_key_encrypted TEXT NOT NULL,
+        key_hint TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (provider_id, account_key)
+      );
+
+      INSERT INTO managed_provider_credentials (
+        id,
+        provider_id,
+        account_key,
+        endpoint_id,
+        api_key_encrypted,
+        key_hint,
+        created_at,
+        updated_at
+      ) VALUES (
+        9,
+        1,
+        'default',
+        7,
+        'encrypted',
+        '...ted',
+        '2026-08-23T00:00:00.000Z',
+        '2026-08-23T00:00:00.000Z'
+      );
+    `);
+
+    runMigrations(sqlite);
+
+    const columns = sqlite.pragma("table_info(managed_provider_credentials)") as Array<{ name: string }>;
+    expect(columns.some((column) => column.name === "endpoint_id")).toBe(false);
+    const row = sqlite.prepare(`
+      SELECT account_key AS accountKey, key_hint AS keyHint
+      FROM managed_provider_credentials
+    `).get() as { accountKey: string; keyHint: string };
+    expect(row).toEqual({ accountKey: "default", keyHint: "...ted" });
+    sqlite.close();
+  });
 });

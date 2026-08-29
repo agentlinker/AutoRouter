@@ -95,7 +95,6 @@ interface ProviderFormData {
   template_id?: string;
   accounts: Array<{
     account_key: string;
-    endpoint_key: string;
     api_key: string;
     expires_at: string;
     remaining_usd: string;
@@ -140,7 +139,6 @@ const providerFormSchema = z.object({
   template_id: z.string().optional(),
   accounts: z.array(z.object({
     account_key: z.string(),
-    endpoint_key: z.string(),
     api_key: z.string(),
     expires_at: z.string(),
     remaining_usd: z.string(),
@@ -315,19 +313,6 @@ function providerModelProtocolLabel(provider: ProviderDetails, model: ProviderMo
   const endpoint = provider.endpoints.find((item) => item.endpoint_key === model.endpoint_key);
   if (!endpoint) {
     return model.endpoint_key;
-  }
-
-  return protocolDisplayLabel(endpoint.protocol as "openai" | "anthropic");
-}
-
-function accountEndpointProtocolLabel(provider: ProviderDetails, account: ProviderAccount): string {
-  if (!account.endpoint_key) {
-    return "全部协议";
-  }
-
-  const endpoint = provider.endpoints.find((item) => item.endpoint_key === account.endpoint_key);
-  if (!endpoint) {
-    return account.endpoint_key;
   }
 
   return protocolDisplayLabel(endpoint.protocol as "openai" | "anthropic");
@@ -1266,7 +1251,6 @@ function ProviderFormPage(props: {
       accounts: [
         {
           account_key: "account-1",
-          endpoint_key: "",
           api_key: "",
           expires_at: "",
           remaining_usd: "",
@@ -1320,7 +1304,6 @@ function ProviderFormPage(props: {
       accounts: props.provider?.accounts?.length
         ? props.provider.accounts.map((account) => ({
             account_key: account.account_key,
-            endpoint_key: account.endpoint_key ?? "",
             api_key: "",
             expires_at: toDatetimeLocal(account.expires_at),
             remaining_usd: account.quota?.remaining_usd?.toString() ?? "",
@@ -1330,7 +1313,6 @@ function ProviderFormPage(props: {
         : [
             {
               account_key: "account-1",
-              endpoint_key: "",
               api_key: "",
               expires_at: "",
               remaining_usd: "",
@@ -1382,7 +1364,6 @@ function ProviderFormPage(props: {
     });
     const normalizedAccounts = values.accounts.map((account) => ({
       account_key: account.account_key.trim(),
-      endpoint_key: account.endpoint_key || undefined,
       api_key: account.api_key.trim(),
       expires_at: account.expires_at ? new Date(account.expires_at).toISOString() : null,
       quota: account.remaining_usd
@@ -1434,7 +1415,6 @@ function ProviderFormPage(props: {
       for (const account of normalizedAccounts) {
         if (existingAccounts.has(account.account_key)) {
           await updateProviderAccount(props.token, props.provider.provider_key, account.account_key, {
-            endpoint_key: account.endpoint_key ?? null,
             api_key: account.api_key || undefined,
             expires_at: account.expires_at,
             quota: account.quota,
@@ -1447,7 +1427,6 @@ function ProviderFormPage(props: {
           }
           await createProviderAccount(props.token, props.provider.provider_key, {
             account_key: account.account_key,
-            endpoint_key: account.endpoint_key,
             api_key: account.api_key,
             expires_at: account.expires_at,
             quota: account.quota,
@@ -1554,7 +1533,6 @@ function ProviderFormPage(props: {
       }
       return createProviderAccount(props.token, target.provider_key, {
         account_key: `account-${Date.now().toString(36)}`,
-        endpoint_key: target.endpoint_key,
         api_key: account.api_key.trim(),
         expires_at: account.expires_at ? new Date(account.expires_at).toISOString() : null,
         quota: account.remaining_usd
@@ -1866,7 +1844,6 @@ function ProviderFormPage(props: {
               onClick={() =>
                 appendAccount({
                   account_key: nextGeneratedAccountKey(form.getValues("accounts")),
-                  endpoint_key: "",
                   api_key: "",
                   expires_at: "",
                   remaining_usd: "",
@@ -1882,22 +1859,6 @@ function ProviderFormPage(props: {
           <div className="account-editor">
             {accountFields.map((field, index) => (
               <div className="account-editor-row" key={field.id}>
-                <label className="field">
-                  <span>绑定协议</span>
-                  <select {...form.register(`accounts.${index}.endpoint_key`)}>
-                    <option value="">全部协议</option>
-                    {form.watch("endpoints").flatMap((endpoint, endpointIndex) =>
-                      expandFormEndpointProtocols(endpoint).map((protocol) => (
-                        <option
-                          key={`${endpointIndex}-${protocol}`}
-                          value={endpoint.protocol === "all" ? protocol : endpoint.endpoint_key ?? protocol}
-                        >
-                          {protocolDisplayLabel(protocol)}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                </label>
                 <label className="field">
                   <span>API Key {isEditing ? "（留空不修改）" : ""}</span>
                   <input
@@ -2592,7 +2553,6 @@ function ProviderAccountsPanel(props: {
       <div className="model-capability-table provider-model-table provider-accounts-table">
         <div className="model-capability-header">
           <span>API Key</span>
-          <span>绑定协议</span>
           <span>启用</span>
           <span>调度状态</span>
           <span>过期时间</span>
@@ -2605,7 +2565,6 @@ function ProviderAccountsPanel(props: {
             <div className="model-name-cell">
               <span className="detail-table-text">{account.key_hint ?? "hidden"}</span>
             </div>
-            <span className="detail-table-text">{accountEndpointProtocolLabel(props.provider, account)}</span>
             <div className="detail-table-text provider-model-enabled-cell">
               <SwitchControl
                 checked={account.enabled}

@@ -29,7 +29,6 @@ export const managedProviderCredentialsTable = sqliteTable("managed_provider_cre
   id: integer("id").primaryKey({ autoIncrement: true }),
   providerId: integer("provider_id").notNull(),
   accountKey: text("account_key").notNull().default("default"),
-  endpointId: integer("endpoint_id"),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
   runtimeStatus: text("runtime_status").notNull().default("normal"),
   statusReason: text("status_reason"),

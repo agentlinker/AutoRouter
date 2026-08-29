@@ -127,7 +127,6 @@ const createProviderBodySchema = z.object({
   api_key: z.string().min(1),
   accounts: z.array(z.object({
     account_key: accountKeySchema,
-    endpoint_key: endpointKeySchema.optional(),
     api_key: z.string().min(1),
     expires_at: z.string().min(1).optional().nullable(),
     quota: accountQuotaSchema.optional().nullable(),
@@ -179,7 +178,6 @@ const testProviderModelBodySchema = z.object({
 
 const createAccountBodySchema = z.object({
   account_key: accountKeySchema,
-  endpoint_key: endpointKeySchema.optional(),
   api_key: z.string().min(1),
   expires_at: z.string().min(1).optional().nullable(),
   quota: accountQuotaSchema.optional().nullable(),
@@ -188,7 +186,6 @@ const createAccountBodySchema = z.object({
 }).strict();
 
 const patchAccountBodySchema = z.object({
-  endpoint_key: endpointKeySchema.optional().nullable(),
   api_key: z.string().min(1).optional(),
   expires_at: z.string().min(1).optional().nullable(),
   quota: accountQuotaSchema.optional().nullable(),
@@ -432,46 +429,6 @@ function ensureUniqueEndpointKeys(
   }
 }
 
-function normalizeSubmittedAccountEndpointKey(
-  endpointKey: string | undefined,
-  endpoints: NormalizedEndpointInput[]
-) {
-  if (!endpointKey) {
-    return undefined;
-  }
-  if (endpoints.some((endpoint) => endpoint.endpoint_key === endpointKey)) {
-    return endpointKey;
-  }
-  if (
-    endpointKey === "default" &&
-    !endpoints.some((endpoint) => endpoint.endpoint_key === "default") &&
-    endpoints.some((endpoint) => endpoint.endpoint_key === "openai")
-  ) {
-    return "openai";
-  }
-  return endpointKey;
-}
-
-function normalizeSubmittedAccountEndpointKeyFromDetails(
-  endpointKey: string | undefined,
-  endpoints: NonNullable<ReturnType<ManagedProviderRepository["getProviderDetails"]>>["endpoints"]
-) {
-  if (!endpointKey) {
-    return undefined;
-  }
-  if (endpoints.some((endpoint) => endpoint.endpointKey === endpointKey)) {
-    return endpointKey;
-  }
-  if (
-    endpointKey === "default" &&
-    !endpoints.some((endpoint) => endpoint.endpointKey === "default") &&
-    endpoints.some((endpoint) => endpoint.endpointKey === "openai")
-  ) {
-    return "openai";
-  }
-  return endpointKey;
-}
-
 function buildManualModel(
   providerKey: string,
   endpoint: { endpoint_key: string },
@@ -657,8 +614,6 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
   );
 
   const accounts = (details.accounts ?? (details.credential ? [details.credential] : [])).map((account) => {
-    const endpointKey =
-      details.endpoints.find((endpoint) => endpoint.id === account.endpointId)?.endpointKey ?? null;
     let quota: Record<string, unknown> | null = null;
     if (account.quotaJson) {
       try {
@@ -672,7 +627,6 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
     }
     return {
       account_key: account.accountKey,
-      endpoint_key: endpointKey,
       enabled: account.enabled ?? true,
       runtime_status: account.runtimeStatus ?? "normal",
       status_reason: account.statusReason ?? null,
@@ -875,9 +829,6 @@ export async function registerAdminProvidersRoutes(
       );
     }
 
-    const accountEndpoint = account.endpointId
-      ? details.endpoints.find((item) => item.id === account.endpointId)
-      : null;
     const modelEndpoint = model.endpointId
       ? details.endpoints.find((item) => item.id === model.endpointId)
       : null;
@@ -887,28 +838,13 @@ export async function registerAdminProvidersRoutes(
     if (body.endpoint_key && !requestedEndpoint) {
       throw new HttpError(404, "endpoint_not_found", "Endpoint not found");
     }
-    if (requestedEndpoint && accountEndpoint && requestedEndpoint.id !== accountEndpoint.id) {
-      throw new HttpError(400, "account_endpoint_mismatch", "Selected account cannot access the endpoint");
-    }
     if (requestedEndpoint && modelEndpoint && requestedEndpoint.id !== modelEndpoint.id) {
       throw new HttpError(400, "model_endpoint_mismatch", "Selected model belongs to another endpoint");
-    }
-    if (
-      accountEndpoint &&
-      modelEndpoint &&
-      accountEndpoint.id !== modelEndpoint.id
-    ) {
-      throw new HttpError(
-        400,
-        "account_model_endpoint_mismatch",
-        "Selected account cannot access the model endpoint"
-      );
     }
 
     const endpoint =
       requestedEndpoint ??
       modelEndpoint ??
-      accountEndpoint ??
       details.endpoints.find((item) => item.enabled) ??
       details.endpoints[0];
     if (!endpoint) {
@@ -1124,7 +1060,6 @@ export async function registerAdminProvidersRoutes(
       defaultAccount: primaryAccount
         ? {
             accountKey: primaryAccount.account_key,
-            endpointKey: normalizeSubmittedAccountEndpointKey(primaryAccount.endpoint_key, endpointInputs),
             enabled: primaryAccount.enabled,
             expiresAt: primaryAccount.expires_at ?? null,
             quotaJson: primaryAccount.quota ? JSON.stringify(primaryAccount.quota) : null,
@@ -1137,7 +1072,6 @@ export async function registerAdminProvidersRoutes(
     for (const account of body.accounts?.slice(1) ?? []) {
       const created = dependencies.repository.createAccount(providerKey, {
         accountKey: account.account_key,
-        endpointKey: normalizeSubmittedAccountEndpointKey(account.endpoint_key, endpointInputs),
         encryptedApiKey: dependencies.secretCipher.encrypt(account.api_key),
         apiKeyHint: ManagedProviderRepository.toApiKeyHint(account.api_key),
         enabled: account.enabled,
@@ -1552,7 +1486,6 @@ export async function registerAdminProvidersRoutes(
 
       const created = dependencies.repository.createAccount(request.params.providerKey, {
         accountKey: body.account_key,
-        endpointKey: normalizeSubmittedAccountEndpointKeyFromDetails(body.endpoint_key, existing.endpoints),
         encryptedApiKey: dependencies.secretCipher.encrypt(body.api_key),
         apiKeyHint: ManagedProviderRepository.toApiKeyHint(body.api_key),
         enabled: body.enabled,
@@ -1583,19 +1516,10 @@ export async function registerAdminProvidersRoutes(
       if (!existing) {
         throw new HttpError(404, "account_not_found", "Account not found");
       }
-      const providerDetails = dependencies.repository.getProviderDetails(request.params.providerKey);
-      if (!providerDetails) {
-        throw new HttpError(404, "provider_not_found", "Provider not found");
-      }
-
       const updated = dependencies.repository.updateAccount(
         request.params.providerKey,
         request.params.accountKey,
         {
-          endpointKey:
-            body.endpoint_key === null
-              ? null
-              : normalizeSubmittedAccountEndpointKeyFromDetails(body.endpoint_key, providerDetails.endpoints),
           encryptedApiKey: body.api_key
             ? dependencies.secretCipher.encrypt(body.api_key)
             : undefined,
@@ -1637,12 +1561,7 @@ export async function registerAdminProvidersRoutes(
       }
 
       const apiKey = dependencies.secretCipher.decrypt(account.apiKeyEncrypted);
-      const boundEndpoint = account.endpointId
-        ? details.endpoints.find((item) => item.id === account.endpointId)
-        : null;
-      const endpoints = boundEndpoint
-        ? [boundEndpoint]
-        : details.endpoints.filter((item) => item.enabled);
+      const endpoints = details.endpoints.filter((item) => item.enabled);
 
       if (endpoints.length === 0) {
         throw new HttpError(404, "endpoint_not_found", "Provider endpoint not found");

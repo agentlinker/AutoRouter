@@ -672,7 +672,6 @@ describe("admin providers integration", () => {
         accounts: [
           {
             account_key: "primary",
-            endpoint_key: "default",
             api_key: "managed-secret",
             expires_at: "2030-01-02T03:04:05.000Z",
             quota: { remaining_usd: 12, source: "manual" },
@@ -681,7 +680,6 @@ describe("admin providers integration", () => {
           },
           {
             account_key: "backup",
-            endpoint_key: "default",
             api_key: "backup-secret",
             quota: { remaining_usd: 4, source: "manual" },
             enabled: true
@@ -696,18 +694,17 @@ describe("admin providers integration", () => {
       expect.arrayContaining([
         expect.objectContaining({
           account_key: "primary",
-          endpoint_key: "openai",
           expires_at: "2030-01-02T03:04:05.000Z",
           quota: expect.objectContaining({ remaining_usd: 12 }),
           remark: "主用 Key"
         }),
         expect.objectContaining({
           account_key: "backup",
-          endpoint_key: "openai",
           quota: expect.objectContaining({ remaining_usd: 4 })
         })
       ])
     );
+    expect(createResponse.json().accounts[0]).not.toHaveProperty("endpoint_key");
     expect(createResponse.json().models).toHaveLength(1);
     expect(createResponse.json().models[0].model_name).toBe("managed-model");
     expect(createResponse.json()).not.toHaveProperty("runtime_status");

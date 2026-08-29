@@ -13,28 +13,69 @@ _Avoid_: 平台, 厂商入口
 _Avoid_: 平台, 站点
 
 **Account**:
-AutoRouter 内部的凭证承载单元，用于表达访问某个 **Endpoint** 所需的认证信息。
+AutoRouter 内部的凭证承载单元，用于表达访问某个 **Provider** 所需的认证信息。
 _Avoid_: 用户, 平台账号
 
 **API Key**:
 一种具体凭证值；在本地 `config.yaml` 中允许直写，但运行时仍归一化到 **Account**。
 _Avoid_: Account
 
+**Model Catalog**:
+某个 **Provider** 的模型目录来源。模型目录独立于推理协议和 Endpoint；可以显式配置
+`model_catalog_url`，也可以从 Provider 的 Endpoint 推导。
+_Avoid_: Endpoint models, Protocol models
+
+**Account-Endpoint-Model**:
+某个 Account 使用某个 Endpoint 调用某个 Provider-Model 的实测运行状态。它是运行时
+观测，不是凭证绑定或模型权限。没有记录表示 `unknown`，仍允许路由和手动测试。
+_Avoid_: Account-Endpoint binding, Endpoint model ownership
+
 ## Relationships
 
 - 一个 **Provider** 可以拥有一个或多个 **Endpoint**
-- 一个 **Endpoint** 可以关联一个或多个 **Account**
-- 一个 **Account** 为访问一个 **Endpoint** 提供认证信息
-- 一个 **Provider-Model** 表达 Provider 下发现过的模型元数据，不表达可调度性
-- 一个 **Account-Model** 表达具体 Account 与 Model 组合的独立模型目录与运行态
+- 一个 **Provider** 可以拥有一个或多个 **Account**
+- 一个 **Account** 默认可用于该 Provider 下所有 **Endpoint**，不绑定协议
+- 一个 **Provider-Model** 表达 Provider 下共享的模型定义和公共元数据，不属于发现它的 Endpoint
+- 一个 **Account-Model** 表达具体 Account/key 对 Provider-Model 的可见性和人工启用状态
+- 一个 **Account-Endpoint-Model** 表达具体三元组合的连通性、冷却和错误状态
+- 运行时调度候选由 Provider、Endpoint、Account 和 Model 动态组合，不把该组合反写为凭证绑定
+
+## API Key / Protocol Boundary
+
+Provider 的 API Key 不和协议绑定。协议属于 **Endpoint**：它描述请求应该按
+OpenAI-compatible、Anthropic 等哪种上游接口构造；API Key 属于 **Account**：它
+描述同一 Provider 下的一份凭证、额度、状态和模型可用性。
+
+路由时入站协议只是软偏好：同协议 Endpoint 优先；没有同协议候选但存在已实现且
+语义兼容的 adapter 时，可以走转换路径。不能转换、模型不可用或凭证不可用时，应
+返回明确错误，而不是要求用户为同一份 key 选择一个“绑定协议”。
 
 **Provider** 只保留 `enabled` 作为人工总开关，不维护动态调度状态。连接健康属于
-**Endpoint**，凭证问题属于 **Account**，模型请求错误属于对应 **Account-Model**。
+**Endpoint**，凭证问题属于 **Account**，模型目录权限属于 **Account-Model**，
+具体协议组合的模型请求错误属于 **Account-Endpoint-Model**。
 
-模型目录和模型运行态始终归因到 **Account-Model**。不同 API Key 可能来自不同
-订阅 tier、组织、余额或模型白名单，因此不能假设同一 Provider 下的模型列表共享。
-每个 Account 需要分别同步模型，路由时只使用该 Account 同步得到且仍可调度的模型。
+模型公共定义归因到 **Provider-Model**。不同 API Key 可能来自不同订阅 tier、组织、
+余额或模型白名单，因此每个 Account 仍使用 Provider 的 Model Catalog 分别同步；
+同步时复用同一份 Provider-Model 定义，只建立各自的 Account-Model 关联。
+
+OpenAI/Anthropic Endpoint 默认共享 Provider 模型目录。目录中出现某个模型不代表该
+模型必然支持所有协议。具体组合通过 Admin 手动测试或实际请求懒验证；成功或失败只
+更新对应 Account-Endpoint-Model，不污染同一模型的其它 Endpoint。模型发现不批量
+创建三元组合记录。
 状态机实现见 `src/runtime/runtimeStatus.ts` 和 `src/runtime/runtimeStatusService.ts`。
+
+## Connectivity Test Boundary
+
+“测试模型”是一次指定 Account、Model 和 Endpoint 的真实最小请求，不是模型发现。
+
+- Account 决定使用哪个 key。
+- Model 必须存在于该 Account 的 Account-Model 可见集合。
+- Endpoint 由用户独立选择，不从 Account 或 Model 绑定关系推断。
+- 缺少 Account-Endpoint-Model 记录表示 `unknown`，不能阻止测试。
+- 测试成功后创建或更新该三元组合为可用。
+- 测试失败后只更新该三元组合的错误、冷却或不可用状态。
+- 手动“清除状态”恢复为 `unknown`；不能直接伪造为“可用”。
+- 只有真实测试或实际请求成功才能把组合标记为可用。
 
 ## Request Boundary
 
@@ -63,6 +104,12 @@ header。
 > **Dev:** “我想直接给 provider 配 `base_url` 和 `api_key`，可以吗？”
 > **Domain expert:** “可以，但那只是本地配置输入形式；运行时仍然会把凭证归一化成 **Account**。”
 
+> **Dev:** “测试模型时，Endpoint 要跟着 API Key 联动吗？”
+> **Domain expert:** “不要。Key 属于 Account，Endpoint 独立选择；测试结果记录到 Account-Endpoint-Model。”
+
+> **Dev:** “冷却中的组合可以手动改成可用吗？”
+> **Domain expert:** “不能伪造成功。可以重新测试，或清除状态回到 `unknown`，让后续请求重新验证。”
+
 > **Dev:** “客户端传来的 `metadata` 要不要原样给上游？”
 > **Domain expert:** “不要。`metadata` 是 AutoRouter 内部语义；需要给上游的内容放到 `upstream_metadata`。”
 
@@ -72,8 +119,16 @@ header。
 ## Flagged ambiguities
 
 - “provider 配 apiKey” 容易和内部 **Account** 概念混淆；已解决：本地配置允许直写 `api_key`，但运行时概念仍是 **Account**。
+- “API Key 绑定协议”是错误边界；已解决：Provider Account 不保存 Endpoint /
+  protocol 绑定，协议只在 Endpoint 层表达。
+- “三元组合状态”等同于“Account 绑定 Endpoint”是错误边界；已解决：
+  Account-Endpoint-Model 只保存实测状态，缺记录为 `unknown`。
+- “模型发现成功”等同于“所有协议都能调用”是错误推断；已解决：
+  Model Catalog 只建立 Provider-Model 和 Account-Model，协议兼容性由手动测试或
+  实际请求懒验证。
 - “模型不可用”等同于“Key 不可用”是错误归因；HTTP `408/5xx`、`429`、`404/410`
-  默认只改变对应模型作用域，只有连接层故障、鉴权和账单问题才改变 **Account**。
+  默认只改变对应 Account-Endpoint-Model，只有连接层故障、鉴权和账单问题才改变
+  **Endpoint** 或 **Account**。
 - “metadata 透传”等同于“用户原始字段透传”是错误边界；已解决：
   `metadata` 归 AutoRouter 内部消费，`upstream_metadata` 才表达上游 body
   `metadata`。

@@ -93,7 +93,6 @@ function createHarness(
   if (options.secondAccount) {
     managedProviders.createAccount("demo", {
       accountKey: "key-b",
-      endpointKey: "openai",
       encryptedApiKey: secretCipher.encrypt("secret-b"),
       apiKeyHint: "...et-b"
     });

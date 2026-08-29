@@ -759,7 +759,6 @@ export function runMigrations(sqlite: Database.Database) {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         provider_id INTEGER NOT NULL,
         account_key TEXT NOT NULL DEFAULT 'default',
-        endpoint_id INTEGER,
         enabled INTEGER NOT NULL DEFAULT 1,
         runtime_status TEXT NOT NULL DEFAULT 'normal',
         status_reason TEXT,
@@ -786,7 +785,6 @@ export function runMigrations(sqlite: Database.Database) {
         id,
         provider_id,
         account_key,
-        endpoint_id,
         enabled,
         runtime_status,
         status_reason,
@@ -804,15 +802,6 @@ export function runMigrations(sqlite: Database.Database) {
         credentials.id,
         credentials.provider_id,
         'default',
-        (
-          SELECT endpoints.id
-          FROM managed_provider_endpoints AS endpoints
-          WHERE endpoints.provider_id = credentials.provider_id
-          ORDER BY
-            CASE WHEN endpoints.endpoint_key = 'default' THEN 0 ELSE 1 END,
-            endpoints.id ASC
-          LIMIT 1
-        ),
         1,
         CASE
           WHEN providers.runtime_status = 'disabled'
@@ -871,7 +860,6 @@ export function runMigrations(sqlite: Database.Database) {
     `);
   } else {
     const credentialColumnDefinitions: Array<{ name: string; sql: string }> = [
-      { name: "endpoint_id", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN endpoint_id INTEGER;" },
       { name: "enabled", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;" },
       { name: "runtime_status", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN runtime_status TEXT NOT NULL DEFAULT 'normal';" },
       { name: "status_reason", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN status_reason TEXT;" },
@@ -908,6 +896,92 @@ export function runMigrations(sqlite: Database.Database) {
     sqlite.exec(
       "ALTER TABLE managed_provider_credentials ADD COLUMN cooldown_strike INTEGER NOT NULL DEFAULT 0;"
     );
+  }
+
+  const credentialColumnsAfterCooldown = sqlite.pragma(
+    "table_info(managed_provider_credentials)"
+  ) as Array<{ name: string }>;
+  if (credentialColumnsAfterCooldown.some((column) => column.name === "endpoint_id")) {
+    sqlite.exec(`
+      CREATE TABLE managed_provider_credentials_v3 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider_id INTEGER NOT NULL,
+        account_key TEXT NOT NULL DEFAULT 'default',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        runtime_status TEXT NOT NULL DEFAULT 'normal',
+        status_reason TEXT,
+        status_message TEXT,
+        status_source TEXT NOT NULL DEFAULT 'system',
+        status_updated_at TEXT,
+        status_cooldown_until TEXT,
+        cooldown_strike INTEGER NOT NULL DEFAULT 0,
+        recent_error_count INTEGER NOT NULL DEFAULT 0,
+        expires_at TEXT,
+        quota_json TEXT,
+        remark TEXT,
+        last_error_at TEXT,
+        last_error_code TEXT,
+        last_error_message TEXT,
+        api_key_encrypted TEXT NOT NULL,
+        key_hint TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (provider_id) REFERENCES managed_providers(id) ON DELETE CASCADE,
+        UNIQUE (provider_id, account_key)
+      );
+
+      INSERT INTO managed_provider_credentials_v3 (
+        id,
+        provider_id,
+        account_key,
+        enabled,
+        runtime_status,
+        status_reason,
+        status_message,
+        status_source,
+        status_updated_at,
+        status_cooldown_until,
+        cooldown_strike,
+        recent_error_count,
+        expires_at,
+        quota_json,
+        remark,
+        last_error_at,
+        last_error_code,
+        last_error_message,
+        api_key_encrypted,
+        key_hint,
+        created_at,
+        updated_at
+      )
+      SELECT
+        id,
+        provider_id,
+        account_key,
+        enabled,
+        runtime_status,
+        status_reason,
+        status_message,
+        status_source,
+        status_updated_at,
+        status_cooldown_until,
+        cooldown_strike,
+        recent_error_count,
+        expires_at,
+        quota_json,
+        remark,
+        last_error_at,
+        last_error_code,
+        last_error_message,
+        api_key_encrypted,
+        key_hint,
+        created_at,
+        updated_at
+      FROM managed_provider_credentials;
+
+      DROP TABLE managed_provider_credentials;
+      ALTER TABLE managed_provider_credentials_v3 RENAME TO managed_provider_credentials;
+    `);
   }
 
 
