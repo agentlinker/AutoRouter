@@ -12,6 +12,12 @@ _Avoid_: 平台, 厂商入口
 某个 **Provider** 暴露出来的具体协议接入面，通常绑定一个 `base_url`。
 _Avoid_: 平台, 站点
 
+**Endpoint Key**:
+Endpoint 在 Provider 内的只读稳定标识。当前每种协议最多一个 Endpoint，因此由服务端
+按协议自动生成：`openai` 或 `anthropic`；用户和客户端不负责填写。测试请求中的
+`endpoint_key` 只是引用这个既有标识，不是另一套配置。
+_Avoid_: User-defined endpoint name, Model endpoint ownership
+
 **Account**:
 AutoRouter 内部的凭证承载单元，用于表达访问某个 **Provider** 所需的认证信息。
 _Avoid_: 用户, 平台账号
@@ -33,6 +39,7 @@ _Avoid_: Account-Endpoint binding, Endpoint model ownership
 ## Relationships
 
 - 一个 **Provider** 可以拥有一个或多个 **Endpoint**
+- 每个 **Endpoint** 的 Endpoint Key 由服务端按协议生成并只读返回；协议变更属于 Endpoint 身份变更
 - 一个 **Provider** 可以拥有一个或多个 **Account**
 - 一个 **Account** 默认可用于该 Provider 下所有 **Endpoint**，不绑定协议
 - 一个 **Provider-Model** 表达 Provider 下共享的模型定义和公共元数据，不属于发现它的 Endpoint
@@ -70,7 +77,10 @@ OpenAI/Anthropic Endpoint 默认共享 Provider 模型目录。目录中出现�
 
 - Account 决定使用哪个 key。
 - Model 必须存在于该 Account 的 Account-Model 可见集合。
-- Endpoint 由用户独立选择，不从 Account 或 Model 绑定关系推断。
+- Endpoint 由用户独立选择；UI 从 Provider 的既有 Endpoint 下拉框取得
+  `endpoint_key` 并显式提交，不提供手工文本输入。
+- 测试 API 的 `endpoint_key` 必填。后端不从 Account、Model、第一个 enabled
+  Endpoint 或第一个 Endpoint 推断。
 - 缺少 Account-Endpoint-Model 记录表示 `unknown`，不能阻止测试。
 - 测试成功后创建或更新该三元组合为可用。
 - 测试失败后只更新该三元组合的错误、冷却或不可用状态。
@@ -121,6 +131,8 @@ header。
 - “provider 配 apiKey” 容易和内部 **Account** 概念混淆；已解决：本地配置允许直写 `api_key`，但运行时概念仍是 **Account**。
 - “API Key 绑定协议”是错误边界；已解决：Provider Account 不保存 Endpoint /
   protocol 绑定，协议只在 Endpoint 层表达。
+- “测试请求填写 Endpoint Key”等同于“用户自定义 Endpoint Key”是错误理解；已解决：
+  Endpoint Key 由服务端按协议生成，测试 UI 只选择并提交既有值，后端不做缺省推断。
 - “三元组合状态”等同于“Account 绑定 Endpoint”是错误边界；已解决：
   Account-Endpoint-Model 只保存实测状态，缺记录为 `unknown`。
 - “模型发现成功”等同于“所有协议都能调用”是错误推断；已解决：
