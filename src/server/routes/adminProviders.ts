@@ -214,6 +214,7 @@ const patchAccountBodySchema = z.object({
 }).strict();
 
 const mergeCheckBodySchema = z.object({
+  provider_key: providerKeySchema.optional(),
   protocol: protocolSchema,
   base_url: urlInputSchema
 }).strict();
@@ -758,8 +759,17 @@ export async function registerAdminProvidersRoutes(
       protocol: body.protocol,
       baseUrl: body.base_url
     });
+    const keyConflict = body.provider_key
+      ? dependencies.repository.getProviderDetails(body.provider_key)
+      : null;
     return {
       normalized_base_url: normalizeBaseUrlForMerge(body.base_url),
+      key_conflict: keyConflict
+        ? {
+            provider_key: keyConflict.provider.providerKey,
+            display_name: keyConflict.provider.displayName
+          }
+        : null,
       matches: matches.map((item) => ({
         provider_key: item.provider.providerKey,
         display_name: item.provider.displayName,

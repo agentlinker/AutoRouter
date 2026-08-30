@@ -1235,8 +1235,12 @@ function ProviderFormPage(props: {
       protocol: string;
       base_url: string;
     }>;
+    keyConflict: {
+      provider_key: string;
+      display_name: string;
+    } | null;
     pendingValues: ProviderFormData | null;
-  }>({ open: false, matches: [], pendingValues: null });
+  }>({ open: false, matches: [], keyConflict: null, pendingValues: null });
 
   const form = useForm<ProviderFormData>({
     resolver: zodResolver(providerFormSchema),
@@ -1484,6 +1488,7 @@ function ProviderFormPage(props: {
     if (!options?.skipMergeCheck && normalized.endpoints[0]) {
       const first = normalized.endpoints[0];
       const merge = await mergeCheckProvider(props.token, {
+        provider_key: normalized.provider_key,
         protocol: first.protocol === "all" ? "openai" : first.protocol,
         base_url: first.base_url
       });
@@ -1491,9 +1496,20 @@ function ProviderFormPage(props: {
         setMergeDialog({
           open: true,
           matches: merge.matches,
+          keyConflict: merge.key_conflict,
           pendingValues: values
         });
         return null;
+      }
+      if (merge.key_conflict) {
+        const conflictMessage =
+          `Provider Key 已被 “${merge.key_conflict.display_name}” 使用`;
+        form.setError("provider_key", {
+          type: "manual",
+          message: `${conflictMessage}，当前 Base URL / 协议不同，不能合并`
+        });
+        form.setFocus("provider_key");
+        throw new Error(conflictMessage);
       }
     }
 
@@ -1529,7 +1545,7 @@ function ProviderFormPage(props: {
       if (!result) {
         return;
       }
-      setMergeDialog({ open: false, matches: [], pendingValues: null });
+      setMergeDialog({ open: false, matches: [], keyConflict: null, pendingValues: null });
       setMessage(result.latest_sync?.status === "error"
         ? {
             text: `Provider 已保存，但模型发现失败：${result.latest_sync.error_message ?? "请检查模型目录 URL"}`,
@@ -1590,7 +1606,7 @@ function ProviderFormPage(props: {
       });
     },
     onSuccess: () => {
-      setMergeDialog({ open: false, matches: [], pendingValues: null });
+      setMergeDialog({ open: false, matches: [], keyConflict: null, pendingValues: null });
       setMessage({ text: "已合并到已有 Provider 并添加 API Key", mode: "success" });
       props.onDone();
     },
@@ -1972,7 +1988,14 @@ function ProviderFormPage(props: {
         tone="info"
         title="检测到可合并的 Provider"
         confirmLabel="关闭"
-        onClose={() => setMergeDialog({ open: false, matches: [], pendingValues: null })}
+        onClose={() =>
+          setMergeDialog({
+            open: false,
+            matches: [],
+            keyConflict: null,
+            pendingValues: null
+          })
+        }
       >
         <p>
           已有 Provider “{mergeDialog.matches[0]?.display_name}” 使用了相同 base_url / 协议。
@@ -1983,6 +2006,12 @@ function ProviderFormPage(props: {
         <p className="muted">
           {mergeDialog.matches[0]?.endpoint_key}: {mergeDialog.matches[0]?.base_url}
         </p>
+        {mergeDialog.keyConflict ? (
+          <p className="status error">
+            Provider Key “{mergeDialog.keyConflict.provider_key}” 已被
+            “{mergeDialog.keyConflict.display_name}” 使用；如果不合并，需要先修改 Provider Key。
+          </p>
+        ) : null}
         <div className="form-actions" style={{ marginTop: 12 }}>
           <button
             className="primary-action"
@@ -1992,18 +2021,44 @@ function ProviderFormPage(props: {
           >
             合并并添加 API Key
           </button>
-          <button
-            className="ghost-action"
-            type="button"
-            disabled={forceCreateMutation.isPending || !mergeDialog.pendingValues}
-            onClick={() => {
-              if (mergeDialog.pendingValues) {
-                forceCreateMutation.mutate(mergeDialog.pendingValues);
-              }
-            }}
-          >
-            仍然新建
-          </button>
+          {mergeDialog.keyConflict ? (
+            <button
+              className="ghost-action"
+              type="button"
+              onClick={() => {
+                const conflict = mergeDialog.keyConflict;
+                if (!conflict) {
+                  return;
+                }
+                setMergeDialog({
+                  open: false,
+                  matches: [],
+                  keyConflict: null,
+                  pendingValues: null
+                });
+                form.setError("provider_key", {
+                  type: "manual",
+                  message: `Provider Key 已被 “${conflict.display_name}” 使用`
+                });
+                form.setFocus("provider_key");
+              }}
+            >
+              修改 Provider Key
+            </button>
+          ) : (
+            <button
+              className="ghost-action"
+              type="button"
+              disabled={forceCreateMutation.isPending || !mergeDialog.pendingValues}
+              onClick={() => {
+                if (mergeDialog.pendingValues) {
+                  forceCreateMutation.mutate(mergeDialog.pendingValues);
+                }
+              }}
+            >
+              仍然新建
+            </button>
+          )}
         </div>
       </AppDialog>
     </section>

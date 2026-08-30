@@ -271,11 +271,47 @@ describe("admin providers integration", () => {
         api_key: "second-secret"
       }
     });
+    const sameEndpointCheck = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers/merge-check",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        provider_key: "xiao-mi-mo-xing-fu-wu",
+        protocol: "openai",
+        base_url: "https://api.example.com/v1"
+      }
+    });
+    const differentEndpointCheck = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers/merge-check",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        provider_key: "xiao-mi-mo-xing-fu-wu",
+        protocol: "openai",
+        base_url: "https://other.example.com/v1"
+      }
+    });
 
     expect(firstResponse.statusCode).toBe(201);
     expect(firstResponse.json().provider_key).toBe("xiao-mi-mo-xing-fu-wu");
     expect(secondResponse.statusCode).toBe(409);
     expect(secondResponse.json().error.code).toBe("provider_key_conflict");
+    expect(sameEndpointCheck.statusCode).toBe(200);
+    expect(sameEndpointCheck.json().matches).toHaveLength(1);
+    expect(sameEndpointCheck.json().key_conflict).toEqual({
+      provider_key: "xiao-mi-mo-xing-fu-wu",
+      display_name: "小米模型服务"
+    });
+    expect(differentEndpointCheck.statusCode).toBe(200);
+    expect(differentEndpointCheck.json().matches).toEqual([]);
+    expect(differentEndpointCheck.json().key_conflict).toEqual({
+      provider_key: "xiao-mi-mo-xing-fu-wu",
+      display_name: "小米模型服务"
+    });
     expect(repository.getProviderDetails("xiao-mi-mo-xing-fu-wu")).not.toBeNull();
 
     await server.close();

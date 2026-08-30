@@ -394,9 +394,17 @@ export function listProviderTemplates(token: string): Promise<{
 
 export function mergeCheckProvider(
   token: string,
-  payload: { protocol: "openai" | "anthropic"; base_url: string }
+  payload: {
+    provider_key?: string;
+    protocol: "openai" | "anthropic";
+    base_url: string;
+  }
 ): Promise<{
   normalized_base_url: string;
+  key_conflict: {
+    provider_key: string;
+    display_name: string;
+  } | null;
   matches: Array<{
     provider_key: string;
     display_name: string;
