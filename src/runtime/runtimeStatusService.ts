@@ -446,7 +446,18 @@ export class RuntimeStatusService {
     };
     if (accountKey && endpointKey) {
       const accountId = `${providerKey}/${endpointKey}/${accountKey}`;
-      snapshot.modelStatuses[accountModelStatusKey(accountId, modelKey)] = entry;
+      const providerPrefix = `${providerKey}/`;
+      const providerModelId = modelKey.startsWith(providerPrefix)
+        ? modelKey.slice(providerPrefix.length)
+        : modelKey;
+      const modelAliases = new Set([
+        modelKey,
+        providerModelId,
+        `${providerKey}/${endpointKey}/${providerModelId}`
+      ]);
+      for (const modelAlias of modelAliases) {
+        snapshot.modelStatuses[accountModelStatusKey(accountId, modelAlias)] = entry;
+      }
       return;
     }
     snapshot.modelStatuses[`${providerKey}|${modelKey}`] = entry;
