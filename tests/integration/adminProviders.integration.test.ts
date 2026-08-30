@@ -673,8 +673,8 @@ describe("admin providers integration", () => {
       payload: {
         provider_key: "managed",
         display_name: "Managed Provider",
-        base_url: "https://managed.example.com/v1",
-        website_url: "https://managed.example.com",
+        base_url: "\n https://managed.example.com/v1\t",
+        website_url: "\u200Bhttps://managed.example.com \n",
         priority: 3,
         api_key: "managed-secret",
         accounts: [
@@ -864,8 +864,8 @@ describe("admin providers integration", () => {
       payload: {
         display_name: "Managed Provider Edited",
         priority: 8,
-        base_url: "https://managed.example.com/v2",
-        website_url: "https://managed.example.com/docs"
+        base_url: "\nhttps://managed.example.com/v2 \t",
+        website_url: "\u200B https://managed.example.com/docs\n"
       }
     });
 

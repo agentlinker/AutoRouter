@@ -111,18 +111,27 @@ const manualModelInputSchema = z.object({
   supports_json_mode: z.boolean().optional()
 }).strict();
 
+function normalizeUrlInput(value: string): string {
+  return value.replace(/[\s\u200B-\u200D\u2060\uFEFF]+/g, "");
+}
+
+const urlInputSchema = z.string().transform(normalizeUrlInput).pipe(z.string().url());
+const websiteUrlInputSchema = z.string()
+  .transform(normalizeUrlInput)
+  .pipe(z.string().url().or(z.literal("")));
+
 const createProviderBodySchema = z.object({
   provider_key: z.string().min(1).optional(),
   display_name: z.string().min(1),
   protocol: protocolInputSchema.optional(),
-  base_url: z.string().url().optional(),
+  base_url: urlInputSchema.optional(),
   endpoints: z.array(z.object({
     protocol: protocolInputSchema,
-    base_url: z.string().url(),
+    base_url: urlInputSchema,
     custom_headers: customHeadersSchema.optional(),
     enabled: z.boolean().optional()
   }).strict()).min(1).optional(),
-  website_url: z.string().url().optional().or(z.literal("")),
+  website_url: websiteUrlInputSchema.optional(),
   model_catalog_url: z.string().url().optional().nullable().or(z.literal("")),
   api_key: z.string().min(1),
   accounts: z.array(z.object({
@@ -147,14 +156,14 @@ const patchProviderBodySchema = z.object({
   display_name: z.string().min(1).optional(),
   priority: z.number().int().nonnegative().optional(),
   protocol: protocolInputSchema.optional(),
-  base_url: z.string().url().optional(),
+  base_url: urlInputSchema.optional(),
   endpoints: z.array(z.object({
     protocol: protocolInputSchema,
-    base_url: z.string().url(),
+    base_url: urlInputSchema,
     custom_headers: customHeadersSchema.optional(),
     enabled: z.boolean().optional()
   }).strict()).min(1).optional(),
-  website_url: z.string().url().optional().or(z.literal("")),
+  website_url: websiteUrlInputSchema.optional(),
   model_catalog_url: z.string().url().optional().nullable().or(z.literal("")),
   api_key: z.string().min(1).optional(),
   provider_kind: providerKindSchema.optional(),
@@ -201,12 +210,12 @@ const patchAccountBodySchema = z.object({
 
 const mergeCheckBodySchema = z.object({
   protocol: protocolSchema,
-  base_url: z.string().url()
+  base_url: urlInputSchema
 }).strict();
 
 const createEndpointBodySchema = z.object({
   protocol: protocolInputSchema,
-  base_url: z.string().url(),
+  base_url: urlInputSchema,
   custom_headers: customHeadersSchema.optional(),
   enabled: z.boolean().optional()
 }).strict();
@@ -238,7 +247,7 @@ interface NormalizedEndpointInput {
 
 const patchEndpointBodySchema = z.object({
   protocol: protocolSchema.optional(),
-  base_url: z.string().url().optional(),
+  base_url: urlInputSchema.optional(),
   custom_headers: customHeadersSchema.optional(),
   enabled: z.boolean().optional()
 }).strict();
