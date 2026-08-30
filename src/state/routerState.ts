@@ -43,6 +43,10 @@ export interface EndpointRuntimeState {
   base_url: string;
   custom_headers?: Record<string, string>;
   enabled: boolean;
+  runtime_status?: RuntimeStatus;
+  status_reason?: string | null;
+  status_message?: string | null;
+  status_cooldown_until?: string | null;
   capabilities: {
     streaming: boolean;
     tools: boolean;

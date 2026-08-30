@@ -13,6 +13,7 @@ describe("legacy logical name repair", () => {
   beforeEach(() => {
     sqlite = new Database(":memory:");
     runMigrations(sqlite);
+    sqlite.exec("ALTER TABLE managed_models ADD COLUMN endpoint_id INTEGER;");
   });
 
   afterEach(() => {
@@ -257,7 +258,7 @@ describe("legacy logical name repair", () => {
     expect(aliasesOf("deepseek-v4-pro")).toEqual(aliasesAfterFirst);
   });
 
-  it("leaves models without an endpoint binding untouched", () => {
+  it("repairs models that had no legacy endpoint binding", () => {
     const providerId = insertProvider("legacy-null-endpoint");
     const logicalId = insertLogical("deepseek-v-4-pro", "provider_derived");
     insertModel({

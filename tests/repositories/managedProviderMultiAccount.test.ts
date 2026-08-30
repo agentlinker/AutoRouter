@@ -231,7 +231,6 @@ describe("managed provider multi-account", () => {
     });
 
     repo.syncProviderModels("relay", {
-      endpointKey: "openai",
       accountKey: "key-b",
       status: "success",
       models: [
@@ -287,6 +286,86 @@ describe("managed provider multi-account", () => {
     const candidatesB = snapshot.modelCatalog.getCandidates("model-b");
     expect(candidatesB.every((item) => item.account.endsWith("/key-b"))).toBe(true);
     expect(candidatesB.some((item) => item.account.endsWith("/default"))).toBe(false);
+  });
+
+  it("keeps provider-level manual models visible across account creation and sync", () => {
+    const config = loadConfig({
+      override: {
+        database: { path: join(tempDir, "autorouter.db") },
+        trace: { directory: join(tempDir, "traces"), log_prompts: false },
+        routes: {},
+        providers: {},
+        endpoints: {},
+        accounts: {},
+        models: {},
+        policies: {}
+      }
+    });
+    const db = createDatabaseClient(config.database.path);
+    const repo = new ManagedProviderRepository(db.db);
+    const cipher = new SecretCipher(process.env.AUTO_ROUTER_MASTER_KEY);
+
+    repo.createProviderWithEndpointBundles({
+      provider: {
+        providerKey: "manual",
+        displayName: "Manual",
+        baseUrl: "https://manual.example.com/v1"
+      },
+      encryptedApiKey: cipher.encrypt("key-a"),
+      endpointBundles: [
+        {
+          endpoint: {
+            endpointKey: "openai",
+            protocol: "openai",
+            baseUrl: "https://manual.example.com/v1"
+          },
+          models: []
+        }
+      ]
+    });
+    repo.upsertManualModel("manual", {
+      model: {
+        modelKey: "manual/custom-model",
+        providerModelId: "custom-model",
+        modelName: "custom-model",
+        supportsStreaming: true,
+        supportsTools: false,
+        supportsJsonMode: false,
+        rawMetadataJson: JSON.stringify({ source: "manual" })
+      }
+    });
+
+    repo.createAccount("manual", {
+      accountKey: "backup",
+      encryptedApiKey: cipher.encrypt("key-b")
+    });
+    repo.syncProviderModels("manual", {
+      accountKey: "default",
+      status: "success",
+      models: [
+        {
+          modelKey: "manual/discovered-model",
+          providerModelId: "discovered-model",
+          modelName: "discovered-model",
+          supportsStreaming: true,
+          supportsTools: false,
+          supportsJsonMode: false
+        }
+      ]
+    });
+
+    const details = repo.getProviderDetails("manual");
+    const accountModels = new Map(
+      details?.accounts.map((account) => [
+        account.accountKey,
+        details.accountModels
+          .find((item) => item.accountId === account.id)
+          ?.models.map((model) => model.modelName)
+          .sort() ?? []
+      ])
+    );
+    expect(accountModels.get("default")).toEqual(["custom-model", "discovered-model"]);
+    expect(accountModels.get("backup")).toEqual(["custom-model"]);
   });
 
   it("elevates provider priority above the current maximum", () => {

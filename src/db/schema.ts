@@ -6,6 +6,7 @@ export const managedProvidersTable = sqliteTable("managed_providers", {
   displayName: text("display_name").notNull(),
   baseUrl: text("base_url").notNull(),
   websiteUrl: text("website_url"),
+  modelCatalogUrl: text("model_catalog_url"),
   providerKind: text("provider_kind").notNull().default("custom"),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
   runtimeStatus: text("runtime_status").notNull().default("normal"),
@@ -68,6 +69,17 @@ export const managedProviderEndpointsTable = sqliteTable("managed_provider_endpo
   supportsStreaming: integer("supports_streaming", { mode: "boolean" }).notNull().default(true),
   supportsTools: integer("supports_tools", { mode: "boolean" }).notNull().default(false),
   supportsJsonMode: integer("supports_json_mode", { mode: "boolean" }).notNull().default(false),
+  runtimeStatus: text("runtime_status").notNull().default("normal"),
+  statusReason: text("status_reason"),
+  statusMessage: text("status_message"),
+  statusSource: text("status_source").notNull().default("system"),
+  statusUpdatedAt: text("status_updated_at"),
+  statusCooldownUntil: text("status_cooldown_until"),
+  cooldownStrike: integer("cooldown_strike").notNull().default(0),
+  recentErrorCount: integer("recent_error_count").notNull().default(0),
+  lastErrorAt: text("last_error_at"),
+  lastErrorCode: text("last_error_code"),
+  lastErrorMessage: text("last_error_message"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull()
 }, (table) => ({
@@ -107,7 +119,6 @@ export const logicalModelsTable = sqliteTable("logical_models", {
 export const managedModelsTable = sqliteTable("managed_models", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   providerId: integer("provider_id").notNull(),
-  endpointId: integer("endpoint_id"),
   logicalModelId: integer("logical_model_id"),
   modelKey: text("model_key").notNull(),
   providerModelId: text("provider_model_id").notNull(),
@@ -177,9 +188,41 @@ export const managedAccountModelsTable = sqliteTable("managed_account_models", {
   )
 }));
 
+export const managedAccountEndpointModelsTable = sqliteTable("managed_account_endpoint_models", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  accountId: integer("account_id").notNull(),
+  endpointId: integer("endpoint_id").notNull(),
+  managedModelId: integer("managed_model_id").notNull(),
+  runtimeStatus: text("runtime_status").notNull().default("normal"),
+  statusReason: text("status_reason"),
+  statusMessage: text("status_message"),
+  statusSource: text("status_source").notNull().default("system"),
+  statusUpdatedAt: text("status_updated_at"),
+  statusCooldownUntil: text("status_cooldown_until"),
+  rateLimitStrike: integer("rate_limit_strike").notNull().default(0),
+  cooldownStrike: integer("cooldown_strike").notNull().default(0),
+  recentErrorCount: integer("recent_error_count").notNull().default(0),
+  lastSuccessAt: text("last_success_at"),
+  lastErrorAt: text("last_error_at"),
+  lastErrorCode: text("last_error_code"),
+  lastErrorMessage: text("last_error_message"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+}, (table) => ({
+  accountEndpointModelUnique: uniqueIndex(
+    "managed_account_endpoint_models_account_endpoint_model_unique"
+  ).on(
+    table.accountId,
+    table.endpointId,
+    table.managedModelId
+  )
+}));
+
 export const modelSyncRunsTable = sqliteTable("model_sync_runs", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   providerId: integer("provider_id").notNull(),
+  accountId: integer("account_id"),
+  catalogUrl: text("catalog_url"),
   status: text("status").notNull(),
   errorMessage: text("error_message"),
   startedAt: text("started_at").notNull(),
@@ -247,6 +290,7 @@ export const schema = {
   logicalModelsTable,
   managedModelsTable,
   managedAccountModelsTable,
+  managedAccountEndpointModelsTable,
   modelSyncRunsTable,
   appSettingsTable,
   routeTracesTable
@@ -258,6 +302,7 @@ export type ManagedProviderEndpointRow = typeof managedProviderEndpointsTable.$i
 export type LogicalModelRow = typeof logicalModelsTable.$inferSelect;
 export type ManagedModelRow = typeof managedModelsTable.$inferSelect;
 export type ManagedAccountModelRow = typeof managedAccountModelsTable.$inferSelect;
+export type ManagedAccountEndpointModelRow = typeof managedAccountEndpointModelsTable.$inferSelect;
 export type ModelSyncRunRow = typeof modelSyncRunsTable.$inferSelect;
 export type RouteTraceRow = typeof routeTracesTable.$inferSelect;
 

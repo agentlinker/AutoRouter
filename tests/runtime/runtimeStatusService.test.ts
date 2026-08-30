@@ -120,7 +120,8 @@ describe("RuntimeStatusService", () => {
       snapshot: harness.runtimeManager.getSnapshot(),
       providerKey: "demo",
       modelKey: "demo-model",
-      accountId: "demo/openai/default",
+      accountKey: "default",
+      endpointKey: "openai",
       error: new HttpError(401, "provider_auth_failed", "Invalid API key")
     });
 
@@ -141,17 +142,24 @@ describe("RuntimeStatusService", () => {
     expect(details?.accounts[0]?.statusMessage).toBeNull();
   });
 
-  it("persists model rate limits with backoff and recovers when model is enabled", () => {
+  it("persists combination rate limits and does not fake recovery when the provider model is enabled", () => {
     const harness = createHarness(tempDir);
 
     harness.service.recordFailure({
       snapshot: harness.runtimeManager.getSnapshot(),
       providerKey: "demo",
       modelKey: "demo-model",
+      accountKey: "default",
+      endpointKey: "openai",
       error: new HttpError(429, "provider_rate_limited", "Too many requests")
     });
 
-    let model = harness.managedProviders.getAccountModel("demo", "default", "demo-model");
+    let model = harness.managedProviders.getAccountEndpointModel(
+      "demo",
+      "default",
+      "openai",
+      "demo-model"
+    );
     expect(model?.runtimeStatus).toBe("rate_limited");
     expect(model?.rateLimitStrike).toBe(1);
     expect(model?.statusCooldownUntil).toBeTruthy();
@@ -162,9 +170,14 @@ describe("RuntimeStatusService", () => {
     ).toBe("rate_limited");
 
     harness.managedProviders.setModelEnabled("demo", "demo-model", true);
-    model = harness.managedProviders.getAccountModel("demo", "default", "demo-model");
-    expect(model?.runtimeStatus).toBe("normal");
-    expect(model?.rateLimitStrike).toBe(0);
+    model = harness.managedProviders.getAccountEndpointModel(
+      "demo",
+      "default",
+      "openai",
+      "demo-model"
+    );
+    expect(model?.runtimeStatus).toBe("rate_limited");
+    expect(model?.rateLimitStrike).toBe(1);
   });
 
   it("keeps repeated upstream 5xx scoped to the account-model", () => {
@@ -176,11 +189,18 @@ describe("RuntimeStatusService", () => {
         snapshot: harness.runtimeManager.getSnapshot(),
         providerKey: "demo",
         modelKey: "demo-model",
+        accountKey: "default",
+        endpointKey: "openai",
         error: new HttpError(500, "provider_error", "Upstream failed")
       });
     }
 
-    const model = harness.managedProviders.getAccountModel("demo", "default", "demo-model");
+    const model = harness.managedProviders.getAccountEndpointModel(
+      "demo",
+      "default",
+      "openai",
+      "demo-model"
+    );
     expect(model?.runtimeStatus).toBe("cooling_down");
     expect(model?.recentErrorCount).toBe(2);
     expect(model?.statusReason).toBe("upstream_error_cooldown");
@@ -188,5 +208,47 @@ describe("RuntimeStatusService", () => {
     expect(
       harness.managedProviders.getModelByProviderAndKey("demo", "demo-model")?.runtimeStatus
     ).toBe("normal");
+  });
+
+  it("does not fall back to provider-model status when the account cannot use the model", () => {
+    const harness = createHarness(tempDir);
+    harness.managedProviders.syncProviderModels("demo", {
+      accountKey: "default",
+      status: "success",
+      models: []
+    });
+
+    harness.service.recordFailure({
+      snapshot: harness.runtimeManager.getSnapshot(),
+      providerKey: "demo",
+      modelKey: "demo-model",
+      accountKey: "default",
+      endpointKey: "openai",
+      error: new HttpError(400, "request_invalid", "Rejected request")
+    });
+    harness.service.recordSuccess({
+      snapshot: harness.runtimeManager.getSnapshot(),
+      providerKey: "demo",
+      modelKey: "demo-model",
+      accountKey: "default",
+      endpointKey: "openai"
+    });
+
+    expect(
+      harness.managedProviders.getAccountEndpointModel(
+        "demo",
+        "default",
+        "openai",
+        "demo-model"
+      )
+    ).toBeNull();
+    expect(
+      harness.managedProviders.getModelByProviderAndKey("demo", "demo-model")
+    ).toMatchObject({
+      runtimeStatus: "normal",
+      lastErrorAt: null,
+      lastErrorCode: null,
+      lastErrorMessage: null
+    });
   });
 });

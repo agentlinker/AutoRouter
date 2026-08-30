@@ -385,6 +385,7 @@ export function runMigrations(sqlite: Database.Database) {
       display_name TEXT NOT NULL,
       base_url TEXT NOT NULL,
       website_url TEXT,
+      model_catalog_url TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       priority INTEGER NOT NULL DEFAULT 0,
       trust_level TEXT NOT NULL DEFAULT 'low',
@@ -416,6 +417,17 @@ export function runMigrations(sqlite: Database.Database) {
       supports_streaming INTEGER NOT NULL DEFAULT 1,
       supports_tools INTEGER NOT NULL DEFAULT 0,
       supports_json_mode INTEGER NOT NULL DEFAULT 0,
+      runtime_status TEXT NOT NULL DEFAULT 'normal',
+      status_reason TEXT,
+      status_message TEXT,
+      status_source TEXT NOT NULL DEFAULT 'system',
+      status_updated_at TEXT,
+      status_cooldown_until TEXT,
+      cooldown_strike INTEGER NOT NULL DEFAULT 0,
+      recent_error_count INTEGER NOT NULL DEFAULT 0,
+      last_error_at TEXT,
+      last_error_code TEXT,
+      last_error_message TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (provider_id) REFERENCES managed_providers(id) ON DELETE CASCADE,
@@ -446,12 +458,15 @@ export function runMigrations(sqlite: Database.Database) {
     CREATE TABLE IF NOT EXISTS model_sync_runs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       provider_id INTEGER NOT NULL,
+      account_id INTEGER,
+      catalog_url TEXT,
       status TEXT NOT NULL,
       error_message TEXT,
       started_at TEXT NOT NULL,
       finished_at TEXT,
       discovered_count INTEGER NOT NULL DEFAULT 0,
-      FOREIGN KEY (provider_id) REFERENCES managed_providers(id) ON DELETE CASCADE
+      FOREIGN KEY (provider_id) REFERENCES managed_providers(id) ON DELETE CASCADE,
+      FOREIGN KEY (account_id) REFERENCES managed_provider_credentials(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS route_traces (
@@ -507,6 +522,19 @@ export function runMigrations(sqlite: Database.Database) {
 
   if (!hasWebsiteUrl) {
     sqlite.exec("ALTER TABLE managed_providers ADD COLUMN website_url TEXT;");
+  }
+  if (!providerColumns.some((column) => column.name === "model_catalog_url")) {
+    sqlite.exec("ALTER TABLE managed_providers ADD COLUMN model_catalog_url TEXT;");
+  }
+
+  const modelSyncRunColumns = sqlite.pragma("table_info(model_sync_runs)") as Array<{
+    name: string;
+  }>;
+  if (!modelSyncRunColumns.some((column) => column.name === "account_id")) {
+    sqlite.exec("ALTER TABLE model_sync_runs ADD COLUMN account_id INTEGER;");
+  }
+  if (!modelSyncRunColumns.some((column) => column.name === "catalog_url")) {
+    sqlite.exec("ALTER TABLE model_sync_runs ADD COLUMN catalog_url TEXT;");
   }
 
   const modelColumns = sqlite.pragma("table_info(managed_models)") as Array<{
@@ -587,6 +615,24 @@ export function runMigrations(sqlite: Database.Database) {
 
   if (!endpointColumns.some((column) => column.name === "protocol_bundle_key")) {
     sqlite.exec("ALTER TABLE managed_provider_endpoints ADD COLUMN protocol_bundle_key TEXT;");
+  }
+  const endpointRuntimeDefinitions: Array<{ name: string; sql: string }> = [
+    { name: "runtime_status", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN runtime_status TEXT NOT NULL DEFAULT 'normal';" },
+    { name: "status_reason", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN status_reason TEXT;" },
+    { name: "status_message", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN status_message TEXT;" },
+    { name: "status_source", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN status_source TEXT NOT NULL DEFAULT 'system';" },
+    { name: "status_updated_at", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN status_updated_at TEXT;" },
+    { name: "status_cooldown_until", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN status_cooldown_until TEXT;" },
+    { name: "cooldown_strike", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN cooldown_strike INTEGER NOT NULL DEFAULT 0;" },
+    { name: "recent_error_count", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN recent_error_count INTEGER NOT NULL DEFAULT 0;" },
+    { name: "last_error_at", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN last_error_at TEXT;" },
+    { name: "last_error_code", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN last_error_code TEXT;" },
+    { name: "last_error_message", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN last_error_message TEXT;" }
+  ];
+  for (const definition of endpointRuntimeDefinitions) {
+    if (!endpointColumns.some((column) => column.name === definition.name)) {
+      sqlite.exec(definition.sql);
+    }
   }
 
   backfillProtocolBundles(sqlite);
@@ -1057,6 +1103,34 @@ export function runMigrations(sqlite: Database.Database) {
     }
   }
 
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS managed_account_endpoint_models (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id INTEGER NOT NULL,
+      endpoint_id INTEGER NOT NULL,
+      managed_model_id INTEGER NOT NULL,
+      runtime_status TEXT NOT NULL DEFAULT 'normal',
+      status_reason TEXT,
+      status_message TEXT,
+      status_source TEXT NOT NULL DEFAULT 'system',
+      status_updated_at TEXT,
+      status_cooldown_until TEXT,
+      rate_limit_strike INTEGER NOT NULL DEFAULT 0,
+      cooldown_strike INTEGER NOT NULL DEFAULT 0,
+      recent_error_count INTEGER NOT NULL DEFAULT 0,
+      last_success_at TEXT,
+      last_error_at TEXT,
+      last_error_code TEXT,
+      last_error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (account_id) REFERENCES managed_provider_credentials(id) ON DELETE CASCADE,
+      FOREIGN KEY (endpoint_id) REFERENCES managed_provider_endpoints(id) ON DELETE CASCADE,
+      FOREIGN KEY (managed_model_id) REFERENCES managed_models(id) ON DELETE CASCADE,
+      UNIQUE (account_id, endpoint_id, managed_model_id)
+    );
+  `);
+
   const legacyProviderColumns = sqlite.pragma("table_info(managed_providers)") as Array<{
     name: string;
   }>;
@@ -1115,6 +1189,89 @@ export function runMigrations(sqlite: Database.Database) {
     INNER JOIN managed_models AS models
       ON models.provider_id = providers.id
     WHERE credentials.account_key = 'default';
+  `);
+
+  // Historical managed-model runtime state was scoped by endpoint_id. Preserve only
+  // actual error/cooldown observations, then clear the provider-wide copy.
+  sqlite.exec(`
+    INSERT OR IGNORE INTO managed_account_endpoint_models (
+      account_id,
+      endpoint_id,
+      managed_model_id,
+      runtime_status,
+      status_reason,
+      status_message,
+      status_source,
+      status_updated_at,
+      status_cooldown_until,
+      rate_limit_strike,
+      cooldown_strike,
+      recent_error_count,
+      last_error_at,
+      last_error_code,
+      last_error_message,
+      created_at,
+      updated_at
+    )
+    SELECT
+      account_models.account_id,
+      models.endpoint_id,
+      models.id,
+      models.runtime_status,
+      models.status_reason,
+      models.status_message,
+      models.status_source,
+      models.status_updated_at,
+      models.status_cooldown_until,
+      models.rate_limit_strike,
+      models.cooldown_strike,
+      models.recent_error_count,
+      models.last_error_at,
+      models.last_error_code,
+      models.last_error_message,
+      COALESCE(
+        models.status_updated_at,
+        models.last_error_at,
+        models.updated_at,
+        models.discovered_at
+      ),
+      COALESCE(
+        models.status_updated_at,
+        models.last_error_at,
+        models.updated_at,
+        models.discovered_at
+      )
+    FROM managed_models AS models
+    INNER JOIN managed_provider_endpoints AS endpoints
+      ON endpoints.id = models.endpoint_id
+    INNER JOIN managed_account_models AS account_models
+      ON account_models.managed_model_id = models.id
+      AND account_models.enabled = 1
+    WHERE models.endpoint_id IS NOT NULL
+      AND (
+        models.runtime_status != 'normal'
+        OR models.status_reason IS NOT NULL
+        OR models.status_message IS NOT NULL
+        OR models.status_updated_at IS NOT NULL
+        OR models.status_cooldown_until IS NOT NULL
+        OR models.last_error_at IS NOT NULL
+      );
+
+    UPDATE managed_models
+    SET
+      runtime_status = 'normal',
+      status_reason = NULL,
+      status_message = NULL,
+      status_source = 'system',
+      status_updated_at = NULL,
+      status_cooldown_until = NULL,
+      rate_limit_strike = 0,
+      cooldown_strike = 0,
+      recent_error_count = 0,
+      last_error_at = NULL,
+      last_error_code = NULL,
+      last_error_message = NULL
+    WHERE endpoint_id IS NOT NULL;
   `);
 
   // Backfill logical models from provider model ids and bind all managed rows to canonical logical rows.
@@ -1379,4 +1536,12 @@ export function runMigrations(sqlite: Database.Database) {
 
   // 放在最后：上面的 canonical 合并会把各来源 alias 并起来，清理必须在并完之后。
   stripSyntheticAliasPrefixes(sqlite, now);
+
+  const finalModelColumns = sqlite.pragma("table_info(managed_models)") as Array<{
+    name: string;
+  }>;
+  if (finalModelColumns.some((column) => column.name === "endpoint_id")) {
+    backupDatabase(sqlite, "managed-model-endpoint-column");
+    sqlite.exec("ALTER TABLE managed_models DROP COLUMN endpoint_id;");
+  }
 }

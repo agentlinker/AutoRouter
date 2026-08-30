@@ -196,10 +196,7 @@ export class RuntimeConfigProjector {
           ? logicalModels.get(model.logicalModelId) ?? null
           : null;
         const effective = resolveEffectiveModelMetadata(model, logical);
-        const modelKey =
-          model.endpointId === bundle.endpoint.id || model.endpointId === null
-            ? model.modelKey
-            : `${providerId}/${bundle.endpoint.endpointKey}/${model.providerModelId}`;
+        const modelKey = `${providerId}/${bundle.endpoint.endpointKey}/${model.providerModelId}`;
 
         allowedModels.push(modelKey);
         mergedConfig.models[modelKey] = {
@@ -259,6 +256,17 @@ export class RuntimeConfigProjector {
     for (const bundle of managedBundles) {
       const accountKey = bundle.credential.accountKey || "default";
       const accountId = `${bundle.provider.providerKey}/${bundle.endpoint.endpointKey}/${accountKey}`;
+      const endpointId = `${bundle.provider.providerKey}/${bundle.endpoint.endpointKey}`;
+      const endpoint = registry.endpoints.find((item) => item.id === endpointId);
+      if (endpoint) {
+        endpoint.runtime_status = isRuntimeStatusValue(bundle.endpoint.runtimeStatus)
+          ? bundle.endpoint.runtimeStatus
+          : "normal";
+        endpoint.status_reason = bundle.endpoint.statusReason;
+        endpoint.status_message = bundle.endpoint.statusMessage;
+        endpoint.status_cooldown_until = bundle.endpoint.statusCooldownUntil;
+        endpoint.recent_error_count = bundle.endpoint.recentErrorCount ?? 0;
+      }
       const account = registry.accounts.find((item) => item.id === accountId);
       if (account) {
         account.provider_key = bundle.provider.providerKey;
@@ -324,15 +332,14 @@ export class RuntimeConfigProjector {
         modelStatuses[`${bundle.provider.providerKey}|${model.modelKey}`] = statusEntry;
         // Also index by projected config model id for routeEngine lookups.
         const configModelId =
-          model.endpointId === bundle.endpoint.id || model.endpointId === null
-            ? model.modelKey
-            : `${bundle.provider.providerKey}/${bundle.endpoint.endpointKey}/${model.providerModelId}`;
+          `${bundle.provider.providerKey}/${bundle.endpoint.endpointKey}/${model.providerModelId}`;
         modelStatuses[configModelId] = statusEntry;
         modelStatuses[`${bundle.provider.providerKey}|${configModelId}`] = statusEntry;
 
-        const accountModel = this.options.managedProviderRepository.getAccountModel(
+        const accountModel = this.options.managedProviderRepository.getAccountEndpointModel(
           bundle.provider.providerKey,
           accountKey,
+          bundle.endpoint.endpointKey,
           model.modelKey
         );
         if (accountModel) {

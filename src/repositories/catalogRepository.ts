@@ -26,7 +26,7 @@ function nowIso(): string {
 export interface CatalogModelInstance {
   model: ManagedModelRow;
   provider: ManagedProviderRow;
-  endpoint: ManagedProviderEndpointRow | null;
+  endpoints: ManagedProviderEndpointRow[];
   available_accounts: string[];
   available_account_count: number;
 }
@@ -312,9 +312,12 @@ export class CatalogRepository {
     const providers = new Map(
       this.db.select().from(managedProvidersTable).all().map((provider) => [provider.id, provider])
     );
-    const endpoints = new Map(
-      this.db.select().from(managedProviderEndpointsTable).all().map((endpoint) => [endpoint.id, endpoint])
-    );
+    const endpointsByProvider = new Map<number, ManagedProviderEndpointRow[]>();
+    for (const endpoint of this.db.select().from(managedProviderEndpointsTable).all()) {
+      const list = endpointsByProvider.get(endpoint.providerId) ?? [];
+      list.push(endpoint);
+      endpointsByProvider.set(endpoint.providerId, list);
+    }
     const accountsByProvider = new Map<number, Array<{ id: number; accountKey: string; enabled: boolean }>>();
     for (const account of this.db.select().from(managedProviderCredentialsTable).all()) {
       const list = accountsByProvider.get(account.providerId) ?? [];
@@ -350,7 +353,7 @@ export class CatalogRepository {
       return [{
         model,
         provider,
-        endpoint: model.endpointId ? endpoints.get(model.endpointId) ?? null : null,
+        endpoints: endpointsByProvider.get(provider.id) ?? [],
         available_accounts: availableAccounts,
         available_account_count: availableAccounts.length
       }];

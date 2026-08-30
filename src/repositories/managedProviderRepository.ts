@@ -2,6 +2,7 @@ import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 
 import {
+  managedAccountEndpointModelsTable,
   logicalModelsTable,
   managedAccountModelsTable,
   managedModelsTable,
@@ -9,6 +10,7 @@ import {
   managedProviderEndpointsTable,
   managedProvidersTable,
   modelSyncRunsTable,
+  type ManagedAccountEndpointModelRow,
   type ManagedAccountModelRow,
   type ManagedCredentialRow,
   type ManagedModelRow,
@@ -27,6 +29,7 @@ export interface ManagedProviderInput {
   protocol?: "openai" | "anthropic";
   baseUrl: string;
   websiteUrl?: string | null;
+  modelCatalogUrl?: string | null;
   providerKind?: ProviderKind;
   enabled?: boolean;
   priority?: number;
@@ -79,6 +82,13 @@ export interface ManagedEndpointBundleInput {
   models: ManagedDiscoveredModelInput[];
 }
 
+export interface ManagedInitialModelSync {
+  status: "success" | "error";
+  catalogUrl?: string | null;
+  errorMessage?: string | null;
+  discoveredCount: number;
+}
+
 export interface ManagedDiscoveredModelInput {
   modelKey: string;
   providerModelId: string;
@@ -93,9 +103,8 @@ export interface ManagedDiscoveredModelInput {
 
 export interface ManagedProviderUpdateInput {
   displayName?: string;
-  protocol?: "openai" | "anthropic";
-  baseUrl?: string;
   websiteUrl?: string | null;
+  modelCatalogUrl?: string | null;
   providerKind?: ProviderKind;
   enabled?: boolean;
   priority?: number;
@@ -106,6 +115,18 @@ function normalizeProviderPriority(priority: number | undefined): number | undef
     return undefined;
   }
   return Math.trunc(priority);
+}
+
+function isManualModel(model: Pick<ManagedModelRow, "rawMetadataJson">): boolean {
+  if (!model.rawMetadataJson) {
+    return false;
+  }
+  try {
+    const metadata = JSON.parse(model.rawMetadataJson) as { source?: unknown };
+    return metadata.source === "manual";
+  } catch {
+    return false;
+  }
 }
 
 export interface ManagedEndpointUpdateInput {
@@ -136,6 +157,7 @@ export interface ManagedProviderDetails {
     accountId: number;
     models: ManagedModelRow[];
   }>;
+  accountEndpointModels: ManagedAccountEndpointModelRow[];
   endpoints: ManagedProviderEndpointRow[];
   models: ManagedModelRow[];
   latestSync: ModelSyncRunRow | null;
@@ -298,7 +320,6 @@ export class ManagedProviderRepository {
   private buildManagedModelInsert(input: {
     db: Db;
     providerId: number;
-    endpointId: number | null;
     model: ManagedDiscoveredModelInput;
     now: string;
     preserved?: Partial<ModelPreservedFields>;
@@ -323,7 +344,6 @@ export class ManagedProviderRepository {
 
     return {
       providerId: input.providerId,
-      endpointId: input.endpointId,
       logicalModelId: logical.id,
       modelKey: input.model.modelKey,
       providerModelId: input.model.providerModelId,
@@ -426,21 +446,8 @@ export class ManagedProviderRepository {
     db: Db,
     accountId: number,
     modelIds: number[],
-    now: string,
-    options?: { replaceEndpointModelIds?: number[] }
+    now: string
   ) {
-    if (options?.replaceEndpointModelIds) {
-      for (const managedModelId of options.replaceEndpointModelIds) {
-        db.update(managedAccountModelsTable)
-          .set({ enabled: false })
-          .where(and(
-            eq(managedAccountModelsTable.accountId, accountId),
-            eq(managedAccountModelsTable.managedModelId, managedModelId)
-          ))
-          .run();
-      }
-    }
-
     for (const managedModelId of modelIds) {
       const existing = db.select().from(managedAccountModelsTable)
         .where(and(
@@ -560,16 +567,6 @@ export class ManagedProviderRepository {
           INNER JOIN managed_models AS model
             ON model.provider_id = ${managedProvidersTable.id}
            AND model.enabled = 1
-           AND (
-             model.endpoint_id = endpoint.id
-             OR NOT EXISTS (
-               SELECT 1
-               FROM managed_models AS endpoint_model
-               WHERE endpoint_model.provider_id = ${managedProvidersTable.id}
-                 AND endpoint_model.endpoint_id = endpoint.id
-                 AND endpoint_model.enabled = 1
-             )
-           )
           WHERE endpoint.provider_id = ${managedProvidersTable.id}
             AND endpoint.enabled = 1
             AND (account.expires_at IS NULL OR account.expires_at > ${nowValue})
@@ -624,6 +621,26 @@ export class ManagedProviderRepository {
                     OR (
                       account_model.status_cooldown_until IS NOT NULL
                       AND account_model.status_cooldown_until > ${nowValue}
+                    )
+                  )
+                )
+            )
+            AND NOT EXISTS (
+              SELECT 1
+              FROM managed_account_endpoint_models AS observation
+              WHERE observation.account_id = account.id
+                AND observation.endpoint_id = endpoint.id
+                AND observation.managed_model_id = model.id
+                AND (
+                  observation.runtime_status IN ('disabled', 'abnormal')
+                  OR (
+                    observation.runtime_status IN ('cooling_down', 'rate_limited')
+                    AND (
+                      coalesce(observation.status_reason, '') GLOB '*_permanent'
+                      OR (
+                        observation.status_cooldown_until IS NOT NULL
+                        AND observation.status_cooldown_until > ${nowValue}
+                      )
                     )
                   )
                 )
@@ -703,7 +720,27 @@ export class ManagedProviderRepository {
       .limit(1)
       .get() ?? null;
 
-    return { provider, credential, accounts, accountModels, endpoints, models, latestSync };
+    const accountIds = new Set(accounts.map((account) => account.id));
+    const endpointIds = new Set(endpoints.map((endpoint) => endpoint.id));
+    const modelIds = new Set(models.map((model) => model.id));
+    const accountEndpointModels = this.db.select().from(managedAccountEndpointModelsTable)
+      .all()
+      .filter((row) =>
+        accountIds.has(row.accountId) &&
+        endpointIds.has(row.endpointId) &&
+        modelIds.has(row.managedModelId)
+      );
+
+    return {
+      provider,
+      credential,
+      accounts,
+      accountModels,
+      accountEndpointModels,
+      endpoints,
+      models,
+      latestSync
+    };
   }
 
   public getAccount(providerKey: string, accountKey: string): ManagedCredentialRow | null {
@@ -809,6 +846,7 @@ export class ManagedProviderRepository {
           displayName: input.provider.displayName,
           baseUrl: representativeEndpoint?.baseUrl ?? input.provider.baseUrl,
           websiteUrl: input.provider.websiteUrl ?? null,
+          modelCatalogUrl: input.provider.modelCatalogUrl ?? null,
           providerKind,
           enabled: input.provider.enabled ?? existing.provider.enabled,
           priority:
@@ -828,11 +866,10 @@ export class ManagedProviderRepository {
         .where(eq(managedProviderEndpointsTable.providerId, existing.provider.id))
         .run();
 
-      let discoveredCount = 0;
-      let firstEndpointId: number | null = null;
+      const catalogModels = new Map<string, ManagedDiscoveredModelInput>();
 
       for (const bundle of input.endpointBundles) {
-        const endpointInsert = tx.insert(managedProviderEndpointsTable)
+        tx.insert(managedProviderEndpointsTable)
           .values({
             providerId: existing.provider.id,
             endpointKey: bundle.endpoint.endpointKey,
@@ -847,30 +884,27 @@ export class ManagedProviderRepository {
             createdAt: now,
             updatedAt: now
           })
-          .returning()
-          .get();
+          .run();
 
-        if (firstEndpointId === null) {
-          firstEndpointId = endpointInsert.id;
+        for (const model of bundle.models) {
+          catalogModels.set(model.providerModelId, model);
         }
+      }
 
-        discoveredCount += bundle.models.length;
-
-        if (bundle.models.length > 0) {
-          this.insertManagedModels(
-            tx as unknown as Db,
-            bundle.models.map((model) =>
-              this.buildManagedModelInsert({
-                db: tx as unknown as Db,
-                providerId: existing.provider.id,
-                endpointId: endpointInsert.id,
-                model,
-                now,
-                preserved: this.preservedFieldsByModelKey(existing.models).get(model.modelKey)
-              })
-            )
-          );
-        }
+      if (catalogModels.size > 0) {
+        const preservedByModelKey = this.preservedFieldsByModelKey(existing.models);
+        this.insertManagedModels(
+          tx as unknown as Db,
+          Array.from(catalogModels.values()).map((model) =>
+            this.buildManagedModelInsert({
+              db: tx as unknown as Db,
+              providerId: existing.provider.id,
+              model,
+              now,
+              preserved: preservedByModelKey.get(model.modelKey)
+            })
+          )
+        );
       }
 
       if (input.encryptedApiKey) {
@@ -910,11 +944,13 @@ export class ManagedProviderRepository {
 
       tx.insert(modelSyncRunsTable).values({
         providerId: existing.provider.id,
+        accountId: null,
+        catalogUrl: input.provider.modelCatalogUrl ?? null,
         status: "success",
         errorMessage: null,
         startedAt: now,
         finishedAt: now,
-        discoveredCount
+        discoveredCount: catalogModels.size
       }).run();
 
       const modelIds = tx.select().from(managedModelsTable)
@@ -949,6 +985,7 @@ export class ManagedProviderRepository {
       remark?: string | null;
     };
     endpointBundles: ManagedEndpointBundleInput[];
+    initialSync?: ManagedInitialModelSync;
   }): ManagedProviderDetails {
     const now = nowIso();
 
@@ -961,6 +998,7 @@ export class ManagedProviderRepository {
           displayName: input.provider.displayName,
           baseUrl: input.provider.baseUrl,
           websiteUrl: input.provider.websiteUrl ?? null,
+          modelCatalogUrl: input.provider.modelCatalogUrl ?? null,
           providerKind,
           enabled: input.provider.enabled ?? true,
           priority: normalizeProviderPriority(input.provider.priority) ?? 0,
@@ -973,10 +1011,9 @@ export class ManagedProviderRepository {
         .returning()
         .get();
 
-      let discoveredCount = 0;
-      let firstEndpointId: number | null = null;
+      const catalogModels = new Map<string, ManagedDiscoveredModelInput>();
       for (const bundle of input.endpointBundles) {
-        const endpointInsert = tx.insert(managedProviderEndpointsTable)
+        tx.insert(managedProviderEndpointsTable)
           .values({
             providerId: providerInsert.id,
             endpointKey: bundle.endpoint.endpointKey,
@@ -991,28 +1028,24 @@ export class ManagedProviderRepository {
             createdAt: now,
             updatedAt: now
           })
-          .returning()
-          .get();
-
-        if (firstEndpointId === null) {
-          firstEndpointId = endpointInsert.id;
+          .run();
+        for (const model of bundle.models) {
+          catalogModels.set(model.providerModelId, model);
         }
-        discoveredCount += bundle.models.length;
+      }
 
-        if (bundle.models.length > 0) {
-          this.insertManagedModels(
-            tx as unknown as Db,
-            bundle.models.map((model) =>
-              this.buildManagedModelInsert({
-                db: tx as unknown as Db,
-                providerId: providerInsert.id,
-                endpointId: endpointInsert.id,
-                model,
-                now
-              })
-            )
-          );
-        }
+      if (catalogModels.size > 0) {
+        this.insertManagedModels(
+          tx as unknown as Db,
+          Array.from(catalogModels.values()).map((model) =>
+            this.buildManagedModelInsert({
+              db: tx as unknown as Db,
+              providerId: providerInsert.id,
+              model,
+              now
+            })
+          )
+        );
       }
 
       const defaultAccount = tx.insert(managedProviderCredentialsTable).values({
@@ -1044,11 +1077,13 @@ export class ManagedProviderRepository {
 
       tx.insert(modelSyncRunsTable).values({
         providerId: providerInsert.id,
-        status: "success",
-        errorMessage: null,
+        accountId: defaultAccount.id,
+        catalogUrl: input.initialSync?.catalogUrl ?? input.provider.modelCatalogUrl ?? null,
+        status: input.initialSync?.status ?? "success",
+        errorMessage: input.initialSync?.errorMessage ?? null,
         startedAt: now,
         finishedAt: now,
-        discoveredCount
+        discoveredCount: input.initialSync?.discoveredCount ?? catalogModels.size
       }).run();
 
       return this.getProviderDetails(providerInsert.providerKey)!;
@@ -1056,8 +1091,8 @@ export class ManagedProviderRepository {
   }
 
   public syncProviderModels(providerKey: string, input: {
-    endpointKey?: string;
     accountKey?: string;
+    catalogUrl?: string | null;
     models: ManagedDiscoveredModelInput[];
     errorMessage?: string | null;
     status: "success" | "error";
@@ -1070,18 +1105,18 @@ export class ManagedProviderRepository {
       return null;
     }
 
-    const endpoint = this.getProviderEndpoint(providerKey, input.endpointKey ?? "default");
-    if (!endpoint) {
-      return null;
-    }
-
     const accountKey = input.accountKey ?? "default";
     const account = this.getAccount(providerKey, accountKey);
+    if (!account) {
+      return null;
+    }
     const now = nowIso();
 
     this.db.transaction((tx) => {
       tx.insert(modelSyncRunsTable).values({
         providerId: provider.id,
+        accountId: account.id,
+        catalogUrl: input.catalogUrl ?? null,
         status: input.status,
         errorMessage: input.errorMessage ?? null,
         startedAt: now,
@@ -1093,18 +1128,17 @@ export class ManagedProviderRepository {
         return;
       }
 
-      const existingEndpointModels = tx.select().from(managedModelsTable)
-        .where(and(
-          eq(managedModelsTable.providerId, provider.id),
-          eq(managedModelsTable.endpointId, endpoint.id)
-        ))
+      const existingProviderModels = tx.select().from(managedModelsTable)
+        .where(eq(managedModelsTable.providerId, provider.id))
         .all();
-      const preservedByModelKey = this.preservedFieldsByModelKey(existingEndpointModels);
+      const preservedByModelKey = this.preservedFieldsByModelKey(existingProviderModels);
+      const manualModelIds = existingProviderModels
+        .filter(isManualModel)
+        .map((model) => model.id);
 
-      // Upsert models so other accounts keep their links.
       const touchedIds: number[] = [];
       for (const model of input.models) {
-        const existing = existingEndpointModels.find(
+        const existing = existingProviderModels.find(
           (item) => item.modelKey === model.modelKey || item.providerModelId === model.providerModelId
         );
         if (existing) {
@@ -1129,7 +1163,6 @@ export class ManagedProviderRepository {
             this.buildManagedModelInsert({
               db: tx as unknown as Db,
               providerId: provider.id,
-              endpointId: endpoint.id,
               model,
               now,
               preserved: preservedByModelKey.get(model.modelKey)
@@ -1139,15 +1172,12 @@ export class ManagedProviderRepository {
         }
       }
 
-      if (account) {
-        this.upsertAccountModelLinks(
-          tx as unknown as Db,
-          account.id,
-          touchedIds,
-          now,
-          { replaceEndpointModelIds: existingEndpointModels.map((model) => model.id) }
-        );
-      }
+      this.replaceAccountModelLinks(
+        tx as unknown as Db,
+        account.id,
+        Array.from(new Set([...touchedIds, ...manualModelIds])),
+        now
+      );
     });
 
     return this.getProviderDetails(providerKey);
@@ -1191,10 +1221,41 @@ export class ManagedProviderRepository {
         const accountModelIds = this.listAccountModelIds(account.id);
 
         return endpoints.map((endpoint) => {
-          // 模型必须属于本 endpoint：借用兄弟 endpoint 的模型会造出打不通的候选
-          const endpointModels = providerModels
-            .filter((model) => model.endpointId === endpoint.id);
-          const models = endpointModels.filter((model) => accountModelIds.has(model.id));
+          const observations = this.db.select().from(managedAccountEndpointModelsTable)
+            .where(and(
+              eq(managedAccountEndpointModelsTable.accountId, account.id),
+              eq(managedAccountEndpointModelsTable.endpointId, endpoint.id)
+            ))
+            .all();
+          const observationByModelId = new Map(
+            observations.map((observation) => [observation.managedModelId, observation])
+          );
+          const now = Date.now();
+          const models = providerModels.filter((model) => {
+            if (!accountModelIds.has(model.id)) {
+              return false;
+            }
+            const observation = observationByModelId.get(model.id);
+            if (!observation) {
+              return true;
+            }
+            if (observation.runtimeStatus === "disabled" || observation.runtimeStatus === "abnormal") {
+              return false;
+            }
+            if (
+              observation.runtimeStatus !== "cooling_down" &&
+              observation.runtimeStatus !== "rate_limited"
+            ) {
+              return true;
+            }
+            if (observation.statusReason?.endsWith("_permanent")) {
+              return false;
+            }
+            const cooldownUntil = observation.statusCooldownUntil
+              ? Date.parse(observation.statusCooldownUntil)
+              : Number.NaN;
+            return !Number.isFinite(cooldownUntil) || cooldownUntil <= now;
+          });
 
           return {
             provider,
@@ -1266,26 +1327,6 @@ export class ManagedProviderRepository {
     return this.getProviderDetails(providerKey);
   }
 
-  public clearProviderEndpoints(providerKey: string): boolean {
-    const provider = this.db.select().from(managedProvidersTable)
-      .where(eq(managedProvidersTable.providerKey, providerKey))
-      .get();
-    if (!provider) {
-      return false;
-    }
-
-    this.db.transaction((tx) => {
-      tx.delete(managedModelsTable)
-        .where(eq(managedModelsTable.providerId, provider.id))
-        .run();
-      tx.delete(managedProviderEndpointsTable)
-        .where(eq(managedProviderEndpointsTable.providerId, provider.id))
-        .run();
-    });
-
-    return true;
-  }
-
   public updateProvider(
     providerKey: string,
     input: ManagedProviderUpdateInput
@@ -1300,9 +1341,12 @@ export class ManagedProviderRepository {
     this.db.update(managedProvidersTable)
       .set({
         displayName: input.displayName ?? existing.provider.displayName,
-        baseUrl: input.baseUrl ?? existing.provider.baseUrl,
         websiteUrl:
           input.websiteUrl !== undefined ? input.websiteUrl : existing.provider.websiteUrl,
+        modelCatalogUrl:
+          input.modelCatalogUrl !== undefined
+            ? input.modelCatalogUrl
+            : existing.provider.modelCatalogUrl,
         providerKind: input.providerKind ?? existing.provider.providerKind,
         enabled: input.enabled ?? existing.provider.enabled,
         priority: normalizeProviderPriority(input.priority) ?? existing.provider.priority,
@@ -1310,21 +1354,6 @@ export class ManagedProviderRepository {
       })
       .where(eq(managedProvidersTable.providerKey, providerKey))
       .run();
-
-    if (input.baseUrl !== undefined || input.protocol !== undefined || input.enabled !== undefined) {
-      this.db.update(managedProviderEndpointsTable)
-        .set({
-          baseUrl: input.baseUrl ?? existing.provider.baseUrl,
-          protocol: input.protocol ?? existing.endpoints.find((endpoint) => endpoint.endpointKey === "default")?.protocol ?? "openai",
-          enabled: input.enabled ?? existing.provider.enabled,
-          updatedAt: now
-        })
-        .where(and(
-          eq(managedProviderEndpointsTable.providerId, existing.provider.id),
-          eq(managedProviderEndpointsTable.endpointKey, "default")
-        ))
-        .run();
-    }
 
     return this.getProviderDetails(providerKey);
   }
@@ -1401,6 +1430,48 @@ export class ManagedProviderRepository {
       .get();
   }
 
+  public replaceProviderEndpoints(
+    providerKey: string,
+    endpoints: ManagedEndpointInput[]
+  ): ManagedProviderDetails | null {
+    const provider = this.db.select().from(managedProvidersTable)
+      .where(eq(managedProvidersTable.providerKey, providerKey))
+      .get();
+    if (!provider) {
+      return null;
+    }
+    const now = nowIso();
+    this.db.transaction((tx) => {
+      tx.delete(managedProviderEndpointsTable)
+        .where(eq(managedProviderEndpointsTable.providerId, provider.id))
+        .run();
+      for (const endpoint of endpoints) {
+        tx.insert(managedProviderEndpointsTable).values({
+          providerId: provider.id,
+          endpointKey: endpoint.protocol,
+          protocol: endpoint.protocol,
+          baseUrl: endpoint.baseUrl,
+          customHeadersJson: endpoint.customHeaders ? JSON.stringify(endpoint.customHeaders) : null,
+          protocolBundleKey: endpoint.protocolBundleKey ?? null,
+          enabled: endpoint.enabled ?? true,
+          supportsStreaming: endpoint.supportsStreaming ?? true,
+          supportsTools: endpoint.supportsTools ?? false,
+          supportsJsonMode: endpoint.supportsJsonMode ?? false,
+          createdAt: now,
+          updatedAt: now
+        }).run();
+      }
+      tx.update(managedProvidersTable)
+        .set({
+          baseUrl: endpoints[0]?.baseUrl ?? provider.baseUrl,
+          updatedAt: now
+        })
+        .where(eq(managedProvidersTable.id, provider.id))
+        .run();
+    });
+    return this.getProviderDetails(providerKey);
+  }
+
   public updateProviderEndpoint(
     providerKey: string,
     endpointKey: string,
@@ -1411,8 +1482,57 @@ export class ManagedProviderRepository {
       return null;
     }
 
+    if (input.protocol && input.protocol !== endpoint.protocol) {
+      const now = nowIso();
+      this.db.transaction((tx) => {
+        tx.delete(managedProviderEndpointsTable)
+          .where(eq(managedProviderEndpointsTable.id, endpoint.id))
+          .run();
+        tx.insert(managedProviderEndpointsTable).values({
+          providerId: endpoint.providerId,
+          endpointKey: input.protocol!,
+          protocol: input.protocol!,
+          baseUrl: input.baseUrl ?? endpoint.baseUrl,
+          customHeadersJson:
+            input.customHeaders !== undefined
+              ? input.customHeaders
+                ? JSON.stringify(input.customHeaders)
+                : null
+              : endpoint.customHeadersJson,
+          protocolBundleKey:
+            input.protocolBundleKey !== undefined
+              ? input.protocolBundleKey
+              : endpoint.protocolBundleKey,
+          enabled: input.enabled ?? endpoint.enabled,
+          supportsStreaming: input.supportsStreaming ?? endpoint.supportsStreaming,
+          supportsTools: input.supportsTools ?? endpoint.supportsTools,
+          supportsJsonMode: input.supportsJsonMode ?? endpoint.supportsJsonMode,
+          createdAt: now,
+          updatedAt: now
+        }).run();
+      });
+      const provider = this.db.select().from(managedProvidersTable)
+        .where(eq(managedProvidersTable.id, endpoint.providerId))
+        .get();
+      return provider ? this.getProviderDetails(provider.providerKey) : null;
+    }
+
+    const now = nowIso();
+    const recoverRuntimeStatus = input.enabled === true
+      ? {
+          runtimeStatus: "normal" as const,
+          statusReason: null,
+          statusMessage: null,
+          statusSource: "manual",
+          statusUpdatedAt: now,
+          statusCooldownUntil: null,
+          cooldownStrike: 0,
+          recentErrorCount: 0
+        }
+      : {};
     this.db.update(managedProviderEndpointsTable)
       .set({
+        ...recoverRuntimeStatus,
         protocol: input.protocol ?? endpoint.protocol,
         baseUrl: input.baseUrl ?? endpoint.baseUrl,
         customHeadersJson: input.customHeaders !== undefined ? (input.customHeaders ? JSON.stringify(input.customHeaders) : null) : endpoint.customHeadersJson,
@@ -1422,7 +1542,7 @@ export class ManagedProviderRepository {
         supportsStreaming: input.supportsStreaming ?? endpoint.supportsStreaming,
         supportsTools: input.supportsTools ?? endpoint.supportsTools,
         supportsJsonMode: input.supportsJsonMode ?? endpoint.supportsJsonMode,
-        updatedAt: nowIso()
+        updatedAt: now
       })
       .where(eq(managedProviderEndpointsTable.id, endpoint.id))
       .run();
@@ -1434,8 +1554,73 @@ export class ManagedProviderRepository {
     return provider ? this.getProviderDetails(provider.providerKey) : null;
   }
 
+  public applyEndpointCooldown(
+    providerKey: string,
+    endpointKey: string,
+    input: {
+      strike: number;
+      permanent: boolean;
+      cooldownUntil: string | null;
+      code?: string;
+      message: string;
+    }
+  ): ManagedProviderEndpointRow | null {
+    const endpoint = this.getProviderEndpoint(providerKey, endpointKey);
+    if (!endpoint) {
+      return null;
+    }
+    const now = nowIso();
+    this.db.update(managedProviderEndpointsTable)
+      .set({
+        runtimeStatus: input.permanent ? "abnormal" : "cooling_down",
+        statusReason: input.permanent ? "connection_error_permanent" : "connection_error_cooldown",
+        statusMessage: input.message,
+        statusSource: "system",
+        statusUpdatedAt: now,
+        statusCooldownUntil: input.permanent ? null : input.cooldownUntil,
+        cooldownStrike: input.strike,
+        recentErrorCount: endpoint.recentErrorCount + 1,
+        lastErrorAt: now,
+        lastErrorCode: input.code ?? "provider_unreachable",
+        lastErrorMessage: input.message,
+        updatedAt: now
+      })
+      .where(eq(managedProviderEndpointsTable.id, endpoint.id))
+      .run();
+    return this.getProviderEndpoint(providerKey, endpointKey);
+  }
+
+  public markEndpointSuccess(
+    providerKey: string,
+    endpointKey: string,
+    clearCounters: boolean
+  ): ManagedProviderEndpointRow | null {
+    const endpoint = this.getProviderEndpoint(providerKey, endpointKey);
+    if (!endpoint) {
+      return null;
+    }
+    if (endpoint.runtimeStatus === "abnormal" || endpoint.runtimeStatus === "disabled") {
+      return endpoint;
+    }
+    const now = nowIso();
+    this.db.update(managedProviderEndpointsTable)
+      .set({
+        runtimeStatus: "normal",
+        statusReason: null,
+        statusMessage: null,
+        statusSource: "system",
+        statusUpdatedAt: now,
+        statusCooldownUntil: null,
+        cooldownStrike: clearCounters ? 0 : endpoint.cooldownStrike,
+        recentErrorCount: clearCounters ? 0 : endpoint.recentErrorCount,
+        updatedAt: now
+      })
+      .where(eq(managedProviderEndpointsTable.id, endpoint.id))
+      .run();
+    return this.getProviderEndpoint(providerKey, endpointKey);
+  }
+
   public upsertManualModel(providerKey: string, input: {
-    endpointKey?: string;
     accountKey?: string;
     model: ManagedDiscoveredModelInput;
   }): ManagedProviderDetails | null {
@@ -1446,14 +1631,11 @@ export class ManagedProviderRepository {
       return null;
     }
 
-    const endpoint = this.getProviderEndpoint(providerKey, input.endpointKey ?? "default");
-    if (!endpoint) {
-      return null;
-    }
-
-    const account = this.getAccount(providerKey, input.accountKey ?? "default") ??
-      this.listAccounts(providerKey)[0] ??
-      null;
+    const accounts = input.accountKey
+      ? [this.getAccount(providerKey, input.accountKey)].filter(
+          (account): account is ManagedCredentialRow => account !== null
+        )
+      : this.listAccounts(providerKey);
     const now = nowIso();
 
     this.db.transaction((tx) => {
@@ -1465,7 +1647,6 @@ export class ManagedProviderRepository {
         .get() ?? tx.select().from(managedModelsTable)
         .where(and(
           eq(managedModelsTable.providerId, provider.id),
-          eq(managedModelsTable.endpointId, endpoint.id),
           eq(managedModelsTable.providerModelId, input.model.providerModelId)
         ))
         .get();
@@ -1474,7 +1655,6 @@ export class ManagedProviderRepository {
       if (existing) {
         tx.update(managedModelsTable)
           .set({
-            endpointId: endpoint.id,
             modelKey: input.model.modelKey,
             providerModelId: input.model.providerModelId,
             modelName: input.model.modelName,
@@ -1494,7 +1674,6 @@ export class ManagedProviderRepository {
           this.buildManagedModelInsert({
             db: tx as unknown as Db,
             providerId: provider.id,
-            endpointId: endpoint.id,
             model: input.model,
             now
           })
@@ -1502,7 +1681,7 @@ export class ManagedProviderRepository {
         modelId = inserted.id;
       }
 
-      if (account) {
+      for (const account of accounts) {
         this.upsertAccountModelLinks(tx as unknown as Db, account.id, [modelId], now);
       }
     });
@@ -1640,21 +1819,30 @@ export class ManagedProviderRepository {
     }
 
     const now = nowIso();
-    return this.db.insert(managedProviderCredentialsTable).values({
-      providerId: provider.id,
-      accountKey: input.accountKey,
-      enabled: input.enabled ?? true,
-      runtimeStatus: "normal",
-      statusSource: "system",
-      recentErrorCount: 0,
-      expiresAt: input.expiresAt ?? null,
-      quotaJson: input.quotaJson ?? null,
-      remark: input.remark ?? null,
-      apiKeyEncrypted: input.encryptedApiKey,
-      keyHint: input.apiKeyHint ?? null,
-      createdAt: now,
-      updatedAt: now
-    }).returning().get();
+    return this.db.transaction((tx) => {
+      const created = tx.insert(managedProviderCredentialsTable).values({
+        providerId: provider.id,
+        accountKey: input.accountKey,
+        enabled: input.enabled ?? true,
+        runtimeStatus: "normal",
+        statusSource: "system",
+        recentErrorCount: 0,
+        expiresAt: input.expiresAt ?? null,
+        quotaJson: input.quotaJson ?? null,
+        remark: input.remark ?? null,
+        apiKeyEncrypted: input.encryptedApiKey,
+        keyHint: input.apiKeyHint ?? null,
+        createdAt: now,
+        updatedAt: now
+      }).returning().get();
+      const manualModelIds = tx.select().from(managedModelsTable)
+        .where(eq(managedModelsTable.providerId, provider.id))
+        .all()
+        .filter(isManualModel)
+        .map((model) => model.id);
+      this.upsertAccountModelLinks(tx as unknown as Db, created.id, manualModelIds, now);
+      return created;
+    });
   }
 
   public updateAccount(
@@ -1981,6 +2169,225 @@ export class ManagedProviderRepository {
       .get() ?? null;
   }
 
+  private getAccountEndpointModelTarget(
+    providerKey: string,
+    accountKey: string,
+    endpointKey: string,
+    modelKey: string
+  ): {
+    account: ManagedCredentialRow;
+    endpoint: ManagedProviderEndpointRow;
+    model: ManagedModelRow;
+    observation: ManagedAccountEndpointModelRow | null;
+  } | null {
+    const account = this.getAccount(providerKey, accountKey);
+    const endpoint = this.getProviderEndpoint(providerKey, endpointKey);
+    const model = this.getModelByProviderAndKey(providerKey, modelKey);
+    if (!account || !endpoint || !model) {
+      return null;
+    }
+    const accountModel = this.db.select().from(managedAccountModelsTable)
+      .where(and(
+        eq(managedAccountModelsTable.accountId, account.id),
+        eq(managedAccountModelsTable.managedModelId, model.id),
+        eq(managedAccountModelsTable.enabled, true)
+      ))
+      .get();
+    if (!accountModel) {
+      return null;
+    }
+    const observation = this.db.select().from(managedAccountEndpointModelsTable)
+      .where(and(
+        eq(managedAccountEndpointModelsTable.accountId, account.id),
+        eq(managedAccountEndpointModelsTable.endpointId, endpoint.id),
+        eq(managedAccountEndpointModelsTable.managedModelId, model.id)
+      ))
+      .get() ?? null;
+    return { account, endpoint, model, observation };
+  }
+
+  public getAccountEndpointModel(
+    providerKey: string,
+    accountKey: string,
+    endpointKey: string,
+    modelKey: string
+  ): ManagedAccountEndpointModelRow | null {
+    return this.getAccountEndpointModelTarget(
+      providerKey,
+      accountKey,
+      endpointKey,
+      modelKey
+    )?.observation ?? null;
+  }
+
+  public applyAccountEndpointModelFailure(
+    providerKey: string,
+    accountKey: string,
+    endpointKey: string,
+    modelKey: string,
+    input: {
+      runtimeStatus: "rate_limited" | "cooling_down" | "abnormal";
+      reason: string;
+      cooldownUntil: string | null;
+      rateLimitStrike?: number;
+      cooldownStrike?: number;
+      code?: string;
+      message: string;
+    }
+  ): ManagedAccountEndpointModelRow | null {
+    const target = this.getAccountEndpointModelTarget(
+      providerKey,
+      accountKey,
+      endpointKey,
+      modelKey
+    );
+    if (!target) {
+      return null;
+    }
+    const now = nowIso();
+    const values = {
+      runtimeStatus: input.runtimeStatus,
+      statusReason: input.reason,
+      statusMessage: input.message,
+      statusSource: "system",
+      statusUpdatedAt: now,
+      statusCooldownUntil: input.cooldownUntil,
+      rateLimitStrike: input.rateLimitStrike ?? target.observation?.rateLimitStrike ?? 0,
+      cooldownStrike: input.cooldownStrike ?? target.observation?.cooldownStrike ?? 0,
+      recentErrorCount: (target.observation?.recentErrorCount ?? 0) + 1,
+      lastErrorAt: now,
+      lastErrorCode: input.code ?? "provider_error",
+      lastErrorMessage: input.message,
+      updatedAt: now
+    };
+    if (target.observation) {
+      this.db.update(managedAccountEndpointModelsTable)
+        .set(values)
+        .where(eq(managedAccountEndpointModelsTable.id, target.observation.id))
+        .run();
+    } else {
+      this.db.insert(managedAccountEndpointModelsTable).values({
+        accountId: target.account.id,
+        endpointId: target.endpoint.id,
+        managedModelId: target.model.id,
+        ...values,
+        createdAt: now
+      }).run();
+    }
+    return this.getAccountEndpointModel(providerKey, accountKey, endpointKey, modelKey);
+  }
+
+  public markAccountEndpointModelSuccess(
+    providerKey: string,
+    accountKey: string,
+    endpointKey: string,
+    modelKey: string,
+    clearCounters: boolean
+  ): ManagedAccountEndpointModelRow | null {
+    const target = this.getAccountEndpointModelTarget(
+      providerKey,
+      accountKey,
+      endpointKey,
+      modelKey
+    );
+    if (!target) {
+      return null;
+    }
+    const now = nowIso();
+    const values = {
+      runtimeStatus: "normal",
+      statusReason: null,
+      statusMessage: null,
+      statusSource: "system",
+      statusUpdatedAt: now,
+      statusCooldownUntil: null,
+      rateLimitStrike: clearCounters ? 0 : target.observation?.rateLimitStrike ?? 0,
+      cooldownStrike: clearCounters ? 0 : target.observation?.cooldownStrike ?? 0,
+      recentErrorCount: clearCounters ? 0 : target.observation?.recentErrorCount ?? 0,
+      lastSuccessAt: now,
+      updatedAt: now
+    };
+    if (target.observation) {
+      this.db.update(managedAccountEndpointModelsTable)
+        .set(values)
+        .where(eq(managedAccountEndpointModelsTable.id, target.observation.id))
+        .run();
+    } else {
+      this.db.insert(managedAccountEndpointModelsTable).values({
+        accountId: target.account.id,
+        endpointId: target.endpoint.id,
+        managedModelId: target.model.id,
+        ...values,
+        createdAt: now
+      }).run();
+    }
+    return this.getAccountEndpointModel(providerKey, accountKey, endpointKey, modelKey);
+  }
+
+  public clearAccountEndpointModelStatus(
+    providerKey: string,
+    accountKey: string,
+    endpointKey: string,
+    modelKey: string
+  ): boolean {
+    const target = this.getAccountEndpointModelTarget(
+      providerKey,
+      accountKey,
+      endpointKey,
+      modelKey
+    );
+    if (!target?.observation) {
+      return false;
+    }
+    return this.db.delete(managedAccountEndpointModelsTable)
+      .where(eq(managedAccountEndpointModelsTable.id, target.observation.id))
+      .run().changes > 0;
+  }
+
+  public recordAccountEndpointModelClientError(
+    providerKey: string,
+    accountKey: string,
+    endpointKey: string,
+    modelKey: string,
+    input: { code?: string; message: string }
+  ): ManagedAccountEndpointModelRow | null {
+    const target = this.getAccountEndpointModelTarget(
+      providerKey,
+      accountKey,
+      endpointKey,
+      modelKey
+    );
+    if (!target) {
+      return null;
+    }
+    const now = nowIso();
+    if (target.observation) {
+      this.db.update(managedAccountEndpointModelsTable)
+        .set({
+          lastErrorAt: now,
+          lastErrorCode: input.code ?? "request_invalid",
+          lastErrorMessage: input.message,
+          updatedAt: now
+        })
+        .where(eq(managedAccountEndpointModelsTable.id, target.observation.id))
+        .run();
+    } else {
+      this.db.insert(managedAccountEndpointModelsTable).values({
+        accountId: target.account.id,
+        endpointId: target.endpoint.id,
+        managedModelId: target.model.id,
+        runtimeStatus: "normal",
+        statusSource: "system",
+        lastErrorAt: now,
+        lastErrorCode: input.code ?? "request_invalid",
+        lastErrorMessage: input.message,
+        createdAt: now,
+        updatedAt: now
+      }).run();
+    }
+    return this.getAccountEndpointModel(providerKey, accountKey, endpointKey, modelKey);
+  }
+
   public applyAccountModelFailure(
     providerKey: string,
     accountKey: string,
@@ -2082,198 +2489,6 @@ export class ManagedProviderRepository {
     return this.db.select().from(managedAccountModelsTable)
       .where(eq(managedAccountModelsTable.id, accountModel.id))
       .get() ?? null;
-  }
-
-  public applyModelRateLimit(
-    providerKey: string,
-    modelKey: string,
-    input: {
-      strike: number;
-      permanent: boolean;
-      cooldownUntil: string | null;
-      message: string;
-    }
-  ): ManagedModelRow | null {
-    const model = this.getModelByProviderAndKey(providerKey, modelKey);
-    if (!model) {
-      return null;
-    }
-    const now = nowIso();
-    this.db.update(managedModelsTable)
-      .set({
-        runtimeStatus: "rate_limited",
-        statusReason: input.permanent ? "rate_limited_permanent" : "rate_limited",
-        statusMessage: input.message,
-        statusSource: "system",
-        statusUpdatedAt: now,
-        statusCooldownUntil: input.permanent ? null : input.cooldownUntil,
-        rateLimitStrike: input.strike,
-        lastErrorAt: now,
-        lastErrorCode: "provider_rate_limited",
-        lastErrorMessage: input.message,
-        updatedAt: now
-      })
-      .where(eq(managedModelsTable.id, model.id))
-      .run();
-    return this.db.select().from(managedModelsTable).where(eq(managedModelsTable.id, model.id)).get() ?? null;
-  }
-
-  /** 旧 provider-model 运行态兜底；正常调度路径使用 Account-Model。 */
-  public applyModelUnavailable(
-    providerKey: string,
-    modelKey: string,
-    input: {
-      strike: number;
-      permanent: boolean;
-      cooldownUntil: string | null;
-      code?: string;
-      message: string;
-    }
-  ): ManagedModelRow | null {
-    return this.applyModelCooldown(providerKey, modelKey, {
-      strike: input.strike,
-      permanent: input.permanent,
-      cooldownUntil: input.cooldownUntil,
-      reason: input.permanent ? "model_unavailable_permanent" : "model_unavailable",
-      code: input.code ?? "provider_invalid_model",
-      message: input.message
-    });
-  }
-
-  public applyModelCooldown(
-    providerKey: string,
-    modelKey: string,
-    input: {
-      strike: number;
-      permanent: boolean;
-      cooldownUntil: string | null;
-      reason: string;
-      code?: string;
-      message: string;
-    }
-  ): ManagedModelRow | null {
-    const model = this.getModelByProviderAndKey(providerKey, modelKey);
-    if (!model) {
-      return null;
-    }
-    const now = nowIso();
-    this.db.update(managedModelsTable)
-      .set({
-        runtimeStatus: input.permanent ? "abnormal" : "cooling_down",
-        statusReason: input.reason,
-        statusMessage: input.message,
-        statusSource: "system",
-        statusUpdatedAt: now,
-        statusCooldownUntil: input.permanent ? null : input.cooldownUntil,
-        cooldownStrike: input.strike,
-        recentErrorCount: model.recentErrorCount + 1,
-        lastErrorAt: now,
-        lastErrorCode: input.code ?? "provider_error",
-        lastErrorMessage: input.message,
-        updatedAt: now
-      })
-      .where(eq(managedModelsTable.id, model.id))
-      .run();
-    return this.db.select().from(managedModelsTable).where(eq(managedModelsTable.id, model.id)).get() ?? null;
-  }
-
-  /**
-   * 旧 provider-model 运行态兜底：正常调度路径使用 Account-Model。
-   * 注意：不得降级已有运行态（历史实现会把 cooling_down / rate_limited 覆盖成 normal）。
-   */
-  public applyModelOtherError(
-    providerKey: string,
-    modelKey: string,
-    input: {
-      recentErrorCount: number;
-      abnormal: boolean;
-      code?: string;
-      message: string;
-    }
-  ): ManagedModelRow | null {
-    const model = this.getModelByProviderAndKey(providerKey, modelKey);
-    if (!model) {
-      return null;
-    }
-    const now = nowIso();
-    this.db.update(managedModelsTable)
-      .set({
-        ...(input.abnormal
-          ? {
-              runtimeStatus: "abnormal",
-              statusReason: "error_threshold",
-              statusMessage: input.message,
-              statusSource: "system",
-              statusUpdatedAt: now,
-              statusCooldownUntil: null
-            }
-          : {}),
-        recentErrorCount: input.recentErrorCount,
-        lastErrorAt: now,
-        lastErrorCode: input.code ?? "provider_error",
-        lastErrorMessage: input.message,
-        updatedAt: now
-      })
-      .where(eq(managedModelsTable.id, model.id))
-      .run();
-    return this.db.select().from(managedModelsTable).where(eq(managedModelsTable.id, model.id)).get() ?? null;
-  }
-
-  /** 请求本身被上游拒绝（400/413/422）：只留痕，不改运行态、不影响调度 */
-  public recordModelClientError(
-    providerKey: string,
-    modelKey: string,
-    input: { code?: string; message: string }
-  ): ManagedModelRow | null {
-    const model = this.getModelByProviderAndKey(providerKey, modelKey);
-    if (!model) {
-      return null;
-    }
-    const now = nowIso();
-    this.db.update(managedModelsTable)
-      .set({
-        lastErrorAt: now,
-        lastErrorCode: input.code ?? "request_invalid",
-        lastErrorMessage: input.message,
-        updatedAt: now
-      })
-      .where(eq(managedModelsTable.id, model.id))
-      .run();
-    return this.db.select().from(managedModelsTable).where(eq(managedModelsTable.id, model.id)).get() ?? null;
-  }
-
-  public markModelSuccess(providerKey: string, modelKey: string, clearCounters: boolean): ManagedModelRow | null {
-    const model = this.getModelByProviderAndKey(providerKey, modelKey);
-    if (!model) {
-      return null;
-    }
-    // permanent / abnormal / disabled require manual enable path; do not auto-clear those.
-    // cooling_down 属于可自愈状态，成功即清除。
-    if (
-      model.runtimeStatus === "abnormal" ||
-      model.runtimeStatus === "disabled" ||
-      model.statusReason === "rate_limited_permanent" ||
-      model.statusReason === "model_unavailable_permanent"
-    ) {
-      return model;
-    }
-    const now = nowIso();
-    this.db.update(managedModelsTable)
-      .set({
-        runtimeStatus: "normal",
-        statusReason: null,
-        statusMessage: null,
-        statusSource: "system",
-        statusUpdatedAt: now,
-        statusCooldownUntil: null,
-        rateLimitStrike: clearCounters ? 0 : model.rateLimitStrike,
-        cooldownStrike: clearCounters ? 0 : model.cooldownStrike,
-        recentErrorCount: clearCounters ? 0 : model.recentErrorCount,
-        updatedAt: now
-      })
-      .where(eq(managedModelsTable.id, model.id))
-      .run();
-    return this.db.select().from(managedModelsTable).where(eq(managedModelsTable.id, model.id)).get() ?? null;
   }
 
   public setModelEnabled(

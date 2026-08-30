@@ -512,7 +512,7 @@ input:focus {
 
 .model-editor-row {
   display: grid;
-  grid-template-columns: minmax(120px, 0.8fr) minmax(150px, 1fr) minmax(150px, 1fr) minmax(100px, 0.7fr) auto auto auto auto;
+  grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) minmax(100px, 0.7fr) auto auto auto auto;
   gap: 12px;
   align-items: end;
   padding: 14px;
@@ -1160,6 +1160,47 @@ button:disabled {
 .provider-detail-model-table .provider-model-enabled-cell {
   display: inline-flex;
   align-items: center;
+}
+
+.provider-connectivity {
+  display: grid;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.provider-connectivity h3 {
+  margin: 0;
+}
+
+.provider-connectivity details {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.provider-connectivity summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.connectivity-grid {
+  display: grid;
+  gap: 1px;
+  margin-top: 10px;
+  overflow-x: auto;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.connectivity-grid > * {
+  min-width: 0;
+  padding: 10px;
+  background: var(--surface);
+}
+
+.connectivity-cell {
+  display: grid;
+  gap: 8px;
 }
 
 .provider-accounts-table .model-capability-header,

@@ -5,7 +5,8 @@ import { ProviderModelDiscoveryService } from "../../discovery/providerModelDisc
 import {
   ManagedProviderRepository,
   normalizeBaseUrlForMerge,
-  type ManagedDiscoveredModelInput
+  type ManagedDiscoveredModelInput,
+  type ManagedProviderDetails
 } from "../../repositories/managedProviderRepository.js";
 import {
   getOfficialProviderTemplate
@@ -18,7 +19,7 @@ import {
 } from "../../runtime/runtimeStatus.js";
 import type { RuntimeStatusService } from "../../runtime/runtimeStatusService.js";
 import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
-import type { ManagedModelRow } from "../../db/schema.js";
+import type { ManagedCredentialRow, ManagedModelRow } from "../../db/schema.js";
 import { HttpError, isHttpError } from "../../utils/httpErrors.js";
 import { customHeadersSchema, RESERVED_CUSTOM_HEADER_NAMES } from "../../config/schema.js";
 import { isResponsesUnsupportedError } from "../../utils/responsesFallback.js";
@@ -102,7 +103,6 @@ const accountQuotaSchema = z.object({
 }).strict();
 
 const manualModelInputSchema = z.object({
-  endpoint_key: endpointKeySchema.optional(),
   model_name: z.string().trim().min(1),
   provider_model_id: z.string().trim().min(1).optional(),
   context_window: z.number().int().positive().optional(),
@@ -117,13 +117,13 @@ const createProviderBodySchema = z.object({
   protocol: protocolInputSchema.optional(),
   base_url: z.string().url().optional(),
   endpoints: z.array(z.object({
-    endpoint_key: endpointKeySchema.optional(),
     protocol: protocolInputSchema,
     base_url: z.string().url(),
     custom_headers: customHeadersSchema.optional(),
     enabled: z.boolean().optional()
   }).strict()).min(1).optional(),
   website_url: z.string().url().optional().or(z.literal("")),
+  model_catalog_url: z.string().url().optional().nullable().or(z.literal("")),
   api_key: z.string().min(1),
   accounts: z.array(z.object({
     account_key: accountKeySchema,
@@ -149,13 +149,13 @@ const patchProviderBodySchema = z.object({
   protocol: protocolInputSchema.optional(),
   base_url: z.string().url().optional(),
   endpoints: z.array(z.object({
-    endpoint_key: endpointKeySchema.optional(),
     protocol: protocolInputSchema,
     base_url: z.string().url(),
     custom_headers: customHeadersSchema.optional(),
     enabled: z.boolean().optional()
   }).strict()).min(1).optional(),
   website_url: z.string().url().optional().or(z.literal("")),
+  model_catalog_url: z.string().url().optional().nullable().or(z.literal("")),
   api_key: z.string().min(1).optional(),
   provider_kind: providerKindSchema.optional(),
   models: z.array(manualModelInputSchema).optional()
@@ -172,8 +172,14 @@ const testProviderModelBodySchema = z.object({
   account_key: accountKeySchema,
   model_key: z.string().min(1),
   prompt: z.string().trim().min(1).max(2000).default("Reply with OK."),
-  endpoint_key: endpointKeySchema.optional(),
+  endpoint_key: endpointKeySchema,
   temporary_headers: customHeadersSchema.optional()
+}).strict();
+
+const clearAccountEndpointModelStatusBodySchema = z.object({
+  account_key: accountKeySchema,
+  model_key: z.string().min(1),
+  endpoint_key: endpointKeySchema
 }).strict();
 
 const createAccountBodySchema = z.object({
@@ -199,12 +205,10 @@ const mergeCheckBodySchema = z.object({
 }).strict();
 
 const createEndpointBodySchema = z.object({
-  endpoint_key: endpointKeySchema.optional(),
   protocol: protocolInputSchema,
   base_url: z.string().url(),
   custom_headers: customHeadersSchema.optional(),
-  enabled: z.boolean().optional(),
-  api_key: z.string().min(1).optional()
+  enabled: z.boolean().optional()
 }).strict();
 
 interface EndpointDiscoveryBundle {
@@ -251,41 +255,6 @@ const createProviderModelBodySchema = manualModelInputSchema.extend({
   model_key: z.string().min(1).optional()
 }).strict();
 
-async function discoverModelsForEndpoint(
-  discoveryService: ProviderModelDiscoveryService,
-  input: {
-    providerKey: string;
-    endpointKey: string;
-    protocol: "openai" | "anthropic";
-    baseUrl: string;
-    apiKey: string;
-  }
-) {
-  const discoveryInput = {
-    providerKey: input.endpointKey === "default" ? input.providerKey : `${input.providerKey}/${input.endpointKey}`,
-    baseUrl: input.baseUrl,
-    apiKey: input.apiKey
-  };
-
-  if (input.protocol === "anthropic") {
-    const models = await discoveryService.listAnthropicModels(discoveryInput);
-    return input.endpointKey === "default"
-      ? models
-      : models.map((model) => ({
-          ...model,
-          providerModelId: `${input.endpointKey}:${model.providerModelId}`
-        }));
-  }
-
-  const models = await discoveryService.listOpenAiCompatibleModels(discoveryInput);
-  return input.endpointKey === "default"
-    ? models
-    : models.map((model) => ({
-        ...model,
-        providerModelId: `${input.endpointKey}:${model.providerModelId}`
-      }));
-}
-
 function normalizeEndpointInputs(input: {
   protocol?: ProtocolInput;
   baseUrl?: string;
@@ -317,7 +286,7 @@ function normalizeEndpointInputs(input: {
 
     return [
       {
-        endpoint_key: endpoint.endpoint_key ?? endpoint.protocol,
+        endpoint_key: endpoint.protocol,
         protocol: endpoint.protocol,
         base_url: endpoint.base_url,
         custom_headers: endpoint.custom_headers,
@@ -350,6 +319,7 @@ function buildProviderInput(input: {
   provider_key: string;
   display_name: string;
   website_url?: string | null;
+  model_catalog_url?: string | null;
   provider_kind?: "official" | "relay" | "custom";
   trust_level: "low" | "medium" | "high";
   privacy_level: "public_only" | "normal" | "private";
@@ -362,6 +332,7 @@ function buildProviderInput(input: {
   protocol: "openai" | "anthropic";
   baseUrl: string;
   websiteUrl: string | null;
+  modelCatalogUrl: string | null;
   providerKind?: "official" | "relay" | "custom";
   enabled?: boolean;
   priority?: number;
@@ -377,6 +348,7 @@ function buildProviderInput(input: {
     protocol: representativeEndpoint?.protocol ?? "openai",
     baseUrl: representativeEndpoint?.base_url ?? "",
     websiteUrl: input.website_url || null,
+    modelCatalogUrl: input.model_catalog_url || null,
     providerKind: input.provider_kind,
     enabled: input.enabled,
     priority: input.priority,
@@ -417,11 +389,11 @@ function ensureUniqueEndpointKeys(
   const protocols = new Set<string>();
 
   for (const endpoint of endpoints) {
-    if (seen.has(endpoint.endpoint_key)) {
-      throw new HttpError(400, "invalid_request", "Endpoint Key must be unique");
-    }
     if (protocols.has(endpoint.protocol)) {
       throw new HttpError(400, "duplicate_protocol", "Provider protocol must be unique");
+    }
+    if (seen.has(endpoint.endpoint_key)) {
+      throw new HttpError(400, "invalid_request", "Endpoint Key must be unique");
     }
 
     seen.add(endpoint.endpoint_key);
@@ -431,14 +403,10 @@ function ensureUniqueEndpointKeys(
 
 function buildManualModel(
   providerKey: string,
-  endpoint: { endpoint_key: string },
   input: z.infer<typeof manualModelInputSchema> & { model_key?: string }
 ): ManagedDiscoveredModelInput {
   const providerModelId = input.provider_model_id?.trim() || input.model_name.trim();
-  const modelKey = input.model_key?.trim() ||
-    (endpoint.endpoint_key === "default"
-      ? `${providerKey}/${providerModelId}`
-      : `${providerKey}/${endpoint.endpoint_key}/${providerModelId}`);
+  const modelKey = input.model_key?.trim() || `${providerKey}/${providerModelId}`;
 
   return {
     modelKey,
@@ -469,13 +437,13 @@ function mergeManualModelsIntoBundles(
     endpointBundles.map((bundle) => [bundle.endpoint.endpointKey, bundle])
   );
   for (const model of manualModels) {
-    const endpointKey = model.endpoint_key ?? endpointBundles[0]?.endpoint.endpointKey ?? "default";
+    const endpointKey = endpointBundles[0]?.endpoint.endpointKey ?? "openai";
     const bundle = bundlesByEndpointKey.get(endpointKey);
     if (!bundle) {
       throw new HttpError(400, "invalid_model_endpoint", `Model endpoint ${endpointKey} does not exist`);
     }
 
-    const manual = buildManualModel(providerKey, { endpoint_key: endpointKey }, model);
+    const manual = buildManualModel(providerKey, model);
     const existingIndex = bundle.models.findIndex(
       (item) => item.modelKey === manual.modelKey || item.providerModelId === manual.providerModelId
     );
@@ -489,99 +457,47 @@ function mergeManualModelsIntoBundles(
   return endpointBundles;
 }
 
-function ensureProviderDiscoveryUsableOrManual(
-  endpointBundles: EndpointDiscoveryBundle[],
-  manualModels: Array<z.infer<typeof manualModelInputSchema> & { model_key?: string }> | undefined
-): void {
-  if (!manualModels || manualModels.length === 0) {
-    ensureProviderDiscoveryUsable(endpointBundles);
-    return;
-  }
-
-  const failedWithoutModels = endpointBundles.filter(
-    (bundle) => bundle.error !== undefined && bundle.models.length === 0
-  );
-  if (failedWithoutModels.length > 0) {
-    ensureProviderDiscoveryUsable(failedWithoutModels);
-  }
+function buildEndpointBundles(
+  endpoints: NormalizedEndpointInput[],
+  models: ManagedDiscoveredModelInput[]
+): EndpointDiscoveryBundle[] {
+  return endpoints.map((endpoint, index) => ({
+    endpoint: {
+      endpointKey: endpoint.endpoint_key,
+      protocol: endpoint.protocol,
+      baseUrl: endpoint.base_url,
+      customHeaders: endpoint.custom_headers,
+      protocolBundleKey: endpoint.protocol_bundle_key,
+      enabled: endpoint.enabled
+    },
+    models: index === 0 ? models : []
+  }));
 }
 
-async function discoverEndpointBundles(
+async function discoverProviderCatalog(
   discoveryService: ProviderModelDiscoveryService,
   input: {
     providerKey: string;
     apiKey: string;
+    modelCatalogUrl?: string | null;
     endpoints: NormalizedEndpointInput[];
   }
 ) {
-  return Promise.all(
-    input.endpoints.map(async (endpoint) => {
-      let models: ManagedDiscoveredModelInput[];
-      let error: unknown;
-      try {
-        models = await discoverModelsForEndpoint(discoveryService, {
-          providerKey: input.providerKey,
-          endpointKey: endpoint.endpoint_key,
-          protocol: endpoint.protocol,
-          baseUrl: endpoint.base_url,
-          apiKey: input.apiKey
-        });
-      } catch (caught) {
-        error = caught;
-        models = [];
-      }
-
-      return {
-        endpoint: {
-          endpointKey: endpoint.endpoint_key,
-          protocol: endpoint.protocol,
-          baseUrl: endpoint.base_url,
-          customHeaders: endpoint.custom_headers,
-          protocolBundleKey: endpoint.protocol_bundle_key,
-          enabled: endpoint.enabled
-        },
-        models,
-        error
-      };
-    })
-  );
+  return discoveryService.discoverProviderModels({
+    providerKey: input.providerKey,
+    apiKey: input.apiKey,
+    modelCatalogUrl: input.modelCatalogUrl,
+    endpoints: input.endpoints.map((endpoint) => ({
+      endpointKey: endpoint.endpoint_key,
+      protocol: endpoint.protocol,
+      baseUrl: endpoint.base_url,
+      enabled: endpoint.enabled
+    }))
+  });
 }
 
 function discoveryErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Provider model discovery failed";
-}
-
-/**
- * 任一 endpoint 发现失败即整体报错。
- *
- * 不能只在「所有 endpoint 都没发现到模型」时报错：那样单个 endpoint 失败会被
- * 静默吞掉，只留一条 model_sync_runs 记录，前端只显示最新一条成功记录，
- * 结果是 provider 建好了但某个 endpoint 永远空着，用户无从得知。
- */
-function ensureProviderDiscoveryUsable(endpointBundles: EndpointDiscoveryBundle[]): void {
-  const failedBundles = endpointBundles.filter((bundle) => bundle.error !== undefined);
-  if (failedBundles.length === 0) {
-    return;
-  }
-
-  const first = failedBundles[0]!;
-  const failedKeys = failedBundles.map((bundle) => bundle.endpoint.endpointKey);
-  throw new HttpError(
-    isHttpError(first.error) ? first.error.statusCode : 502,
-    isHttpError(first.error) ? first.error.code : "provider_discovery_failed",
-    `Provider model discovery failed for endpoint ${failedKeys.join(", ")}: ${
-      discoveryErrorMessage(first.error)
-    }`,
-    isHttpError(first.error) ? first.error.retryable : false,
-    {
-      failed_endpoints: failedBundles.map((bundle) => ({
-        endpoint_key: bundle.endpoint.endpointKey,
-        protocol: bundle.endpoint.protocol,
-        base_url: bundle.endpoint.baseUrl,
-        error: discoveryErrorMessage(bundle.error)
-      }))
-    }
-  );
 }
 
 function serializeProviderDetails(details: ReturnType<ManagedProviderRepository["getProviderDetails"]>) {
@@ -605,13 +521,14 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
     status_updated_at: model.statusUpdatedAt ?? null,
     status_cooldown_until: model.statusCooldownUntil ?? null,
     rate_limit_strike: model.rateLimitStrike ?? 0,
-    recent_error_count: model.recentErrorCount ?? 0,
-    endpoint_key:
-      details.endpoints.find((endpoint) => endpoint.id === model.endpointId)?.endpointKey ?? "default"
+    recent_error_count: model.recentErrorCount ?? 0
   });
   const accountModelsByAccountId = new Map(
     details.accountModels.map((item) => [item.accountId, item.models] as const)
   );
+  const accountById = new Map(details.accounts.map((account) => [account.id, account]));
+  const endpointById = new Map(details.endpoints.map((endpoint) => [endpoint.id, endpoint]));
+  const modelById = new Map(details.models.map((model) => [model.id, model]));
 
   const accounts = (details.accounts ?? (details.credential ? [details.credential] : [])).map((account) => {
     let quota: Record<string, unknown> | null = null;
@@ -683,6 +600,7 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
     display_name: details.provider.displayName,
     protocol: details.endpoints[0]?.protocol ?? "openai",
     base_url: details.provider.baseUrl,
+    model_catalog_url: details.provider.modelCatalogUrl,
     website_url: details.provider.websiteUrl,
     provider_kind: details.provider.providerKind ?? "custom",
     enabled: details.provider.enabled,
@@ -703,12 +621,24 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
       custom_headers: parseCustomHeaders(endpoint.customHeadersJson),
       protocol_bundle_key: endpoint.protocolBundleKey ?? null,
       enabled: endpoint.enabled,
+      runtime_status: endpoint.runtimeStatus,
+      status_reason: endpoint.statusReason,
+      status_message: endpoint.statusMessage,
+      status_source: endpoint.statusSource,
+      status_updated_at: endpoint.statusUpdatedAt,
+      status_cooldown_until: endpoint.statusCooldownUntil,
+      recent_error_count: endpoint.recentErrorCount,
       supports_streaming: endpoint.supportsStreaming,
       supports_tools: endpoint.supportsTools,
       supports_json_mode: endpoint.supportsJsonMode
     })),
     latest_sync: details.latestSync
       ? {
+          account_key:
+            details.latestSync.accountId
+              ? accountById.get(details.latestSync.accountId)?.accountKey ?? null
+              : null,
+          catalog_url: details.latestSync.catalogUrl,
           status: details.latestSync.status,
           error_message: details.latestSync.errorMessage,
           started_at: details.latestSync.startedAt,
@@ -716,19 +646,79 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
           discovered_count: details.latestSync.discoveredCount
         }
       : null,
-    models: details.models.map(serializeModel)
+    models: details.models.map(serializeModel),
+    account_endpoint_models: details.accountEndpointModels.flatMap((observation) => {
+      const account = accountById.get(observation.accountId);
+      const endpoint = endpointById.get(observation.endpointId);
+      const model = modelById.get(observation.managedModelId);
+      if (!account || !endpoint || !model) {
+        return [];
+      }
+      return [{
+        account_key: account.accountKey,
+        endpoint_key: endpoint.endpointKey,
+        model_key: model.modelKey,
+        runtime_status: observation.runtimeStatus,
+        status_reason: observation.statusReason,
+        status_message: observation.statusMessage,
+        status_source: observation.statusSource,
+        status_updated_at: observation.statusUpdatedAt,
+        status_cooldown_until: observation.statusCooldownUntil,
+        last_success_at: observation.lastSuccessAt,
+        last_error_at: observation.lastErrorAt,
+        last_error_code: observation.lastErrorCode,
+        last_error_message: observation.lastErrorMessage
+      }];
+    })
   };
+}
+
+interface AdminProviderDependencies {
+  runtimeManager: RuntimeManagerLike;
+  repository: ManagedProviderRepository;
+  discoveryService: ProviderModelDiscoveryService;
+  secretCipher: SecretCipher;
+  runtimeStatusService?: RuntimeStatusService;
+}
+
+async function syncAccountModels(
+  dependencies: AdminProviderDependencies,
+  details: ManagedProviderDetails,
+  account: ManagedCredentialRow
+): Promise<ManagedProviderDetails> {
+  const apiKey = dependencies.secretCipher.decrypt(account.apiKeyEncrypted);
+  try {
+    const result = await dependencies.discoveryService.discoverProviderModels({
+      providerKey: details.provider.providerKey,
+      apiKey,
+      modelCatalogUrl: details.provider.modelCatalogUrl,
+      endpoints: details.endpoints.map((endpoint) => ({
+        endpointKey: endpoint.endpointKey,
+        protocol: endpoint.protocol as "openai" | "anthropic",
+        baseUrl: endpoint.baseUrl,
+        enabled: endpoint.enabled
+      }))
+    });
+    return dependencies.repository.syncProviderModels(details.provider.providerKey, {
+      accountKey: account.accountKey,
+      catalogUrl: result.catalogUrl,
+      status: "success",
+      models: result.models
+    }) ?? details;
+  } catch (error) {
+    return dependencies.repository.syncProviderModels(details.provider.providerKey, {
+      accountKey: account.accountKey,
+      catalogUrl: details.provider.modelCatalogUrl,
+      status: "error",
+      errorMessage: discoveryErrorMessage(error),
+      models: []
+    }) ?? details;
+  }
 }
 
 export async function registerAdminProvidersRoutes(
   fastify: FastifyInstance,
-  dependencies: {
-    runtimeManager: RuntimeManagerLike;
-    repository: ManagedProviderRepository;
-    discoveryService: ProviderModelDiscoveryService;
-    secretCipher: SecretCipher;
-    runtimeStatusService?: RuntimeStatusService;
-  }
+  dependencies: AdminProviderDependencies
 ) {
   fastify.get<{ Querystring: unknown }>("/admin/api/providers", async (request) => {
     const query = providerListQuerySchema.parse(request.query);
@@ -829,26 +819,9 @@ export async function registerAdminProvidersRoutes(
       );
     }
 
-    const modelEndpoint = model.endpointId
-      ? details.endpoints.find((item) => item.id === model.endpointId)
-      : null;
-    const requestedEndpoint = body.endpoint_key
-      ? details.endpoints.find((item) => item.endpointKey === body.endpoint_key)
-      : null;
-    if (body.endpoint_key && !requestedEndpoint) {
-      throw new HttpError(404, "endpoint_not_found", "Endpoint not found");
-    }
-    if (requestedEndpoint && modelEndpoint && requestedEndpoint.id !== modelEndpoint.id) {
-      throw new HttpError(400, "model_endpoint_mismatch", "Selected model belongs to another endpoint");
-    }
-
-    const endpoint =
-      requestedEndpoint ??
-      modelEndpoint ??
-      details.endpoints.find((item) => item.enabled) ??
-      details.endpoints[0];
+    const endpoint = details.endpoints.find((item) => item.endpointKey === body.endpoint_key);
     if (!endpoint) {
-      throw new HttpError(404, "endpoint_not_found", "Provider endpoint not found");
+      throw new HttpError(404, "endpoint_not_found", "Endpoint not found");
     }
 
     const snapshot = dependencies.runtimeManager.getSnapshot();
@@ -958,6 +931,7 @@ export async function registerAdminProvidersRoutes(
         snapshot,
         providerKey: details.provider.providerKey,
         accountKey: account.accountKey,
+        endpointKey: endpoint.endpointKey,
         modelKey: model.modelKey
       });
 
@@ -981,6 +955,7 @@ export async function registerAdminProvidersRoutes(
         snapshot,
         providerKey: details.provider.providerKey,
         accountKey: account.accountKey,
+        endpointKey: endpoint.endpointKey,
         modelKey: model.modelKey,
         error
       });
@@ -996,10 +971,31 @@ export async function registerAdminProvidersRoutes(
         latency_ms: Date.now() - startedAt,
         upstream_status: isHttpError(error) ? error.statusCode : null,
         error_code: isHttpError(error) ? error.code : "provider_test_failed",
-        error_message: error instanceof Error ? error.message : "Provider test failed"
+        error_message: error instanceof Error ? error.message : "Provider test failed",
+        endpoint_key: endpoint.endpointKey
       };
     }
   });
+
+  fastify.post<{ Params: { providerKey: string }; Body: unknown }>(
+    "/admin/api/providers/:providerKey/account-endpoint-models/clear-status",
+    async (request) => {
+      const body = clearAccountEndpointModelStatusBodySchema.parse(request.body);
+      const cleared = dependencies.repository.clearAccountEndpointModelStatus(
+        request.params.providerKey,
+        body.account_key,
+        body.endpoint_key,
+        body.model_key
+      );
+      if (!cleared) {
+        throw new HttpError(404, "observation_not_found", "Observed combination status not found");
+      }
+      await dependencies.runtimeManager.reload();
+      return serializeProviderDetails(
+        dependencies.repository.getProviderDetails(request.params.providerKey)
+      );
+    }
+  );
 
   fastify.post<{ Body: unknown }>("/admin/api/providers", async (request, reply) => {
     const body = createProviderBodySchema.parse(request.body);
@@ -1013,7 +1009,6 @@ export async function registerAdminProvidersRoutes(
       protocol: body.protocol,
       baseUrl: body.base_url,
       endpoints: body.endpoints ?? template?.endpoints.map((endpoint) => ({
-        endpoint_key: endpoint.endpoint_key,
         protocol: endpoint.protocol,
         base_url: endpoint.base_url,
         custom_headers: endpoint.custom_headers,
@@ -1041,12 +1036,26 @@ export async function registerAdminProvidersRoutes(
       }
     }
     const discoveryApiKey = primaryAccount?.api_key ?? body.api_key;
-    const endpointBundles = mergeManualModelsIntoBundles(providerKey, await discoverEndpointBundles(dependencies.discoveryService, {
+    let catalogUrl: string | null = body.model_catalog_url || null;
+    let discoveredModels: ManagedDiscoveredModelInput[] = [];
+    let discoveryError: string | null = null;
+    try {
+      const result = await discoverProviderCatalog(dependencies.discoveryService, {
+        providerKey,
+        apiKey: discoveryApiKey,
+        modelCatalogUrl: body.model_catalog_url || null,
+        endpoints: endpointInputs
+      });
+      catalogUrl = result.catalogUrl;
+      discoveredModels = result.models;
+    } catch (error) {
+      discoveryError = discoveryErrorMessage(error);
+    }
+    const endpointBundles = mergeManualModelsIntoBundles(
       providerKey,
-      apiKey: discoveryApiKey,
-      endpoints: endpointInputs
-    }), body.models);
-    ensureProviderDiscoveryUsableOrManual(endpointBundles, body.models);
+      buildEndpointBundles(endpointInputs, discoveredModels),
+      body.models
+    );
 
     const details = dependencies.repository.createProviderWithEndpointBundles({
       provider: buildProviderInput({
@@ -1066,7 +1075,13 @@ export async function registerAdminProvidersRoutes(
             remark: primaryAccount.remark?.trim() || null
           }
         : undefined,
-      endpointBundles
+      endpointBundles,
+      initialSync: {
+        status: discoveryError ? "error" : "success",
+        catalogUrl,
+        errorMessage: discoveryError,
+        discoveredCount: discoveredModels.length
+      }
     });
 
     for (const account of body.accounts?.slice(1) ?? []) {
@@ -1081,6 +1096,33 @@ export async function registerAdminProvidersRoutes(
       });
       if (!created) {
         throw new HttpError(400, "invalid_account", `Unable to create account ${account.account_key}`);
+      }
+      try {
+        const result = await discoverProviderCatalog(dependencies.discoveryService, {
+          providerKey,
+          apiKey: account.api_key,
+          modelCatalogUrl: body.model_catalog_url || null,
+          endpoints: endpointInputs
+        });
+        const models = mergeManualModelsIntoBundles(
+          providerKey,
+          buildEndpointBundles(endpointInputs, result.models),
+          body.models
+        ).flatMap((bundle) => bundle.models);
+        dependencies.repository.syncProviderModels(providerKey, {
+          accountKey: account.account_key,
+          catalogUrl: result.catalogUrl,
+          status: "success",
+          models
+        });
+      } catch (error) {
+        dependencies.repository.syncProviderModels(providerKey, {
+          accountKey: account.account_key,
+          catalogUrl: body.model_catalog_url || null,
+          status: "error",
+          errorMessage: discoveryErrorMessage(error),
+          models: []
+        });
       }
     }
 
@@ -1099,60 +1141,39 @@ export async function registerAdminProvidersRoutes(
         throw new HttpError(404, "provider_not_found", "Provider not found");
       }
 
-      const apiKey = dependencies.secretCipher.decrypt(details.credential.apiKeyEncrypted);
-      const endpoints = details.endpoints.filter((item) => item.enabled);
-      if (endpoints.length === 0) {
-        throw new HttpError(404, "endpoint_not_found", "Provider endpoint not found");
-      }
-
       let updated = details;
-      const failures: Array<{ endpoint_key: string; error: string }> = [];
-      for (const endpoint of endpoints) {
-        let discoveredModels: ManagedDiscoveredModelInput[] = [];
+      for (const account of details.accounts) {
+        const apiKey = dependencies.secretCipher.decrypt(account.apiKeyEncrypted);
         try {
-          discoveredModels = await discoverModelsForEndpoint(dependencies.discoveryService, {
+          const result = await dependencies.discoveryService.discoverProviderModels({
             providerKey: details.provider.providerKey,
-            endpointKey: endpoint.endpointKey,
-            protocol: endpoint.protocol as "openai" | "anthropic",
-            baseUrl: endpoint.baseUrl,
-            apiKey
+            apiKey,
+            modelCatalogUrl: details.provider.modelCatalogUrl,
+            endpoints: details.endpoints.map((endpoint) => ({
+              endpointKey: endpoint.endpointKey,
+              protocol: endpoint.protocol as "openai" | "anthropic",
+              baseUrl: endpoint.baseUrl,
+              enabled: endpoint.enabled
+            }))
           });
+          updated = dependencies.repository.syncProviderModels(details.provider.providerKey, {
+            accountKey: account.accountKey,
+            catalogUrl: result.catalogUrl,
+            status: "success",
+            models: result.models
+          }) ?? updated;
         } catch (error) {
           updated = dependencies.repository.syncProviderModels(details.provider.providerKey, {
-            endpointKey: endpoint.endpointKey,
-            accountKey: details.accounts?.[0]?.accountKey ?? details.credential?.accountKey ?? "default",
+            accountKey: account.accountKey,
+            catalogUrl: details.provider.modelCatalogUrl,
             status: "error",
             errorMessage: error instanceof Error ? error.message : "discovery_failed",
             models: []
           }) ?? updated;
-          failures.push({
-            endpoint_key: endpoint.endpointKey,
-            error: error instanceof Error ? error.message : "discovery_failed"
-          });
-          continue;
         }
-
-        updated = dependencies.repository.syncProviderModels(details.provider.providerKey, {
-          endpointKey: endpoint.endpointKey,
-          accountKey: details.accounts?.[0]?.accountKey ?? details.credential?.accountKey ?? "default",
-          status: "success",
-          models: discoveredModels
-        }) ?? updated;
       }
 
       await dependencies.runtimeManager.reload();
-      if (failures.length > 0) {
-        throw new HttpError(
-          502,
-          "provider_discovery_failed",
-          `Provider model discovery failed for endpoint ${
-            failures.map((item) => item.endpoint_key).join(", ")
-          }: ${failures[0]!.error}`,
-          false,
-          { failed_endpoints: failures }
-        );
-      }
-
       return serializeProviderDetails(updated);
     }
   );
@@ -1166,11 +1187,6 @@ export async function registerAdminProvidersRoutes(
         throw new HttpError(404, "provider_not_found", "Provider not found");
       }
 
-      const credentialForSync = body.api_key
-        ? body.api_key
-        : existing.credential
-          ? dependencies.secretCipher.decrypt(existing.credential.apiKeyEncrypted)
-          : null;
       const endpointInputs = normalizeEndpointInputs({
         protocol: body.protocol,
         baseUrl: body.base_url,
@@ -1184,46 +1200,17 @@ export async function registerAdminProvidersRoutes(
           throw new HttpError(400, "invalid_request", "At least one endpoint is required");
         }
         ensureUniqueEndpointKeys(endpointInputs);
-        if (!credentialForSync) {
-          throw new HttpError(400, "credential_required", "API key is required when changing endpoints");
-        }
-
-        const endpointBundles = mergeManualModelsIntoBundles(
+        dependencies.repository.replaceProviderEndpoints(
           existing.provider.providerKey,
-          await discoverEndpointBundles(dependencies.discoveryService, {
-            providerKey: existing.provider.providerKey,
-            apiKey: credentialForSync,
-            endpoints: endpointInputs
-          }),
-          body.models
+          endpointInputs.map((endpoint) => ({
+            endpointKey: endpoint.protocol,
+            protocol: endpoint.protocol,
+            baseUrl: endpoint.base_url,
+            customHeaders: endpoint.custom_headers,
+            protocolBundleKey: endpoint.protocol_bundle_key,
+            enabled: endpoint.enabled
+          }))
         );
-        ensureProviderDiscoveryUsableOrManual(endpointBundles, body.models);
-
-        const updated = dependencies.repository.replaceProviderWithEndpointBundles({
-          providerKey: existing.provider.providerKey,
-          provider: buildProviderInput(
-            {
-              provider_key: existing.provider.providerKey,
-              display_name: body.display_name ?? existing.provider.displayName,
-              website_url: body.website_url === "" ? null : body.website_url ?? existing.provider.websiteUrl,
-              provider_kind:
-                body.provider_kind ??
-                (existing.provider.providerKind as "official" | "relay" | "custom" | undefined),
-              priority: body.priority ?? existing.provider.priority ?? 0,
-              trust_level: existing.provider.trustLevel as "low" | "medium" | "high",
-              privacy_level: existing.provider.privacyLevel as "public_only" | "normal" | "private",
-              usage_trust: existing.provider.usageTrust as "low" | "medium" | "high",
-              enabled: body.enabled ?? existing.provider.enabled
-            },
-            endpointInputs
-          ),
-          encryptedApiKey: body.api_key ? dependencies.secretCipher.encrypt(body.api_key) : undefined,
-          apiKeyHint: body.api_key ? ManagedProviderRepository.toApiKeyHint(body.api_key) : undefined,
-          endpointBundles
-        });
-
-        await dependencies.runtimeManager.reload();
-        return serializeProviderDetails(updated);
       }
 
       dependencies.repository.updateProvider(request.params.providerKey, {
@@ -1231,6 +1218,8 @@ export async function registerAdminProvidersRoutes(
         displayName: body.display_name,
         priority: body.priority,
         websiteUrl: body.website_url === "" ? null : body.website_url,
+        modelCatalogUrl:
+          body.model_catalog_url !== undefined ? body.model_catalog_url || null : undefined,
         providerKind: body.provider_kind
       });
 
@@ -1243,12 +1232,8 @@ export async function registerAdminProvidersRoutes(
       }
 
       for (const model of body.models ?? []) {
-        const endpointKey = model.endpoint_key ?? existing.endpoints[0]?.endpointKey ?? "default";
         dependencies.repository.upsertManualModel(request.params.providerKey, {
-          endpointKey,
-          model: buildManualModel(request.params.providerKey, {
-            endpoint_key: endpointKey
-          }, model)
+          model: buildManualModel(request.params.providerKey, model)
         });
       }
 
@@ -1281,7 +1266,6 @@ export async function registerAdminProvidersRoutes(
 
       const endpointInputs = normalizeEndpointInputs({
         endpoints: [{
-          endpoint_key: body.endpoint_key,
           protocol: body.protocol,
           base_url: body.base_url,
           custom_headers: body.custom_headers,
@@ -1299,43 +1283,22 @@ export async function registerAdminProvidersRoutes(
         }
       }
 
-      const apiKey = body.api_key ?? dependencies.secretCipher.decrypt(existing.credential.apiKeyEncrypted);
-      const endpointBundles = await discoverEndpointBundles(dependencies.discoveryService, {
-        providerKey: existing.provider.providerKey,
-        apiKey,
-        endpoints: endpointInputs
-      });
-      ensureProviderDiscoveryUsable(endpointBundles);
-
       let updated = existing;
-      for (const bundle of endpointBundles) {
+      for (const endpointInput of endpointInputs) {
         const endpoint = dependencies.repository.createProviderEndpoint(request.params.providerKey, {
-          endpointKey: bundle.endpoint.endpointKey,
-          protocol: bundle.endpoint.protocol,
-          baseUrl: bundle.endpoint.baseUrl,
-          customHeaders: bundle.endpoint.customHeaders,
-          protocolBundleKey: bundle.endpoint.protocolBundleKey,
-          enabled: bundle.endpoint.enabled
+          endpointKey: endpointInput.protocol,
+          protocol: endpointInput.protocol,
+          baseUrl: endpointInput.base_url,
+          customHeaders: endpointInput.custom_headers,
+          protocolBundleKey: endpointInput.protocol_bundle_key,
+          enabled: endpointInput.enabled
         });
 
         if (!endpoint) {
           throw new HttpError(404, "provider_not_found", "Provider not found");
         }
 
-        updated = dependencies.repository.syncProviderModels(existing.provider.providerKey, {
-          endpointKey: endpoint.endpointKey,
-          accountKey: existing.accounts?.[0]?.accountKey ?? existing.credential?.accountKey ?? "default",
-          status: "success",
-          models: bundle.models
-        }) ?? updated;
-      }
-
-      if (body.api_key) {
-        dependencies.repository.updateCredential(
-          request.params.providerKey,
-          dependencies.secretCipher.encrypt(body.api_key),
-          ManagedProviderRepository.toApiKeyHint(body.api_key)
-        );
+        updated = dependencies.repository.getProviderDetails(request.params.providerKey) ?? updated;
       }
 
       await dependencies.runtimeManager.reload();
@@ -1380,39 +1343,6 @@ export async function registerAdminProvidersRoutes(
     }
   );
 
-  fastify.post<{ Params: { providerKey: string; endpointKey: string } }>(
-    "/admin/api/providers/:providerKey/endpoints/:endpointKey/sync-models",
-    async (request) => {
-      const details = dependencies.repository.getProviderDetails(request.params.providerKey);
-      const endpoint = dependencies.repository.getProviderEndpoint(
-        request.params.providerKey,
-        request.params.endpointKey
-      );
-      if (!details || !details.credential || !endpoint) {
-        throw new HttpError(404, "endpoint_not_found", "Provider endpoint not found");
-      }
-
-      const apiKey = dependencies.secretCipher.decrypt(details.credential.apiKeyEncrypted);
-      const discoveredModels = await discoverModelsForEndpoint(dependencies.discoveryService, {
-        providerKey: details.provider.providerKey,
-        endpointKey: endpoint.endpointKey,
-        protocol: endpoint.protocol as "openai" | "anthropic",
-        baseUrl: endpoint.baseUrl,
-        apiKey
-      });
-
-      const updated = dependencies.repository.syncProviderModels(details.provider.providerKey, {
-        endpointKey: endpoint.endpointKey,
-        accountKey: details.accounts?.[0]?.accountKey ?? details.credential?.accountKey ?? "default",
-        status: "success",
-        models: discoveredModels
-      });
-
-      await dependencies.runtimeManager.reload();
-      return serializeProviderDetails(updated);
-    }
-  );
-
   fastify.patch<{ Params: { providerKey: string }; Body: unknown }>(
     "/admin/api/providers/:providerKey/models",
     async (request) => {
@@ -1443,10 +1373,8 @@ export async function registerAdminProvidersRoutes(
         throw new HttpError(404, "provider_not_found", "Provider not found");
       }
 
-      const endpointKey = body.endpoint_key ?? existing.endpoints[0]?.endpointKey ?? "default";
       const updated = dependencies.repository.upsertManualModel(request.params.providerKey, {
-        endpointKey,
-        model: buildManualModel(request.params.providerKey, { endpoint_key: endpointKey }, body)
+        model: buildManualModel(request.params.providerKey, body)
       });
 
       if (!updated) {
@@ -1497,11 +1425,12 @@ export async function registerAdminProvidersRoutes(
         throw new HttpError(400, "invalid_request", "Failed to create account");
       }
 
+      const createdDetails =
+        dependencies.repository.getProviderDetails(request.params.providerKey) ?? existing;
+      const updated = await syncAccountModels(dependencies, createdDetails, created);
       await dependencies.runtimeManager.reload();
       reply.status(201);
-      return serializeProviderDetails(
-        dependencies.repository.getProviderDetails(request.params.providerKey)
-      );
+      return serializeProviderDetails(updated);
     }
   );
 
@@ -1560,63 +1489,9 @@ export async function registerAdminProvidersRoutes(
         throw new HttpError(404, "account_not_found", "Account not found");
       }
 
-      const apiKey = dependencies.secretCipher.decrypt(account.apiKeyEncrypted);
-      const endpoints = details.endpoints.filter((item) => item.enabled);
-
-      if (endpoints.length === 0) {
-        throw new HttpError(404, "endpoint_not_found", "Provider endpoint not found");
-      }
-
-      let lastUpdated = details;
-      const failures: Array<{ endpoint_key: string; error: string }> = [];
-      for (const endpoint of endpoints) {
-        let models: ManagedDiscoveredModelInput[] = [];
-        try {
-          models = await discoverModelsForEndpoint(dependencies.discoveryService, {
-            providerKey: details.provider.providerKey,
-            endpointKey: endpoint.endpointKey,
-            protocol: endpoint.protocol as "openai" | "anthropic",
-            baseUrl: endpoint.baseUrl,
-            apiKey
-          });
-        } catch (error) {
-          lastUpdated = dependencies.repository.syncProviderModels(details.provider.providerKey, {
-            endpointKey: endpoint.endpointKey,
-            accountKey: account.accountKey,
-            status: "error",
-            errorMessage: error instanceof Error ? error.message : "discovery_failed",
-            models: []
-          }) ?? lastUpdated;
-          failures.push({
-            endpoint_key: endpoint.endpointKey,
-            error: error instanceof Error ? error.message : "discovery_failed"
-          });
-          continue;
-        }
-
-        lastUpdated = dependencies.repository.syncProviderModels(details.provider.providerKey, {
-          endpointKey: endpoint.endpointKey,
-          accountKey: account.accountKey,
-          status: "success",
-          models
-        }) ?? lastUpdated;
-      }
+      const lastUpdated = await syncAccountModels(dependencies, details, account);
 
       await dependencies.runtimeManager.reload();
-
-      // 成功的 endpoint 已落库，但失败必须让调用方看到，不能只留在 model_sync_runs 里
-      if (failures.length > 0) {
-        throw new HttpError(
-          502,
-          "provider_discovery_failed",
-          `Provider model discovery failed for endpoint ${
-            failures.map((item) => item.endpoint_key).join(", ")
-          }: ${failures[0]!.error}`,
-          false,
-          { failed_endpoints: failures }
-        );
-      }
-
       return serializeProviderDetails(lastUpdated);
     }
   );

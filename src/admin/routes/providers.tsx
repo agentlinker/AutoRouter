@@ -28,6 +28,7 @@ import { useFieldArray, useForm, type Control } from "react-hook-form";
 import { z } from "zod";
 
 import {
+  clearProviderAccountEndpointModelStatus,
   createProvider,
   createProviderAccount,
   deleteProvider,
@@ -74,13 +75,11 @@ interface ProviderFormData {
   provider_key?: string;
   display_name: string;
   endpoints: Array<{
-    endpoint_key?: string;
     protocol: "openai" | "anthropic" | "all";
     base_url: string;
     custom_headers?: Array<{ key: string; value: string }>;
   }>;
   models: Array<{
-    endpoint_key: string;
     model_name: string;
     provider_model_id: string;
     context_window: string;
@@ -89,6 +88,7 @@ interface ProviderFormData {
     supports_json_mode: boolean;
   }>;
   website_url?: string;
+  model_catalog_url?: string;
   api_key?: string;
   provider_kind?: "official" | "relay" | "custom";
   priority: string;
@@ -107,7 +107,6 @@ const providerFormSchema = z.object({
   provider_key: z.string().trim().optional(),
   display_name: z.string().trim().min(1, "请填写 Display Name"),
   endpoints: z.array(z.object({
-    endpoint_key: z.string().optional(),
     protocol: z.enum(["openai", "anthropic", "all"]),
     base_url: z.string().trim().url("Base URL 必须是有效网址"),
     custom_headers: z.array(z.object({
@@ -116,7 +115,6 @@ const providerFormSchema = z.object({
     })).optional()
   }).strict()).min(1, "至少添加一个 Endpoint"),
   models: z.array(z.object({
-    endpoint_key: z.string(),
     model_name: z.string(),
     provider_model_id: z.string(),
     context_window: z.string(),
@@ -130,6 +128,13 @@ const providerFormSchema = z.object({
     .optional()
     .refine((value) => !value || z.string().url().safeParse(value).success, {
       message: "官网地址必须是有效网址"
+    }),
+  model_catalog_url: z
+    .string()
+    .trim()
+    .optional()
+    .refine((value) => !value || z.string().url().safeParse(value).success, {
+      message: "模型目录 URL 必须是有效网址"
     }),
   api_key: z.string().optional(),
   provider_kind: z.enum(["official", "relay", "custom"]).optional(),
@@ -240,7 +245,6 @@ function providerEndpointsToForm(
       continue;
     }
     result.push({
-      endpoint_key: endpoint.endpoint_key,
       protocol: endpoint.protocol as "openai" | "anthropic",
       base_url: endpoint.base_url,
       custom_headers: endpoint.custom_headers
@@ -250,53 +254,6 @@ function providerEndpointsToForm(
   }
 
   return result;
-}
-
-interface ProviderEndpointDisplayRow {
-  key: string;
-  protocolLabel: string;
-  baseUrl: string;
-  customHeaders?: Record<string, string>;
-  enabled: boolean;
-}
-
-function providerEndpointsToDisplayRows(
-  endpoints: ProviderDetails["endpoints"]
-): ProviderEndpointDisplayRow[] {
-  const allBundle = endpoints.filter((endpoint) => endpoint.protocol_bundle_key === "all");
-  const allProtocols = new Set(allBundle.map((endpoint) => endpoint.protocol));
-  const hasAllBundle = allProtocols.has("openai") && allProtocols.has("anthropic");
-  const consumed = new Set<string>();
-  const rows: ProviderEndpointDisplayRow[] = [];
-
-  if (hasAllBundle) {
-    const representative = allBundle[0]!;
-    for (const endpoint of allBundle) {
-      consumed.add(endpoint.endpoint_key);
-    }
-    rows.push({
-      key: "bundle:all",
-      protocolLabel: protocolDisplayLabel("all"),
-      baseUrl: representative.base_url,
-      customHeaders: representative.custom_headers,
-      enabled: allBundle.every((endpoint) => endpoint.enabled)
-    });
-  }
-
-  for (const endpoint of endpoints) {
-    if (consumed.has(endpoint.endpoint_key)) {
-      continue;
-    }
-    rows.push({
-      key: endpoint.endpoint_key,
-      protocolLabel: protocolDisplayLabel(endpoint.protocol as "openai" | "anthropic"),
-      baseUrl: endpoint.base_url,
-      customHeaders: endpoint.custom_headers,
-      enabled: endpoint.enabled
-    });
-  }
-
-  return rows;
 }
 
 function formatCustomHeaders(headers: Record<string, string> | undefined): string {
@@ -309,13 +266,35 @@ function formatCustomHeaders(headers: Record<string, string> | undefined): strin
     .join("\n");
 }
 
-function providerModelProtocolLabel(provider: ProviderDetails, model: ProviderModel): string {
-  const endpoint = provider.endpoints.find((item) => item.endpoint_key === model.endpoint_key);
-  if (!endpoint) {
-    return model.endpoint_key;
-  }
-
-  return protocolDisplayLabel(endpoint.protocol as "openai" | "anthropic");
+function modelRouteSummary(provider: ProviderDetails, model: ProviderModel): {
+  visible: number;
+  accounts: number;
+  verified: number;
+  combinations: number;
+} {
+  const accounts = provider.accounts ?? [];
+  const visible = accounts.filter((account) =>
+    account.models?.some((item) => item.model_key === model.model_key)
+  ).length;
+  const enabledEndpoints = provider.endpoints.filter((endpoint) => endpoint.enabled);
+  const visibleAccountKeys = new Set(
+    accounts
+      .filter((account) => account.models?.some((item) => item.model_key === model.model_key))
+      .map((account) => account.account_key)
+  );
+  const verified = (provider.account_endpoint_models ?? []).filter((observation) =>
+    observation.model_key === model.model_key &&
+    visibleAccountKeys.has(observation.account_key) &&
+    enabledEndpoints.some((endpoint) => endpoint.endpoint_key === observation.endpoint_key) &&
+    observation.runtime_status === "normal" &&
+    Boolean(observation.last_success_at)
+  ).length;
+  return {
+    visible,
+    accounts: accounts.length,
+    verified,
+    combinations: visibleAccountKeys.size * enabledEndpoints.length
+  };
 }
 
 function toDatetimeLocal(value: string | null | undefined): string {
@@ -880,7 +859,7 @@ export function ProviderEditPage() {
   return (
     <ProviderFormPage
       title="编辑 Provider"
-      help="可直接增删 Endpoint；保存后会重新检查并同步可用模型。"
+      help="可直接增删 Endpoint；模型目录与推理 Endpoint 分开维护。"
       mode="edit"
       token={token}
       provider={provider}
@@ -898,6 +877,11 @@ export function ProviderDetailPage() {
   const { providerKey } = useParams({ from: "/providers/$providerKey" });
   const { provider, isLoading } = useProvider(token, providerKey);
   const queryClient = useQueryClient();
+  const [testSelection, setTestSelection] = useState<{
+    accountKey: string;
+    modelKey: string;
+    endpointKey: string;
+  } | null>(null);
   const mutation = useMutation({
     mutationFn: async (action: "sync" | "toggle" | "delete") => {
       if (!provider) {
@@ -1017,29 +1001,44 @@ export function ProviderDetailPage() {
               "未填写"
             )}
           </dd>
+          <dt>模型目录</dt>
+          <dd>{provider.model_catalog_url || provider.latest_sync?.catalog_url || "未配置"}</dd>
           <dt>添加时间</dt>
           <dd>{formatDateTime(provider.created_at)}</dd>
           <dt>修改时间</dt>
           <dd>{formatDateTime(provider.updated_at)}</dd>
           <dt>最近同步</dt>
-          <dd>{provider.latest_sync?.status ?? "暂无记录"}</dd>
+          <dd>
+            {provider.latest_sync?.status ?? "暂无记录"}
+            {provider.latest_sync?.account_key ? ` · ${provider.latest_sync.account_key}` : ""}
+            {provider.latest_sync?.error_message ? ` · ${provider.latest_sync.error_message}` : ""}
+          </dd>
         </dl>
         <h3>协议配置</h3>
         <div className="model-capability-table endpoint-table">
           <div className="model-capability-header">
-            <span>协议类型</span>
+            <span>协议</span>
             <span>Base URL</span>
             <span>状态</span>
             <span>自定义 Headers</span>
           </div>
-          {providerEndpointsToDisplayRows(provider.endpoints).map((endpoint) => (
-            <div className="model-capability-row" key={endpoint.key}>
-              <span className="detail-table-text endpoint-protocol-cell">{endpoint.protocolLabel}</span>
+          {provider.endpoints.map((endpoint) => (
+            <div className="model-capability-row" key={endpoint.endpoint_key}>
+              <span className="detail-table-text endpoint-protocol-cell">
+                {protocolDisplayLabel(endpoint.protocol as "openai" | "anthropic")}
+              </span>
               <div className="model-name-cell">
-                <span className="detail-table-text endpoint-base-url-cell">{endpoint.baseUrl}</span>
+                <span className="detail-table-text endpoint-base-url-cell">{endpoint.base_url}</span>
               </div>
-              <span className="detail-table-text">{endpoint.enabled ? "已启用" : "已停用"}</span>
-              <span className="detail-table-text endpoint-headers-cell">{formatCustomHeaders(endpoint.customHeaders)}</span>
+              <span
+                className={endpoint.enabled ? runtimeStatusBadgeClass(endpoint) : "badge warning"}
+                title={runtimeStatusDetail(endpoint)}
+              >
+                {endpoint.enabled ? runtimeStatusDisplayLabel(endpoint) : "已停用"}
+              </span>
+              <span className="detail-table-text endpoint-headers-cell">
+                {formatCustomHeaders(endpoint.custom_headers)}
+              </span>
             </div>
           ))}
         </div>
@@ -1070,7 +1069,12 @@ export function ProviderDetailPage() {
               <div className="model-name-cell">
                 <strong title={model.model_name}>{model.model_name}</strong>
               </div>
-              <span className="detail-table-text endpoint-protocol-cell">{providerModelProtocolLabel(provider, model)}</span>
+              <span className="detail-table-text endpoint-protocol-cell">
+                {(() => {
+                  const summary = modelRouteSummary(provider, model);
+                  return `${summary.visible}/${summary.accounts} · ${summary.verified}/${summary.combinations}`;
+                })()}
+              </span>
               <div className="detail-table-text provider-model-enabled-cell">
                 <SwitchControl
                   checked={model.enabled !== false}
@@ -1135,7 +1139,28 @@ export function ProviderDetailPage() {
             </div>
           ))}
         </div>
+        <ProviderConnectivityMatrix
+          token={token}
+          provider={provider}
+          onTest={setTestSelection}
+          onChanged={() => {
+            void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
+            void queryClient.invalidateQueries({ queryKey: providerQueryKey(token, providerKey) });
+          }}
+        />
       </div>
+      {testSelection ? (
+        <ProviderModelTestDialog
+          token={token}
+          provider={provider}
+          initialSelection={testSelection}
+          onChanged={() => {
+            void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
+            void queryClient.invalidateQueries({ queryKey: providerQueryKey(token, providerKey) });
+          }}
+          onClose={() => setTestSelection(null)}
+        />
+      ) : null}
     </section>
   );
 }
@@ -1240,7 +1265,6 @@ function ProviderFormPage(props: {
       display_name: "",
       endpoints: [
         {
-          endpoint_key: "default",
           protocol: "openai",
           base_url: "",
           custom_headers: []
@@ -1248,6 +1272,7 @@ function ProviderFormPage(props: {
       ],
       models: [],
       website_url: "",
+      model_catalog_url: "",
       accounts: [
         {
           account_key: "account-1",
@@ -1301,6 +1326,7 @@ function ProviderFormPage(props: {
       endpoints: nextEndpoints,
       models: [],
       website_url: props.provider?.website_url ?? "",
+      model_catalog_url: props.provider?.model_catalog_url ?? "",
       accounts: props.provider?.accounts?.length
         ? props.provider.accounts.map((account) => ({
             account_key: account.account_key,
@@ -1356,10 +1382,7 @@ function ProviderFormPage(props: {
       return {
         protocol: endpoint.protocol,
         base_url: endpoint.base_url.trim(),
-        custom_headers: customHeaders,
-        ...(endpoint.endpoint_key?.trim() && endpoint.protocol !== "all"
-          ? { endpoint_key: endpoint.endpoint_key.trim() }
-          : {})
+        custom_headers: customHeaders
       };
     });
     const normalizedAccounts = values.accounts.map((account) => ({
@@ -1375,7 +1398,6 @@ function ProviderFormPage(props: {
     const normalizedModels = values.models
       .filter((model) => model.model_name.trim())
       .map((model) => ({
-        endpoint_key: model.endpoint_key || undefined,
         model_name: model.model_name.trim(),
         provider_model_id: model.provider_model_id.trim() || undefined,
         context_window: model.context_window ? Number(model.context_window) : undefined,
@@ -1393,6 +1415,7 @@ function ProviderFormPage(props: {
       display_name: values.display_name.trim(),
       endpoints: normalizedEndpoints,
       website_url: values.website_url?.trim() ?? "",
+      model_catalog_url: values.model_catalog_url?.trim() ?? "",
       api_key: normalizedAccounts[0]?.api_key ?? "",
       accounts: normalizedAccounts,
       provider_kind: values.provider_kind,
@@ -1406,6 +1429,7 @@ function ProviderFormPage(props: {
         display_name: normalized.display_name,
         endpoints: normalized.endpoints,
         website_url: normalized.website_url,
+        model_catalog_url: normalized.model_catalog_url,
         provider_kind: normalized.provider_kind,
         priority: normalized.priority,
         models: normalized.models
@@ -1468,10 +1492,12 @@ function ProviderFormPage(props: {
       if (!result) {
         return;
       }
-      setMessage({
-        text: "Provider 已保存，可用模型已更新",
-        mode: "success"
-      });
+      setMessage(result.latest_sync?.status === "error"
+        ? {
+            text: `Provider 已保存，但模型发现失败：${result.latest_sync.error_message ?? "请检查模型目录 URL"}`,
+            mode: "error"
+          }
+        : { text: "Provider 已保存，可用模型已更新", mode: "success" });
       props.onDone();
     },
     onError: (error) => {
@@ -1490,10 +1516,12 @@ function ProviderFormPage(props: {
         return;
       }
       setMergeDialog({ open: false, matches: [], pendingValues: null });
-      setMessage({
-        text: "Provider 已保存，可用模型已更新",
-        mode: "success"
-      });
+      setMessage(result.latest_sync?.status === "error"
+        ? {
+            text: `Provider 已保存，但模型发现失败：${result.latest_sync.error_message ?? "请检查模型目录 URL"}`,
+            mode: "error"
+          }
+        : { text: "Provider 已保存，可用模型已更新", mode: "success" });
       props.onDone();
     },
     onError: (error) => {
@@ -1511,8 +1539,13 @@ function ProviderFormPage(props: {
       }
       return syncProvider(props.token, props.provider.provider_key);
     },
-    onSuccess: () => {
-      setMessage({ text: "模型已同步", mode: "success" });
+    onSuccess: (result) => {
+      setMessage(result.latest_sync?.status === "error"
+        ? {
+            text: `模型发现失败：${result.latest_sync.error_message ?? "请检查模型目录 URL"}`,
+            mode: "error"
+          }
+        : { text: "模型已同步", mode: "success" });
       props.onDone();
     },
     onError: (error) => {
@@ -1597,7 +1630,6 @@ function ProviderFormPage(props: {
                 form.setValue(
                   "endpoints",
                   template.endpoints.map((endpoint) => ({
-                    endpoint_key: endpoint.endpoint_key,
                     protocol: endpoint.protocol,
                     base_url: endpoint.base_url,
                     custom_headers: endpoint.custom_headers
@@ -1637,6 +1669,15 @@ function ProviderFormPage(props: {
           <span>官网地址</span>
           <input {...form.register("website_url")} placeholder="https://example.com" />
           {errors.website_url ? <small>{errors.website_url.message}</small> : null}
+        </label>
+
+        <label className="field">
+          <span>模型目录 URL</span>
+          <input
+            {...form.register("model_catalog_url")}
+            placeholder="留空时从推理 Endpoint 推导"
+          />
+          {errors.model_catalog_url ? <small>{errors.model_catalog_url.message}</small> : null}
         </label>
 
         <label className="field">
@@ -1749,7 +1790,6 @@ function ProviderFormPage(props: {
                 className="ghost-action small-action"
                 onClick={() =>
                   appendModel({
-                    endpoint_key: "",
                     model_name: "",
                     provider_model_id: "",
                     context_window: "",
@@ -1769,22 +1809,6 @@ function ProviderFormPage(props: {
             <div className="model-editor">
               {modelFields.map((field, index) => (
                 <div className="model-editor-row" key={field.id}>
-                  <label className="field">
-                    <span>绑定协议</span>
-                    <select {...form.register(`models.${index}.endpoint_key`)}>
-                      <option value="">默认协议</option>
-                      {form.watch("endpoints").flatMap((endpoint, endpointIndex) =>
-                        expandFormEndpointProtocols(endpoint).map((protocol) => (
-                          <option
-                            key={`${endpointIndex}-${protocol}`}
-                            value={endpoint.protocol === "all" ? protocol : endpoint.endpoint_key ?? protocol}
-                          >
-                            {protocolDisplayLabel(protocol)}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </label>
                   <label className="field">
                     <span>模型名</span>
                     <input {...form.register(`models.${index}.model_name`)} placeholder="Deepseek-v4-flash" />
@@ -2038,30 +2062,55 @@ function ProviderList(props: {
 function ProviderModelTestDialog(props: {
   token: string;
   provider: ProviderDetails;
+  initialSelection?: {
+    accountKey: string;
+    modelKey: string;
+    endpointKey: string;
+  };
   onChanged: () => void;
   onClose: () => void;
 }) {
   const accounts = props.provider.accounts ?? [];
-  const [accountKey, setAccountKey] = useState(accounts[0]?.account_key ?? "");
+  const [accountKey, setAccountKey] = useState(
+    props.initialSelection?.accountKey ?? accounts[0]?.account_key ?? ""
+  );
   const selectedAccount = accounts.find((account) => account.account_key === accountKey);
   const models = selectedAccount?.models ?? [];
-  const [modelKey, setModelKey] = useState(models[0]?.model_key ?? "");
+  const endpoints = props.provider.endpoints;
+  const defaultEndpointKey =
+    endpoints.find((endpoint) => endpoint.enabled)?.endpoint_key ??
+    endpoints[0]?.endpoint_key ??
+    "";
+  const [modelKey, setModelKey] = useState(
+    props.initialSelection?.modelKey ?? models[0]?.model_key ?? ""
+  );
   const [prompt, setPrompt] = useState("Reply with OK.");
-  const [endpointKey, setEndpointKey] = useState("");
+  const [endpointKey, setEndpointKey] = useState(
+    props.initialSelection?.endpointKey ?? defaultEndpointKey
+  );
   const [temporaryHeaders, setTemporaryHeaders] = useState<Array<{ key: string; value: string }>>([]);
   const [result, setResult] = useState<ProviderModelTestResult | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
+  const [clearedObservationKey, setClearedObservationKey] = useState<string | null>(null);
+  const observationKey = `${accountKey}|${endpointKey}|${modelKey}`;
+  const observation = clearedObservationKey === observationKey
+    ? undefined
+    : (props.provider.account_endpoint_models ?? []).find((item) =>
+        item.account_key === accountKey &&
+        item.endpoint_key === endpointKey &&
+        item.model_key === modelKey
+      );
 
   useEffect(() => {
     if (!models.some((model) => model.model_key === modelKey)) {
       setModelKey(models[0]?.model_key ?? "");
     }
-    if (!endpointKey || !props.provider.endpoints.some((endpoint) => endpoint.endpoint_key === endpointKey)) {
-      setEndpointKey(props.provider.endpoints[0]?.endpoint_key ?? "");
+    if (!endpointKey || !endpoints.some((endpoint) => endpoint.endpoint_key === endpointKey)) {
+      setEndpointKey(defaultEndpointKey);
     }
     setResult(null);
     setRequestError(null);
-  }, [accountKey, modelKey, models, endpointKey, props.provider.endpoints]);
+  }, [accountKey, modelKey, models, endpointKey, endpoints, defaultEndpointKey]);
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -2069,7 +2118,7 @@ function ProviderModelTestDialog(props: {
         account_key: accountKey,
         model_key: modelKey,
         prompt: prompt.trim(),
-        endpoint_key: endpointKey || undefined,
+        endpoint_key: endpointKey,
         temporary_headers: Object.fromEntries(
           temporaryHeaders
             .map((pair) => [pair.key.trim().toLowerCase(), pair.value] as const)
@@ -2084,6 +2133,23 @@ function ProviderModelTestDialog(props: {
     onError: (error) => {
       setResult(null);
       setRequestError(error instanceof Error ? error.message : "测试请求失败");
+    }
+  });
+  const clearMutation = useMutation({
+    mutationFn: () =>
+      clearProviderAccountEndpointModelStatus(props.token, props.provider.provider_key, {
+        account_key: accountKey,
+        endpoint_key: endpointKey,
+        model_key: modelKey
+      }),
+    onSuccess: () => {
+      setClearedObservationKey(observationKey);
+      setResult(null);
+      setRequestError(null);
+      props.onChanged();
+    },
+    onError: (error) => {
+      setRequestError(error instanceof Error ? error.message : "清除状态失败");
     }
   });
 
@@ -2139,13 +2205,44 @@ function ProviderModelTestDialog(props: {
               setRequestError(null);
             }}
           >
-            {props.provider.endpoints.map((endpoint) => (
+            {endpoints.map((endpoint) => (
               <option key={endpoint.endpoint_key} value={endpoint.endpoint_key}>
                 {endpoint.endpoint_key} · {endpoint.protocol} · {endpoint.base_url}
+                {endpoint.enabled ? "" : " · 已停用"}
               </option>
             ))}
           </select>
         </label>
+        <div className="field">
+          <span>当前观测</span>
+          <div className="inline-actions">
+            <strong>
+              {!observation
+                ? "未知（可尝试）"
+                : observation.runtime_status === "normal" && observation.last_success_at
+                  ? "可用"
+                  : observation.runtime_status === "normal"
+                    ? "未验证（可尝试）"
+                  : observation.runtime_status === "cooling_down" ||
+                      observation.runtime_status === "rate_limited"
+                    ? "冷却中"
+                    : "不可用"}
+            </strong>
+            {observation &&
+            (observation.runtime_status !== "normal" || observation.last_error_at) ? (
+              <button
+                type="button"
+                className="ghost-action small-action"
+                disabled={clearMutation.isPending}
+                onClick={() => clearMutation.mutate()}
+              >
+                <Trash2 size={14} />
+                清除状态
+              </button>
+            ) : null}
+          </div>
+          {observation?.status_message ? <small>{observation.status_message}</small> : null}
+        </div>
         <div className="field">
           <div className="field-group-header">
             <span>临时 Headers（仅本次测试）</span>
@@ -2194,7 +2291,7 @@ function ProviderModelTestDialog(props: {
         <button
           className="primary-action"
           type="button"
-          disabled={mutation.isPending || !accountKey || !modelKey || !prompt.trim()}
+          disabled={mutation.isPending || !accountKey || !modelKey || !endpointKey || !prompt.trim()}
           onClick={() => mutation.mutate()}
         >
           <FlaskConical size={16} />
@@ -2220,6 +2317,123 @@ function ProviderModelTestDialog(props: {
         ) : null}
       </div>
     </AppDialog>
+  );
+}
+
+function observationDisplayLabel(observation:
+  ProviderDetails["account_endpoint_models"][number] | undefined
+): string {
+  if (!observation) {
+    return "未知（可尝试）";
+  }
+  if (observation.runtime_status === "normal" && observation.last_success_at) {
+    return "可用";
+  }
+  if (observation.runtime_status === "normal") {
+    return "未验证（可尝试）";
+  }
+  if (
+    observation.runtime_status === "cooling_down" ||
+    observation.runtime_status === "rate_limited"
+  ) {
+    return "冷却中";
+  }
+  return "不可用";
+}
+
+function ProviderConnectivityMatrix(props: {
+  token: string;
+  provider: ProviderDetails;
+  onTest: (selection: {
+    accountKey: string;
+    modelKey: string;
+    endpointKey: string;
+  }) => void;
+  onChanged: () => void;
+}) {
+  const clearMutation = useMutation({
+    mutationFn: (input: { accountKey: string; modelKey: string; endpointKey: string }) =>
+      clearProviderAccountEndpointModelStatus(props.token, props.provider.provider_key, {
+        account_key: input.accountKey,
+        model_key: input.modelKey,
+        endpoint_key: input.endpointKey
+      }),
+    onSuccess: props.onChanged
+  });
+  const accounts = props.provider.accounts ?? [];
+  const endpoints = props.provider.endpoints;
+
+  return (
+    <div className="provider-connectivity">
+      <h3>协议连通性</h3>
+      {props.provider.models.map((model) => (
+        <details key={model.model_key}>
+          <summary>{model.model_name}</summary>
+          <div
+            className="connectivity-grid"
+            style={{ gridTemplateColumns: `minmax(120px, 1fr) repeat(${endpoints.length}, minmax(180px, 1fr))` }}
+          >
+            <strong>Account</strong>
+            {endpoints.map((endpoint) => (
+              <strong key={endpoint.endpoint_key}>{endpoint.protocol}</strong>
+            ))}
+            {accounts.flatMap((account) => {
+              const visible = account.models?.some((item) => item.model_key === model.model_key);
+              return [
+                <span key={`${account.account_key}-label`}>{account.account_key}</span>,
+                ...endpoints.map((endpoint) => {
+                  const observation = (props.provider.account_endpoint_models ?? []).find((item) =>
+                    item.account_key === account.account_key &&
+                    item.endpoint_key === endpoint.endpoint_key &&
+                    item.model_key === model.model_key
+                  );
+                  return (
+                    <div
+                      className="connectivity-cell"
+                      key={`${account.account_key}-${endpoint.endpoint_key}`}
+                    >
+                      <span>{visible ? observationDisplayLabel(observation) : "不可见"}</span>
+                      {visible ? (
+                        <div className="inline-actions">
+                          <button
+                            type="button"
+                            className="ghost-action small-action"
+                            onClick={() => props.onTest({
+                              accountKey: account.account_key,
+                              modelKey: model.model_key,
+                              endpointKey: endpoint.endpoint_key
+                            })}
+                          >
+                            <FlaskConical size={14} />
+                            重新测试
+                          </button>
+                          {observation &&
+                          (observation.runtime_status !== "normal" || observation.last_error_at) ? (
+                            <button
+                              type="button"
+                              className="ghost-action small-action"
+                              disabled={clearMutation.isPending}
+                              onClick={() => clearMutation.mutate({
+                                accountKey: account.account_key,
+                                modelKey: model.model_key,
+                                endpointKey: endpoint.endpoint_key
+                              })}
+                            >
+                              <Trash2 size={14} />
+                              清除
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })
+              ];
+            })}
+          </div>
+        </details>
+      ))}
+    </div>
   );
 }
 
@@ -2258,18 +2472,10 @@ function ProviderCard(props: {
   }, [props.provider.priority]);
   const accounts = props.provider.accounts ?? [];
   const visibleModelLimit = 12;
-  const modelEndpoint = (model: ProviderModel) =>
-    props.provider.endpoints.find((item) => item.endpoint_key === model.endpoint_key);
-  const modelEndpointLabel = (model: ProviderModel) => {
-    return modelEndpoint(model)?.protocol ?? model.endpoint_key;
-  };
   const modelItemTitle = (model: ProviderModel, modelAvailable: boolean, unavailableReason: string) => {
     const availability = modelAvailable ? "可用" : unavailableReason || "不可用";
-    const endpoint = modelEndpoint(model);
-    if (!endpoint) {
-      return `${availability}\nEndpoint: ${model.endpoint_key}`;
-    }
-    return `${availability}\nEndpoint: ${endpoint.endpoint_key}\nProtocol: ${endpoint.protocol}\nBase URL: ${endpoint.base_url}`;
+    const summary = modelRouteSummary(props.provider, model);
+    return `${availability}\n账户可见: ${summary.visible}/${summary.accounts}\n已验证路由: ${summary.verified}/${summary.combinations}`;
   };
   const renderModelList = (
     models: ProviderModel[],
@@ -2303,7 +2509,12 @@ function ProviderCard(props: {
                 title={modelItemTitle(model, modelAvailable, unavailableReason)}
               >
                 <span className="model-chip-name">{model.model_name}</span>
-                <span className="model-chip-endpoint">{modelEndpointLabel(model)}</span>
+                <span className="model-chip-endpoint">
+                  {(() => {
+                    const summary = modelRouteSummary(props.provider, model);
+                    return `${summary.verified}/${summary.combinations}`;
+                  })()}
+                </span>
               </li>
             );
           })
@@ -2535,8 +2746,13 @@ function ProviderAccountsPanel(props: {
   const syncMutation = useMutation({
     mutationFn: async (accountKey: string) =>
       syncProviderAccount(props.token, props.provider.provider_key, accountKey),
-    onSuccess: () => {
-      setMessage({ text: "Account 模型已同步", mode: "success" });
+    onSuccess: (result) => {
+      setMessage(result.latest_sync?.status === "error"
+        ? {
+            text: `Account 模型发现失败：${result.latest_sync.error_message ?? "请检查模型目录 URL"}`,
+            mode: "error"
+          }
+        : { text: "Account 模型已同步", mode: "success" });
       props.onChanged();
     },
     onError: (error) => {

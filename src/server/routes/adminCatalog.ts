@@ -59,8 +59,8 @@ function serializeCatalogModel(details: CatalogLogicalModelDetails) {
       return {
         provider_key: instance.provider.providerKey,
         provider_display_name: instance.provider.displayName,
-        endpoint_key: instance.endpoint?.endpointKey ?? "default",
-        protocol: instance.endpoint?.protocol ?? null,
+        endpoint_keys: instance.endpoints.map((endpoint) => endpoint.endpointKey),
+        protocols: instance.endpoints.map((endpoint) => endpoint.protocol),
         model_key: instance.model.modelKey,
         provider_model_id: instance.model.providerModelId,
         model_name: instance.model.modelName,
