@@ -23,6 +23,13 @@ export interface RoutedExecutionInput {
    * 返回 false 的候选不计入 attempts，也不记失败。
    */
   supportsCandidate?: (candidate: RoutedCandidate, target: RouteTarget) => boolean;
+  attemptMetadata?: (
+    candidate: RoutedCandidate,
+    target: RouteTarget
+  ) => Pick<
+    TraceAttempt,
+    "actual_upstream_url" | "stream_completed" | "stream_terminal_event"
+  >;
   /** 非流式执行；返回上游响应 */
   invoke: (candidate: RoutedCandidate, target: RouteTarget) => Promise<ProviderResponse>;
 }
@@ -171,6 +178,7 @@ export async function executeRoutedRequest(
       continue;
     }
     sawSupportedCandidate = true;
+    const attemptMetadata = input.attemptMetadata?.(candidate, target) ?? {};
 
     const attemptStartedAt = Date.now();
     try {
@@ -181,7 +189,8 @@ export async function executeRoutedRequest(
         ...toTraceCandidate(candidate),
         status: "success",
         latency_ms: latencyMs,
-        first_token_ms: latencyMs
+        first_token_ms: latencyMs,
+        ...attemptMetadata
       });
       selected = candidate;
 
@@ -204,7 +213,8 @@ export async function executeRoutedRequest(
         status: "failed",
         error: error instanceof Error ? error.message : "provider_request_failed",
         retryable: error instanceof HttpError && error.retryable,
-        latency_ms: Date.now() - attemptStartedAt
+        latency_ms: Date.now() - attemptStartedAt,
+        ...input.attemptMetadata?.(candidate, target)
       });
 
       if (index < input.candidates.length - 1) {
@@ -291,7 +301,8 @@ export async function* streamRoutedRequest(
         ...toTraceCandidate(candidate),
         status: "success",
         latency_ms: latencyMs,
-        first_token_ms: firstTokenMs ?? latencyMs
+        first_token_ms: firstTokenMs ?? latencyMs,
+        ...input.attemptMetadata?.(candidate, target)
       });
       outcome.selected = candidate;
 
@@ -315,7 +326,8 @@ export async function* streamRoutedRequest(
         error: error instanceof Error ? error.message : "provider_request_failed",
         retryable: error instanceof HttpError && error.retryable,
         latency_ms: Date.now() - attemptStartedAt,
-        first_token_ms: firstTokenMs
+        first_token_ms: firstTokenMs,
+        ...input.attemptMetadata?.(candidate, target)
       });
 
       // 字节已写出，不能再换候选

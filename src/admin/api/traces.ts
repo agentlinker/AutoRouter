@@ -20,6 +20,9 @@ export interface TraceAttempt extends TraceCandidate {
   retryable: boolean;
   latency_ms: number | null;
   first_token_ms: number | null;
+  actual_upstream_url: string | null;
+  stream_completed: boolean | null;
+  stream_terminal_event: string | null;
 }
 
 export type RouteOutcomeStatus = "not_requested" | "filtered" | "success" | "failed";
@@ -40,6 +43,9 @@ export interface RouteOutcomeItem {
   retryable: boolean | null;
   latency_ms: number | null;
   first_token_ms: number | null;
+  actual_upstream_url: string | null;
+  stream_completed: boolean | null;
+  stream_terminal_event: string | null;
 }
 
 export interface TraceRecord {

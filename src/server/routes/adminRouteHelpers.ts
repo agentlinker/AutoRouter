@@ -52,7 +52,10 @@ function serializeAttempt(attempt: TraceAttempt, snapshot?: RuntimeSnapshot) {
     error: attempt.error ?? null,
     retryable: attempt.retryable ?? false,
     latency_ms: attempt.latency_ms ?? null,
-    first_token_ms: attempt.first_token_ms ?? null
+    first_token_ms: attempt.first_token_ms ?? null,
+    actual_upstream_url: attempt.actual_upstream_url ?? null,
+    stream_completed: attempt.stream_completed ?? null,
+    stream_terminal_event: attempt.stream_terminal_event ?? null
   };
 }
 
@@ -74,6 +77,9 @@ export interface RouteOutcomeItem {
   retryable: boolean | null;
   latency_ms: number | null;
   first_token_ms: number | null;
+  actual_upstream_url: string | null;
+  stream_completed: boolean | null;
+  stream_terminal_event: string | null;
 }
 
 function candidateKey(item: {
@@ -115,7 +121,10 @@ export function buildRouteOutcomeItems(trace: RouteTrace, snapshot?: RuntimeSnap
       reason: attempt.status === "failed" ? (attempt.error ?? "failed") : null,
       retryable: attempt.retryable ?? null,
       latency_ms: attempt.latency_ms ?? null,
-      first_token_ms: attempt.first_token_ms ?? null
+      first_token_ms: attempt.first_token_ms ?? null,
+      actual_upstream_url: attempt.actual_upstream_url ?? null,
+      stream_completed: attempt.stream_completed ?? null,
+      stream_terminal_event: attempt.stream_terminal_event ?? null
     });
   }
 
@@ -132,7 +141,10 @@ export function buildRouteOutcomeItems(trace: RouteTrace, snapshot?: RuntimeSnap
       reason: null,
       retryable: null,
       latency_ms: null,
-      first_token_ms: null
+      first_token_ms: null,
+      actual_upstream_url: null,
+      stream_completed: null,
+      stream_terminal_event: null
     });
   }
 
@@ -149,7 +161,10 @@ export function buildRouteOutcomeItems(trace: RouteTrace, snapshot?: RuntimeSnap
       reason: filtered.reason ?? "filtered",
       retryable: null,
       latency_ms: null,
-      first_token_ms: null
+      first_token_ms: null,
+      actual_upstream_url: null,
+      stream_completed: null,
+      stream_terminal_event: null
     });
   }
 

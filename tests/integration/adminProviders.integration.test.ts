@@ -928,7 +928,7 @@ describe("admin providers integration", () => {
 
     pool
       .intercept({
-        path: "/anthropic/messages",
+        path: "/anthropic/v1/messages",
         method: "POST"
       })
       .reply(200, {

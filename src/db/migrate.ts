@@ -266,6 +266,477 @@ function stripSyntheticAliasPrefixes(sqlite: Database.Database, now: string): vo
   }
 }
 
+type MutableMigrationRow = Record<string, string | number | null>;
+
+function earlierIso(left: string | null, right: string | null): string | null {
+  if (!left) return right;
+  if (!right) return left;
+  return left <= right ? left : right;
+}
+
+function laterIso(left: string | null, right: string | null): string | null {
+  if (!left) return right;
+  if (!right) return left;
+  return left >= right ? left : right;
+}
+
+function statusTimestamp(row: MutableMigrationRow): string {
+  return String(
+    row.status_updated_at ??
+      row.last_error_at ??
+      row.updated_at ??
+      row.last_seen_at ??
+      row.created_at ??
+      ""
+  );
+}
+
+function latestStatusRow(
+  left: MutableMigrationRow,
+  right: MutableMigrationRow
+): MutableMigrationRow {
+  const leftStatusUpdatedAt = left.status_updated_at as string | null;
+  const rightStatusUpdatedAt = right.status_updated_at as string | null;
+  if (leftStatusUpdatedAt || rightStatusUpdatedAt) {
+    if (!leftStatusUpdatedAt) return right;
+    if (!rightStatusUpdatedAt) return left;
+    return rightStatusUpdatedAt > leftStatusUpdatedAt ? right : left;
+  }
+  return statusTimestamp(right) > statusTimestamp(left) ? right : left;
+}
+
+function latestErrorRow(
+  left: MutableMigrationRow,
+  right: MutableMigrationRow
+): MutableMigrationRow {
+  return String(right.last_error_at ?? "") > String(left.last_error_at ?? "") ? right : left;
+}
+
+function mergeAccountModelRows(
+  sqlite: Database.Database,
+  sourceModelId: number,
+  survivorModelId: number
+): void {
+  const sourceRows = sqlite.prepare(
+    "SELECT * FROM managed_account_models WHERE managed_model_id = ?"
+  ).all(sourceModelId) as MutableMigrationRow[];
+  const findTarget = sqlite.prepare(
+    "SELECT * FROM managed_account_models WHERE account_id = ? AND managed_model_id = ?"
+  );
+  const moveSource = sqlite.prepare(
+    "UPDATE managed_account_models SET managed_model_id = ? WHERE id = ?"
+  );
+  const deleteSource = sqlite.prepare("DELETE FROM managed_account_models WHERE id = ?");
+  const updateTarget = sqlite.prepare(`
+    UPDATE managed_account_models
+    SET enabled = ?,
+        runtime_status = ?,
+        status_reason = ?,
+        status_message = ?,
+        status_source = ?,
+        status_updated_at = ?,
+        status_cooldown_until = ?,
+        rate_limit_strike = ?,
+        cooldown_strike = ?,
+        recent_error_count = ?,
+        last_error_at = ?,
+        last_error_code = ?,
+        last_error_message = ?,
+        discovered_at = ?,
+        last_seen_at = ?
+    WHERE id = ?
+  `);
+
+  for (const source of sourceRows) {
+    const target = findTarget.get(source.account_id, survivorModelId) as
+      | MutableMigrationRow
+      | undefined;
+    if (!target) {
+      moveSource.run(survivorModelId, source.id);
+      continue;
+    }
+
+    const status = latestStatusRow(target, source);
+    const error = latestErrorRow(target, source);
+    updateTarget.run(
+      Math.min(Number(target.enabled), Number(source.enabled)),
+      status.runtime_status,
+      status.status_reason,
+      status.status_message,
+      status.status_source,
+      status.status_updated_at,
+      laterIso(
+        target.status_cooldown_until as string | null,
+        source.status_cooldown_until as string | null
+      ),
+      Math.max(Number(target.rate_limit_strike), Number(source.rate_limit_strike)),
+      Math.max(Number(target.cooldown_strike), Number(source.cooldown_strike)),
+      Math.max(Number(target.recent_error_count), Number(source.recent_error_count)),
+      error.last_error_at,
+      error.last_error_code,
+      error.last_error_message,
+      earlierIso(target.discovered_at as string, source.discovered_at as string),
+      laterIso(target.last_seen_at as string, source.last_seen_at as string),
+      target.id
+    );
+    deleteSource.run(source.id);
+  }
+}
+
+function mergeAccountEndpointModelRows(
+  sqlite: Database.Database,
+  sourceModelId: number,
+  survivorModelId: number
+): void {
+  const sourceRows = sqlite.prepare(
+    "SELECT * FROM managed_account_endpoint_models WHERE managed_model_id = ?"
+  ).all(sourceModelId) as MutableMigrationRow[];
+  const findTarget = sqlite.prepare(`
+    SELECT *
+    FROM managed_account_endpoint_models
+    WHERE account_id = ? AND endpoint_id = ? AND managed_model_id = ?
+  `);
+  const moveSource = sqlite.prepare(
+    "UPDATE managed_account_endpoint_models SET managed_model_id = ? WHERE id = ?"
+  );
+  const deleteSource = sqlite.prepare(
+    "DELETE FROM managed_account_endpoint_models WHERE id = ?"
+  );
+  const updateTarget = sqlite.prepare(`
+    UPDATE managed_account_endpoint_models
+    SET runtime_status = ?,
+        status_reason = ?,
+        status_message = ?,
+        status_source = ?,
+        status_updated_at = ?,
+        status_cooldown_until = ?,
+        rate_limit_strike = ?,
+        cooldown_strike = ?,
+        recent_error_count = ?,
+        last_success_at = ?,
+        last_error_at = ?,
+        last_error_code = ?,
+        last_error_message = ?,
+        created_at = ?,
+        updated_at = ?
+    WHERE id = ?
+  `);
+
+  for (const source of sourceRows) {
+    const target = findTarget.get(
+      source.account_id,
+      source.endpoint_id,
+      survivorModelId
+    ) as MutableMigrationRow | undefined;
+    if (!target) {
+      moveSource.run(survivorModelId, source.id);
+      continue;
+    }
+
+    const status = latestStatusRow(target, source);
+    const error = latestErrorRow(target, source);
+    updateTarget.run(
+      status.runtime_status,
+      status.status_reason,
+      status.status_message,
+      status.status_source,
+      status.status_updated_at,
+      laterIso(
+        target.status_cooldown_until as string | null,
+        source.status_cooldown_until as string | null
+      ),
+      Math.max(Number(target.rate_limit_strike), Number(source.rate_limit_strike)),
+      Math.max(Number(target.cooldown_strike), Number(source.cooldown_strike)),
+      Math.max(Number(target.recent_error_count), Number(source.recent_error_count)),
+      laterIso(target.last_success_at as string | null, source.last_success_at as string | null),
+      error.last_error_at,
+      error.last_error_code,
+      error.last_error_message,
+      earlierIso(target.created_at as string, source.created_at as string),
+      laterIso(target.updated_at as string, source.updated_at as string),
+      target.id
+    );
+    deleteSource.run(source.id);
+  }
+}
+
+function mergeManagedModelRows(
+  sqlite: Database.Database,
+  sourceModelId: number,
+  survivorModelId: number
+): void {
+  const selectModel = sqlite.prepare("SELECT * FROM managed_models WHERE id = ?");
+  const survivor = selectModel.get(survivorModelId) as MutableMigrationRow;
+  const source = selectModel.get(sourceModelId) as MutableMigrationRow;
+  const newer = String(source.updated_at) > String(survivor.updated_at) ? source : survivor;
+  const status = latestStatusRow(survivor, source);
+  const error = latestErrorRow(survivor, source);
+
+  sqlite.prepare(`
+    UPDATE managed_models
+    SET logical_model_id = ?,
+        model_name = ?,
+        context_window = ?,
+        supports_streaming = ?,
+        supports_tools = ?,
+        supports_json_mode = ?,
+        pricing_json = ?,
+        raw_metadata_json = ?,
+        enabled = ?,
+        runtime_status = ?,
+        status_reason = ?,
+        status_message = ?,
+        status_source = ?,
+        status_updated_at = ?,
+        status_cooldown_until = ?,
+        rate_limit_strike = ?,
+        cooldown_strike = ?,
+        recent_error_count = ?,
+        last_error_at = ?,
+        last_error_code = ?,
+        last_error_message = ?,
+        context_window_override = ?,
+        supports_tools_override = ?,
+        supports_streaming_override = ?,
+        supports_json_mode_override = ?,
+        pricing_json_override = ?,
+        manual_override_json = ?,
+        discovered_at = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).run(
+    survivor.logical_model_id ?? source.logical_model_id,
+    newer.model_name,
+    Math.max(Number(survivor.context_window ?? 0), Number(source.context_window ?? 0)) || null,
+    Math.max(Number(survivor.supports_streaming), Number(source.supports_streaming)),
+    Math.max(Number(survivor.supports_tools), Number(source.supports_tools)),
+    Math.max(Number(survivor.supports_json_mode), Number(source.supports_json_mode)),
+    newer.pricing_json ?? survivor.pricing_json ?? source.pricing_json,
+    newer.raw_metadata_json ?? survivor.raw_metadata_json ?? source.raw_metadata_json,
+    Math.min(Number(survivor.enabled), Number(source.enabled)),
+    status.runtime_status,
+    status.status_reason,
+    status.status_message,
+    status.status_source,
+    status.status_updated_at,
+    laterIso(
+      survivor.status_cooldown_until as string | null,
+      source.status_cooldown_until as string | null
+    ),
+    Math.max(Number(survivor.rate_limit_strike), Number(source.rate_limit_strike)),
+    Math.max(Number(survivor.cooldown_strike), Number(source.cooldown_strike)),
+    Math.max(Number(survivor.recent_error_count), Number(source.recent_error_count)),
+    error.last_error_at,
+    error.last_error_code,
+    error.last_error_message,
+    newer.context_window_override ??
+      survivor.context_window_override ??
+      source.context_window_override,
+    newer.supports_tools_override ??
+      survivor.supports_tools_override ??
+      source.supports_tools_override,
+    newer.supports_streaming_override ??
+      survivor.supports_streaming_override ??
+      source.supports_streaming_override,
+    newer.supports_json_mode_override ??
+      survivor.supports_json_mode_override ??
+      source.supports_json_mode_override,
+    newer.pricing_json_override ??
+      survivor.pricing_json_override ??
+      source.pricing_json_override,
+    newer.manual_override_json ??
+      survivor.manual_override_json ??
+      source.manual_override_json,
+    earlierIso(survivor.discovered_at as string, source.discovered_at as string),
+    laterIso(survivor.updated_at as string, source.updated_at as string),
+    survivorModelId
+  );
+}
+
+function repairSyntheticManagedModels(sqlite: Database.Database): void {
+  const endpointRows = sqlite.prepare(`
+    SELECT provider_id, endpoint_key
+    FROM managed_provider_endpoints
+    WHERE endpoint_key != 'default'
+  `).all() as Array<{ provider_id: number; endpoint_key: string }>;
+  const endpointKeysByProvider = new Map<number, string[]>();
+  for (const endpoint of endpointRows) {
+    endpointKeysByProvider.set(endpoint.provider_id, [
+      ...(endpointKeysByProvider.get(endpoint.provider_id) ?? []),
+      endpoint.endpoint_key
+    ]);
+  }
+
+  const models = sqlite.prepare(`
+    SELECT models.*, providers.provider_key
+    FROM managed_models AS models
+    INNER JOIN managed_providers AS providers ON providers.id = models.provider_id
+  `).all() as Array<MutableMigrationRow & { provider_key: string }>;
+  const normalized = models.map((model) => {
+    const providerId = Number(model.provider_id);
+    const providerModelId = String(model.provider_model_id);
+    const modelKey = String(model.model_key);
+    const providerKey = model.provider_key;
+    const endpointKey = (endpointKeysByProvider.get(providerId) ?? []).find((key) => {
+      const prefix = `${key}:`;
+      const realId = providerModelId.startsWith(prefix)
+        ? providerModelId.slice(prefix.length)
+        : "";
+      return realId.length > 0 && modelKey === `${providerKey}/${key}/${realId}`;
+    });
+
+    return {
+      model,
+      synthetic: Boolean(endpointKey),
+      realProviderModelId: endpointKey
+        ? providerModelId.slice(`${endpointKey}:`.length)
+        : providerModelId,
+      targetModelKey: endpointKey
+        ? `${providerKey}/${providerModelId.slice(`${endpointKey}:`.length)}`
+        : null
+    };
+  });
+
+  const parent = normalized.map((_, index) => index);
+  const findRoot = (index: number): number => {
+    let root = index;
+    while (parent[root] !== root) {
+      root = parent[root];
+    }
+    while (parent[index] !== index) {
+      const next = parent[index];
+      parent[index] = root;
+      index = next;
+    }
+    return root;
+  };
+  const union = (left: number, right: number): void => {
+    const leftRoot = findRoot(left);
+    const rightRoot = findRoot(right);
+    if (leftRoot !== rightRoot) {
+      parent[rightRoot] = leftRoot;
+    }
+  };
+
+  const modelIndexByKey = new Map<string, number>();
+  const identityIndex = new Map<string, number>();
+  normalized.forEach((item, index) => {
+    modelIndexByKey.set(
+      `${item.model.provider_id}|${item.model.model_key}`,
+      index
+    );
+    const identity = `${item.model.provider_id}|${item.realProviderModelId}`;
+    const matchingIdentity = identityIndex.get(identity);
+    if (matchingIdentity === undefined) {
+      identityIndex.set(identity, index);
+    } else {
+      union(index, matchingIdentity);
+    }
+  });
+
+  normalized.forEach((item, index) => {
+    if (!item.targetModelKey) {
+      return;
+    }
+    const targetIndex = modelIndexByKey.get(
+      `${item.model.provider_id}|${item.targetModelKey}`
+    );
+    if (targetIndex !== undefined && targetIndex !== index) {
+      union(index, targetIndex);
+    }
+  });
+
+  const resolveFinalProviderModelId = (startIndex: number): string => {
+    const seen = new Set<number>();
+    let index = startIndex;
+    while (normalized[index].synthetic) {
+      if (seen.has(index)) {
+        throw new Error(
+          `Cyclic synthetic managed model chain at model ${normalized[index].model.id}`
+        );
+      }
+      seen.add(index);
+      const item = normalized[index];
+      if (!item.targetModelKey) {
+        return item.realProviderModelId;
+      }
+      const targetIndex = modelIndexByKey.get(
+        `${item.model.provider_id}|${item.targetModelKey}`
+      );
+      if (targetIndex === undefined || targetIndex === index) {
+        return item.realProviderModelId;
+      }
+      const target = normalized[targetIndex];
+      if (!target.synthetic) {
+        return item.realProviderModelId;
+      }
+      index = targetIndex;
+    }
+    return normalized[index].realProviderModelId;
+  };
+
+  const groups = new Map<number, typeof normalized>();
+  normalized.forEach((item, index) => {
+    const root = findRoot(index);
+    groups.set(root, [...(groups.get(root) ?? []), item]);
+  });
+  const repairGroups = Array.from(groups.values()).filter((group) =>
+    group.some((item) => item.synthetic)
+  ).map((group) => {
+    const finalProviderModelIds = new Set(
+      group
+        .map((item) => normalized.indexOf(item))
+        .filter((index) => normalized[index].synthetic)
+        .map(resolveFinalProviderModelId)
+    );
+    if (finalProviderModelIds.size !== 1) {
+      throw new Error(
+        `Ambiguous synthetic managed model chain: ${Array.from(finalProviderModelIds).join(", ")}`
+      );
+    }
+    return {
+      items: group,
+      finalProviderModelId: Array.from(finalProviderModelIds)[0]
+    };
+  });
+  if (repairGroups.length === 0) {
+    return;
+  }
+
+  backupDatabase(sqlite, "provider-model-prefix");
+  sqlite.transaction(() => {
+    for (const group of repairGroups) {
+      const ordered = group.items.slice().sort((left, right) => {
+        if (left.synthetic !== right.synthetic) {
+          return left.synthetic ? 1 : -1;
+        }
+        return Number(left.model.id) - Number(right.model.id);
+      });
+      const survivor = ordered[0];
+      const survivorId = Number(survivor.model.id);
+
+      for (const source of ordered.slice(1)) {
+        const sourceId = Number(source.model.id);
+        mergeAccountModelRows(sqlite, sourceId, survivorId);
+        mergeAccountEndpointModelRows(sqlite, sourceId, survivorId);
+        mergeManagedModelRows(sqlite, sourceId, survivorId);
+        sqlite.prepare("DELETE FROM managed_models WHERE id = ?").run(sourceId);
+      }
+
+      sqlite.prepare(`
+        UPDATE managed_models
+        SET provider_model_id = ?, model_key = ?, updated_at = ?
+        WHERE id = ?
+      `).run(
+        group.finalProviderModelId,
+        `${survivor.model.provider_key}/${group.finalProviderModelId}`,
+        new Date().toISOString(),
+        survivorId
+      );
+    }
+  })();
+}
+
 function normalizeBaseUrl(value: string): string {
   return value.trim().replace(/\/+$/g, "").toLowerCase();
 }
@@ -1273,6 +1744,8 @@ export function runMigrations(sqlite: Database.Database) {
       last_error_message = NULL
     WHERE endpoint_id IS NOT NULL;
   `);
+
+  repairSyntheticManagedModels(sqlite);
 
   // Backfill logical models from provider model ids and bind all managed rows to canonical logical rows.
   const now = new Date().toISOString();

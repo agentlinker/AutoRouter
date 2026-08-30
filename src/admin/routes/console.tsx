@@ -332,6 +332,8 @@ function TraceDetailPanel(props: {
                 <th>Endpoint</th>
                 <th>状态</th>
                 <th>原因</th>
+                <th>实际上游 URL</th>
+                <th>流完整性</th>
                 <th>首字耗时</th>
                 <th>当次耗时</th>
                 <th>Score</th>
@@ -357,6 +359,16 @@ function TraceDetailPanel(props: {
                     <td className="route-outcome-reason">
                       {item.reason ? item.reason : "—"}
                     </td>
+                    <td>
+                      {item.actual_upstream_url ? <code>{item.actual_upstream_url}</code> : "—"}
+                    </td>
+                    <td>
+                      {item.stream_completed === null
+                        ? "—"
+                        : item.stream_completed
+                          ? `完整 · ${item.stream_terminal_event ?? "终止事件"}`
+                          : `未完成 · ${item.stream_terminal_event ?? "无终止事件"}`}
+                    </td>
                     <td>{item.status === "success" || item.status === "failed" ? formatLatency(item.first_token_ms) : "—"}</td>
                     <td>{item.status === "success" || item.status === "failed" ? formatLatency(item.latency_ms) : "—"}</td>
                     <td>{item.score === null || item.score === undefined ? "—" : item.score.toFixed(2)}</td>
@@ -364,7 +376,7 @@ function TraceDetailPanel(props: {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={10} className="muted">没有路由候选记录。</td>
+                  <td colSpan={12} className="muted">没有路由候选记录。</td>
                 </tr>
               )}
             </tbody>

@@ -19,6 +19,7 @@ import { HttpError } from "../../utils/httpErrors.js";
 import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
 import type { RuntimeStatusService } from "../../runtime/runtimeStatusService.js";
 import { isResponsesUnsupportedError } from "../../utils/responsesFallback.js";
+import { resolveUpstreamUrl } from "../../providers/upstreamUrl.js";
 
 interface ResponsesRequestBody {
   model?: string;
@@ -391,6 +392,12 @@ async function fallbackResponsesViaChat(
     runtimeStatusService,
     candidates: routeDecision.ordered,
     requestHeaders: request.headers,
+    attemptMetadata: (_candidate, target) => ({
+      actual_upstream_url: resolveUpstreamUrl(
+        target.endpoint.base_url,
+        target.platform.protocol === "anthropic" ? "messages" : "chat_completions"
+      )
+    }),
     invoke: (_candidate, target) =>
       state.adapters.forProtocol(target.platform.protocol).chatCompletion(normalizedRequest, target)
   });
@@ -706,6 +713,9 @@ export async function registerResponsesRoute(
       runtimeStatusService,
       candidates: orderedCandidates,
       requestHeaders: request.headers,
+      attemptMetadata: (_candidate: RoutedCandidate, target: RouteTarget) => ({
+        actual_upstream_url: resolveUpstreamUrl(target.endpoint.base_url, "responses")
+      }),
       // 只有实现了原生 responses 方法的 adapter 才能直通；其余候选跳过，
       // 全部跳过时降级为 Chat Completions 转换。
       supportsCandidate: (_candidate: RoutedCandidate, target: RouteTarget) => {

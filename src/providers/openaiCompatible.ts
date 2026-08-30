@@ -11,6 +11,7 @@ import type {
   ProviderStreamChunk,
   RouteTarget
 } from "./adapter.js";
+import { resolveUpstreamUrl } from "./upstreamUrl.js";
 
 function buildHeaders(target: RouteTarget): Record<string, string> {
   const headers = mergeCustomHeaders(
@@ -105,7 +106,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
 
     let response;
     try {
-      response = await request(`${target.endpoint.base_url}/chat/completions`, {
+      response = await request(resolveUpstreamUrl(target.endpoint.base_url, "chat_completions"), {
         method: "POST",
         headers: buildHeaders(target),
         body: JSON.stringify(upstreamPayload)
@@ -175,7 +176,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     const basePayload = toChatCompletionsPayload(requestBody, target, true);
 
     const sendStream = (includeUsage: boolean) =>
-      request(`${target.endpoint.base_url}/chat/completions`, {
+      request(resolveUpstreamUrl(target.endpoint.base_url, "chat_completions"), {
         method: "POST",
         headers: buildHeaders(target),
         body: JSON.stringify(
@@ -239,7 +240,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
 
     let response;
     try {
-      response = await request(`${target.endpoint.base_url}/responses`, {
+      response = await request(resolveUpstreamUrl(target.endpoint.base_url, "responses"), {
         method: "POST",
         headers: buildHeaders(target),
         body: JSON.stringify(upstreamPayload)
@@ -301,7 +302,7 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
 
     let response;
     try {
-      response = await request(`${target.endpoint.base_url}/responses`, {
+      response = await request(resolveUpstreamUrl(target.endpoint.base_url, "responses"), {
         method: "POST",
         headers: buildHeaders(target),
         body: JSON.stringify(upstreamPayload)

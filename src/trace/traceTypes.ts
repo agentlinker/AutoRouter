@@ -19,6 +19,12 @@ export interface TraceAttempt extends TraceCandidate {
   latency_ms?: number;
   /** Time to first token/response body in ms. */
   first_token_ms?: number;
+  /** Exact URL used for this upstream attempt. */
+  actual_upstream_url?: string;
+  /** Whether the client-facing stream reached its protocol terminal event. */
+  stream_completed?: boolean;
+  /** Last protocol event observed before completion or failure. */
+  stream_terminal_event?: string | null;
 }
 
 export interface TraceFeedbackLabel {

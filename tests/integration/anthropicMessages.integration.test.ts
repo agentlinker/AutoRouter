@@ -415,6 +415,49 @@ describe("Anthropic Messages compatibility", () => {
     // 流式 usage 由旁路从 Anthropic 事件里读出
     expect(trace?.execution.input_tokens).toBe(14);
     expect(trace?.execution.output_tokens).toBe(6);
+    expect(trace?.attempts?.[0]).toEqual(expect.objectContaining({
+      actual_upstream_url: "https://relay.example.com/v1/messages",
+      stream_completed: true,
+      stream_terminal_event: "message_stop"
+    }));
+
+    await gateway.close();
+  });
+
+  it("marks a native anthropic stream without message_stop as failed", async () => {
+    const incompleteSse =
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_partial"}}\n\n' +
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}\n\n';
+
+    mockAgent
+      .get("https://relay.example.com")
+      .intercept({ path: "/v1/messages", method: "POST" })
+      .reply(200, incompleteSse, { headers: { "content-type": "text/event-stream" } });
+
+    const { gateway, state } = await createDualProtocolGateway();
+    await gateway.inject({
+      method: "POST",
+      url: "/v1/messages",
+      headers: { "x-api-key": "test-token", "anthropic-version": "2023-06-01" },
+      payload: {
+        model: "claude-opus-5[1m]",
+        max_tokens: 32,
+        stream: true,
+        messages: [{ role: "user", content: "reply" }]
+      }
+    });
+
+    const trace = state.traceStore.latest();
+    expect(trace?.execution).toEqual(expect.objectContaining({
+      status: "failed",
+      error: "Anthropic stream ended without message_stop"
+    }));
+    expect(trace?.attempts?.[0]).toEqual(expect.objectContaining({
+      actual_upstream_url: "https://relay.example.com/v1/messages",
+      status: "failed",
+      stream_completed: false,
+      stream_terminal_event: "content_block_delta"
+    }));
 
     await gateway.close();
   });
@@ -471,11 +514,16 @@ describe("Anthropic Messages compatibility", () => {
         endpoint: "relay-anthropic",
         status: "failed",
         error: "Anthropic streaming request failed with status 429",
-        retryable: true
+        retryable: true,
+        actual_upstream_url: "https://relay.example.com/v1/messages",
+        stream_completed: false
       }),
       expect.objectContaining({
         endpoint: "relay-openai",
-        status: "success"
+        status: "success",
+        actual_upstream_url: "https://relay.example.com/v1/chat/completions",
+        stream_completed: true,
+        stream_terminal_event: "message_stop"
       })
     ]);
     expect(trace?.fallbacks).toEqual([

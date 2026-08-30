@@ -427,4 +427,138 @@ describe("database migrations", () => {
     });
     sqlite.close();
   });
+
+  it("merges historical endpoint-prefixed provider models without losing account state", () => {
+    const sqlite = new Database(":memory:");
+    runMigrations(sqlite);
+    sqlite.exec(`
+      INSERT INTO managed_providers (
+        id, provider_key, display_name, base_url, created_at, updated_at
+      ) VALUES (
+        1, 'relay', 'Relay', 'https://relay.example.com/v1',
+        '2026-08-30T00:00:00.000Z', '2026-08-30T00:00:00.000Z'
+      );
+
+      INSERT INTO managed_provider_endpoints (
+        id, provider_id, endpoint_key, protocol, base_url, created_at, updated_at
+      ) VALUES
+        (
+          7, 1, 'openai', 'openai', 'https://relay.example.com/v1',
+          '2026-08-30T00:00:00.000Z', '2026-08-30T00:00:00.000Z'
+        ),
+        (
+          8, 1, 'anthropic', 'anthropic', 'https://relay.example.com/v1',
+          '2026-08-30T00:00:00.000Z', '2026-08-30T00:00:00.000Z'
+        );
+
+      INSERT INTO managed_provider_credentials (
+        id, provider_id, account_key, api_key_encrypted, created_at, updated_at
+      ) VALUES (
+        9, 1, 'default', 'encrypted',
+        '2026-08-30T00:00:00.000Z', '2026-08-30T00:00:00.000Z'
+      );
+
+      INSERT INTO managed_models (
+        id, provider_id, model_key, provider_model_id, model_name,
+        enabled, supports_streaming, supports_tools,
+        discovered_at, updated_at
+      ) VALUES
+        (
+          11, 1, 'relay/openai/openai/claude-opus-5', 'openai:openai/claude-opus-5',
+          'claude-opus-5', 1, 1, 0,
+          '2026-08-30T00:00:00.000Z', '2026-08-30T00:01:00.000Z'
+        ),
+        (
+          12, 1, 'relay/openai/claude-opus-5', 'openai:claude-opus-5',
+          'claude-opus-5', 1, 1, 1,
+          '2026-08-30T00:00:00.000Z', '2026-08-30T00:02:00.000Z'
+        ),
+        (
+          13, 1, 'relay/anthropic/openai/claude-opus-5',
+          'anthropic:openai/claude-opus-5',
+          'claude-opus-5', 1, 1, 0,
+          '2026-08-30T00:00:00.000Z', '2026-08-30T00:03:00.000Z'
+        );
+
+      INSERT INTO managed_account_models (
+        account_id, managed_model_id, enabled, runtime_status,
+        status_reason, status_updated_at, recent_error_count,
+        discovered_at, last_seen_at
+      ) VALUES
+        (
+          9, 11, 1, 'normal', NULL, NULL, 0,
+          '2026-08-30T00:00:00.000Z', '2026-08-30T00:01:00.000Z'
+        ),
+        (
+          9, 12, 0, 'cooling_down', 'model_unavailable',
+          '2026-08-30T00:02:00.000Z', 3,
+          '2026-08-30T00:00:00.000Z', '2026-08-30T00:02:00.000Z'
+        ),
+        (
+          9, 13, 1, 'normal', NULL, NULL, 0,
+          '2026-08-30T00:00:00.000Z', '2026-08-30T00:03:00.000Z'
+        );
+
+      INSERT INTO managed_account_endpoint_models (
+        account_id, endpoint_id, managed_model_id, runtime_status,
+        last_success_at, created_at, updated_at
+      ) VALUES
+        (
+          9, 7, 11, 'normal', '2026-08-30T00:01:00.000Z',
+          '2026-08-30T00:01:00.000Z', '2026-08-30T00:01:00.000Z'
+        ),
+        (
+          9, 8, 12, 'normal', '2026-08-30T00:02:00.000Z',
+          '2026-08-30T00:02:00.000Z', '2026-08-30T00:02:00.000Z'
+        ),
+        (
+          9, 8, 13, 'normal', '2026-08-30T00:03:00.000Z',
+          '2026-08-30T00:03:00.000Z', '2026-08-30T00:03:00.000Z'
+        );
+    `);
+
+    runMigrations(sqlite);
+    runMigrations(sqlite);
+
+    const models = sqlite.prepare(`
+      SELECT id, model_key AS modelKey, provider_model_id AS providerModelId,
+             supports_tools AS supportsTools
+      FROM managed_models
+      WHERE provider_id = 1
+    `).all();
+    expect(models).toEqual([{
+      id: 11,
+      modelKey: "relay/claude-opus-5",
+      providerModelId: "claude-opus-5",
+      supportsTools: 1
+    }]);
+
+    const accountModels = sqlite.prepare(`
+      SELECT managed_model_id AS managedModelId, enabled, runtime_status AS runtimeStatus,
+             status_reason AS statusReason, recent_error_count AS recentErrorCount
+      FROM managed_account_models
+      WHERE account_id = 9
+    `).all();
+    expect(accountModels).toEqual([{
+      managedModelId: 11,
+      enabled: 0,
+      runtimeStatus: "cooling_down",
+      statusReason: "model_unavailable",
+      recentErrorCount: 3
+    }]);
+
+    const observations = sqlite.prepare(`
+      SELECT endpoint_id AS endpointId, managed_model_id AS managedModelId, last_success_at AS lastSuccessAt
+      FROM managed_account_endpoint_models
+      WHERE account_id = 9
+      ORDER BY endpoint_id
+    `).all();
+    expect(observations).toEqual([
+      { endpointId: 7, managedModelId: 11, lastSuccessAt: "2026-08-30T00:01:00.000Z" },
+      { endpointId: 8, managedModelId: 11, lastSuccessAt: "2026-08-30T00:03:00.000Z" }
+    ]);
+
+    expect(sqlite.pragma("foreign_key_check")).toEqual([]);
+    sqlite.close();
+  });
 });

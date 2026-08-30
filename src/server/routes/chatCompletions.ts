@@ -12,7 +12,8 @@ import { HttpError } from "../../utils/httpErrors.js";
 import { normalizeChatRequest } from "../../routing/normalizeRequest.js";
 import { StreamUsageTap } from "../../routing/streamUsageTap.js";
 import type { ChatCompletionsRequestBody } from "../../routing/types.js";
-import type { ProviderResponse } from "../../providers/adapter.js";
+import type { ProviderResponse, RouteTarget } from "../../providers/adapter.js";
+import { resolveUpstreamUrl } from "../../providers/upstreamUrl.js";
 import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
 import type { RuntimeStatusService } from "../../runtime/runtimeStatusService.js";
 import type { TraceAttempt, TraceCandidate } from "../../trace/traceTypes.js";
@@ -155,7 +156,13 @@ export async function registerChatCompletionsRoute(
       state,
       runtimeStatusService,
       candidates: orderedCandidates,
-      requestHeaders: request.headers
+      requestHeaders: request.headers,
+      attemptMetadata: (_candidate: RoutedCandidate, target: RouteTarget) => ({
+        actual_upstream_url: resolveUpstreamUrl(
+          target.endpoint.base_url,
+          target.platform.protocol === "anthropic" ? "messages" : "chat_completions"
+        )
+      })
     };
 
     if (normalizedRequest.stream) {

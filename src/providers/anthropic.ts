@@ -13,6 +13,7 @@ import type {
   RouteTarget
 } from "./adapter.js";
 import { parseJsonSafely } from "./openaiCompatible.js";
+import { resolveUpstreamUrl } from "./upstreamUrl.js";
 
 function buildHeaders(target: RouteTarget): Record<string, string> {
   const headers = mergeCustomHeaders(
@@ -174,7 +175,7 @@ export class AnthropicAdapter implements ProviderAdapter {
   ): Promise<ProviderResponse> {
     let response;
     try {
-      response = await request(`${target.endpoint.base_url}/messages`, {
+      response = await request(resolveUpstreamUrl(target.endpoint.base_url, "messages"), {
         method: "POST",
         headers: buildHeaders(target),
         body: JSON.stringify(toAnthropicRequest(requestBody, target))
@@ -235,7 +236,7 @@ export class AnthropicAdapter implements ProviderAdapter {
   ): AsyncIterable<ProviderStreamChunk> {
     let response;
     try {
-      response = await request(`${target.endpoint.base_url}/messages`, {
+      response = await request(resolveUpstreamUrl(target.endpoint.base_url, "messages"), {
         method: "POST",
         headers: buildHeaders(target),
         body: JSON.stringify({
@@ -287,7 +288,7 @@ export class AnthropicAdapter implements ProviderAdapter {
   ): Promise<ProviderResponse> {
     let response;
     try {
-      response = await request(`${target.endpoint.base_url}/messages`, {
+      response = await request(resolveUpstreamUrl(target.endpoint.base_url, "messages"), {
         method: "POST",
         headers: buildHeaders(target),
         body: JSON.stringify({
@@ -325,7 +326,7 @@ export class AnthropicAdapter implements ProviderAdapter {
   ): AsyncIterable<ProviderStreamChunk> {
     let response;
     try {
-      response = await request(`${target.endpoint.base_url}/messages`, {
+      response = await request(resolveUpstreamUrl(target.endpoint.base_url, "messages"), {
         method: "POST",
         headers: buildHeaders(target),
         body: JSON.stringify({

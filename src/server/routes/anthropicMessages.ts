@@ -10,7 +10,9 @@ import { normalizeChatRequest } from "../../routing/normalizeRequest.js";
 import { selectRoute } from "../../routing/routeEngine.js";
 import { StreamUsageTap } from "../../routing/streamUsageTap.js";
 import type { ProviderAdapter, RouteTarget } from "../../providers/adapter.js";
+import { AnthropicStreamValidator } from "../../providers/anthropicStreamValidator.js";
 import { OpenAiToAnthropicStreamTranslator } from "../../providers/openAiToAnthropicStreamTranslator.js";
+import { resolveUpstreamUrl } from "../../providers/upstreamUrl.js";
 import { sha256 } from "../../utils/hash.js";
 import { HttpError } from "../../utils/httpErrors.js";
 import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
@@ -474,24 +476,41 @@ export async function registerAnthropicMessagesRoute(
       return Boolean(adapter.streamMessage || adapter.streamChatCompletion);
     });
 
-    const streamForCandidate = (adapter: ProviderAdapter, target: RouteTarget) => {
-      if (adapter.streamMessage) {
-        return adapter.streamMessage(nativeMessagesRequest(), target);
-      }
+    const streamValidators = new Map<string, AnthropicStreamValidator>();
+    const candidateValidationKey = (candidate: RoutedCandidate) =>
+      `${candidate.account.id}|${candidate.endpoint.id}|${candidate.modelId}`;
+    const streamForCandidate = (
+      candidate: RoutedCandidate,
+      adapter: ProviderAdapter,
+      target: RouteTarget
+    ) => {
+      const validator = new AnthropicStreamValidator();
+      streamValidators.set(candidateValidationKey(candidate), validator);
+      const upstream = adapter.streamMessage
+        ? adapter.streamMessage(nativeMessagesRequest(), target)
+        : (() => {
+            const openAiStream = adapter.streamChatCompletion!(normalizedRequest, target);
+            const translator = new OpenAiToAnthropicStreamTranslator(request.body.model);
+            return (async function* () {
+              for await (const chunk of openAiStream) {
+                const translated = translator.push(chunk.raw);
+                if (translated.length > 0) {
+                  yield { raw: translated };
+                }
+              }
+              const tail = translator.finish();
+              if (tail.length > 0) {
+                yield { raw: tail };
+              }
+            })();
+          })();
 
-      const upstream = adapter.streamChatCompletion!(normalizedRequest, target);
-      const translator = new OpenAiToAnthropicStreamTranslator(request.body.model);
       return (async function* () {
         for await (const chunk of upstream) {
-          const translated = translator.push(chunk.raw);
-          if (translated.length > 0) {
-            yield { raw: translated };
-          }
+          validator.observe(chunk.raw);
+          yield chunk;
         }
-        const tail = translator.finish();
-        if (tail.length > 0) {
-          yield { raw: tail };
-        }
+        validator.finish();
       })();
     };
 
@@ -515,8 +534,24 @@ export async function registerAnthropicMessagesRoute(
             const adapter = state.adapters.forProtocol(target.platform.protocol);
             return Boolean(adapter.streamMessage || adapter.streamChatCompletion);
           },
-          invokeStream: (_candidate, target) =>
-            streamForCandidate(state.adapters.forProtocol(target.platform.protocol), target),
+          attemptMetadata: (candidate, target) => {
+            const adapter = state.adapters.forProtocol(target.platform.protocol);
+            const validation = streamValidators.get(candidateValidationKey(candidate))?.result();
+            return {
+              actual_upstream_url: resolveUpstreamUrl(
+                target.endpoint.base_url,
+                adapter.streamMessage ? "messages" : "chat_completions"
+              ),
+              stream_completed: validation?.completed ?? false,
+              stream_terminal_event: validation?.terminalEvent ?? null
+            };
+          },
+          invokeStream: (candidate, target) =>
+            streamForCandidate(
+              candidate,
+              state.adapters.forProtocol(target.platform.protocol),
+              target
+            ),
           onStreamStart: () => {
             if (!reply.raw.headersSent) {
               reply.raw.setHeader("content-type", "text/event-stream; charset=utf-8");
@@ -613,6 +648,15 @@ export async function registerAnthropicMessagesRoute(
       runtimeStatusService,
       candidates: routeDecision.ordered,
       requestHeaders: request.headers,
+      attemptMetadata: (_candidate, target) => {
+        const adapter = state.adapters.forProtocol(target.platform.protocol);
+        return {
+          actual_upstream_url: resolveUpstreamUrl(
+            target.endpoint.base_url,
+            adapter.messageCompletion ? "messages" : "chat_completions"
+          )
+        };
+      },
       // adapter 支持原生 Messages 时零转换直通，否则退化为 Chat Completions 转换。
       // 直通路径保住 thinking blocks / cache_control / tool_use 等字段。
       invoke: (_candidate, target) => {
