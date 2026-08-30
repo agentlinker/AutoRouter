@@ -40,6 +40,45 @@ function createLegacyProviderTables(sqlite: Database.Database): void {
 }
 
 describe("database migrations", () => {
+  it("creates provider-scoped model catalog and account-endpoint-model observation storage", () => {
+    const sqlite = new Database(":memory:");
+
+    runMigrations(sqlite);
+
+    const providerColumns = sqlite.pragma("table_info(managed_providers)") as Array<{ name: string }>;
+    expect(providerColumns.some((column) => column.name === "model_catalog_url")).toBe(true);
+
+    const modelColumns = sqlite.pragma("table_info(managed_models)") as Array<{ name: string }>;
+    expect(modelColumns.some((column) => column.name === "endpoint_id")).toBe(false);
+
+    const observationColumns = sqlite.pragma(
+      "table_info(managed_account_endpoint_models)"
+    ) as Array<{ name: string }>;
+    expect(observationColumns.map((column) => column.name)).toEqual(
+      expect.arrayContaining([
+        "account_id",
+        "endpoint_id",
+        "managed_model_id",
+        "runtime_status",
+        "status_cooldown_until",
+        "last_success_at",
+        "last_error_at"
+      ])
+    );
+
+    const observationIndexes = sqlite.pragma(
+      "index_list(managed_account_endpoint_models)"
+    ) as Array<{ unique: number }>;
+    expect(observationIndexes.some((index) => index.unique === 1)).toBe(true);
+
+    const syncColumns = sqlite.pragma("table_info(model_sync_runs)") as Array<{ name: string }>;
+    expect(syncColumns.map((column) => column.name)).toEqual(
+      expect.arrayContaining(["account_id", "catalog_url"])
+    );
+
+    sqlite.close();
+  });
+
   it("marks historical openai and anthropic endpoints with matching config as an all bundle", () => {
     const sqlite = new Database(":memory:");
     createLegacyProviderTables(sqlite);
@@ -159,6 +198,233 @@ describe("database migrations", () => {
       WHERE name = 'managed_provider_endpoints_provider_protocol_unique'
     `).all();
     expect(indexes).toHaveLength(0);
+    sqlite.close();
+  });
+
+  it("drops historical account endpoint bindings", () => {
+    const sqlite = new Database(":memory:");
+    createLegacyProviderTables(sqlite);
+    sqlite.exec(`
+      INSERT INTO managed_providers (
+        id,
+        provider_key,
+        display_name,
+        base_url,
+        created_at,
+        updated_at
+      ) VALUES (
+        1,
+        'relay',
+        'Relay',
+        'https://relay.example.com/v1',
+        '2026-08-23T00:00:00.000Z',
+        '2026-08-23T00:00:00.000Z'
+      );
+
+      INSERT INTO managed_provider_endpoints (
+        id,
+        provider_id,
+        endpoint_key,
+        protocol,
+        base_url,
+        created_at,
+        updated_at
+      ) VALUES (
+        7,
+        1,
+        'anthropic',
+        'anthropic',
+        'https://relay.example.com/anthropic',
+        '2026-08-23T00:00:00.000Z',
+        '2026-08-23T00:00:00.000Z'
+      );
+
+      CREATE TABLE managed_provider_credentials (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider_id INTEGER NOT NULL,
+        account_key TEXT NOT NULL DEFAULT 'default',
+        endpoint_id INTEGER,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        runtime_status TEXT NOT NULL DEFAULT 'normal',
+        status_source TEXT NOT NULL DEFAULT 'system',
+        recent_error_count INTEGER NOT NULL DEFAULT 0,
+        api_key_encrypted TEXT NOT NULL,
+        key_hint TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (provider_id, account_key)
+      );
+
+      INSERT INTO managed_provider_credentials (
+        id,
+        provider_id,
+        account_key,
+        endpoint_id,
+        api_key_encrypted,
+        key_hint,
+        created_at,
+        updated_at
+      ) VALUES (
+        9,
+        1,
+        'default',
+        7,
+        'encrypted',
+        '...ted',
+        '2026-08-23T00:00:00.000Z',
+        '2026-08-23T00:00:00.000Z'
+      );
+    `);
+
+    runMigrations(sqlite);
+
+    const columns = sqlite.pragma("table_info(managed_provider_credentials)") as Array<{ name: string }>;
+    expect(columns.some((column) => column.name === "endpoint_id")).toBe(false);
+    const row = sqlite.prepare(`
+      SELECT account_key AS accountKey, key_hint AS keyHint
+      FROM managed_provider_credentials
+    `).get() as { accountKey: string; keyHint: string };
+    expect(row).toEqual({ accountKey: "default", keyHint: "...ted" });
+    sqlite.close();
+  });
+
+  it("moves historical endpoint-scoped model errors into account-endpoint observations", () => {
+    const sqlite = new Database(":memory:");
+    runMigrations(sqlite);
+    sqlite.exec(`
+      ALTER TABLE managed_models ADD COLUMN endpoint_id INTEGER;
+
+      INSERT INTO managed_providers (
+        id,
+        provider_key,
+        display_name,
+        base_url,
+        created_at,
+        updated_at
+      ) VALUES (
+        1,
+        'relay',
+        'Relay',
+        'https://relay.example.com/v1',
+        '2026-08-29T00:00:00.000Z',
+        '2026-08-29T00:00:00.000Z'
+      );
+
+      INSERT INTO managed_provider_endpoints (
+        id,
+        provider_id,
+        endpoint_key,
+        protocol,
+        base_url,
+        created_at,
+        updated_at
+      ) VALUES (
+        7,
+        1,
+        'openai',
+        'openai',
+        'https://relay.example.com/v1',
+        '2026-08-29T00:00:00.000Z',
+        '2026-08-29T00:00:00.000Z'
+      );
+
+      INSERT INTO managed_provider_credentials (
+        id,
+        provider_id,
+        account_key,
+        api_key_encrypted,
+        created_at,
+        updated_at
+      ) VALUES (
+        9,
+        1,
+        'default',
+        'encrypted',
+        '2026-08-29T00:00:00.000Z',
+        '2026-08-29T00:00:00.000Z'
+      );
+
+      INSERT INTO managed_models (
+        id,
+        provider_id,
+        endpoint_id,
+        model_key,
+        provider_model_id,
+        model_name,
+        runtime_status,
+        status_reason,
+        status_message,
+        status_source,
+        status_updated_at,
+        status_cooldown_until,
+        cooldown_strike,
+        recent_error_count,
+        last_error_at,
+        last_error_code,
+        last_error_message,
+        discovered_at,
+        updated_at
+      ) VALUES (
+        11,
+        1,
+        7,
+        'relay/model-a',
+        'model-a',
+        'model-a',
+        'cooling_down',
+        'model_unavailable',
+        'Model is unavailable',
+        'system',
+        '2026-08-29T00:01:00.000Z',
+        '2026-08-29T00:31:00.000Z',
+        2,
+        3,
+        '2026-08-29T00:01:00.000Z',
+        'provider_invalid_model',
+        'Model is unavailable',
+        '2026-08-29T00:00:00.000Z',
+        '2026-08-29T00:01:00.000Z'
+      );
+
+      INSERT INTO managed_account_models (
+        account_id,
+        managed_model_id,
+        discovered_at,
+        last_seen_at
+      ) VALUES (
+        9,
+        11,
+        '2026-08-29T00:00:00.000Z',
+        '2026-08-29T00:01:00.000Z'
+      );
+    `);
+
+    runMigrations(sqlite);
+
+    const modelColumns = sqlite.pragma("table_info(managed_models)") as Array<{ name: string }>;
+    expect(modelColumns.some((column) => column.name === "endpoint_id")).toBe(false);
+    const observation = sqlite.prepare(`
+      SELECT
+        account_id AS accountId,
+        endpoint_id AS endpointId,
+        managed_model_id AS managedModelId,
+        runtime_status AS runtimeStatus,
+        status_reason AS statusReason,
+        cooldown_strike AS cooldownStrike,
+        recent_error_count AS recentErrorCount,
+        last_error_code AS lastErrorCode
+      FROM managed_account_endpoint_models
+    `).get();
+    expect(observation).toEqual({
+      accountId: 9,
+      endpointId: 7,
+      managedModelId: 11,
+      runtimeStatus: "cooling_down",
+      statusReason: "model_unavailable",
+      cooldownStrike: 2,
+      recentErrorCount: 3,
+      lastErrorCode: "provider_invalid_model"
+    });
     sqlite.close();
   });
 });

@@ -124,13 +124,16 @@ function recordFailure(
   candidate.endpoint.recent_error_count += 1;
   candidate.account.recent_error_count += 1;
 
-  input.runtimeStatusService?.recordFailure({
-    snapshot: input.state,
-    providerKey: candidate.provider.id,
-    modelKey: resolveModelKey(input.state, candidate),
-    accountId: candidate.account.id,
-    error
-  });
+  if (candidate.account.account_key && candidate.account.endpoint_key) {
+    input.runtimeStatusService?.recordFailure({
+      snapshot: input.state,
+      providerKey: candidate.provider.id,
+      modelKey: resolveModelKey(input.state, candidate),
+      accountKey: candidate.account.account_key,
+      endpointKey: candidate.account.endpoint_key,
+      error
+    });
+  }
 
   if (error instanceof HttpError && error.code === PROVIDER_AUTH_FAILED_CODE) {
     candidate.account.available = false;
@@ -182,12 +185,15 @@ export async function executeRoutedRequest(
       });
       selected = candidate;
 
-      input.runtimeStatusService?.recordSuccess({
-        snapshot: input.state,
-        providerKey: candidate.provider.id,
-        modelKey: resolveModelKey(input.state, candidate),
-        accountId: candidate.account.id
-      });
+      if (candidate.account.account_key && candidate.account.endpoint_key) {
+        input.runtimeStatusService?.recordSuccess({
+          snapshot: input.state,
+          providerKey: candidate.provider.id,
+          modelKey: resolveModelKey(input.state, candidate),
+          accountKey: candidate.account.account_key,
+          endpointKey: candidate.account.endpoint_key
+        });
+      }
       break;
     } catch (error) {
       lastError = error;
@@ -289,12 +295,15 @@ export async function* streamRoutedRequest(
       });
       outcome.selected = candidate;
 
-      input.runtimeStatusService?.recordSuccess({
-        snapshot: input.state,
-        providerKey: candidate.provider.id,
-        modelKey: resolveModelKey(input.state, candidate),
-        accountId: candidate.account.id
-      });
+      if (candidate.account.account_key && candidate.account.endpoint_key) {
+        input.runtimeStatusService?.recordSuccess({
+          snapshot: input.state,
+          providerKey: candidate.provider.id,
+          modelKey: resolveModelKey(input.state, candidate),
+          accountKey: candidate.account.account_key,
+          endpointKey: candidate.account.endpoint_key
+        });
+      }
       return;
     } catch (error) {
       outcome.lastError = error;

@@ -143,8 +143,15 @@ function canUseCandidate(
     }
   }
 
-  if (!endpoint.enabled) {
-    return "endpoint_disabled";
+  const endpointReason = modelFilterReason({
+    enabled: endpoint.enabled,
+    runtimeStatus: endpoint.runtime_status ?? "normal",
+    statusReason: endpoint.status_reason,
+    statusMessage: endpoint.status_message,
+    statusCooldownUntil: endpoint.status_cooldown_until
+  });
+  if (endpointReason) {
+    return endpointReason === "model_disabled" ? "endpoint_disabled" : endpointReason;
   }
 
   const accountGate = resolveAccountExecutionGate({

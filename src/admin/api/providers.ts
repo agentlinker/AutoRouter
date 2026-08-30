@@ -4,7 +4,6 @@ export interface ProviderModel {
   model_key: string;
   provider_model_id: string;
   model_name: string;
-  endpoint_key: string;
   enabled?: boolean;
   runtime_status?: string;
   status_reason?: string | null;
@@ -27,6 +26,13 @@ export interface ProviderEndpoint {
   custom_headers?: Record<string, string>;
   protocol_bundle_key?: string | null;
   enabled: boolean;
+  runtime_status?: string;
+  status_reason?: string | null;
+  status_message?: string | null;
+  status_source?: string | null;
+  status_updated_at?: string | null;
+  status_cooldown_until?: string | null;
+  recent_error_count?: number;
   supports_streaming: boolean;
   supports_tools: boolean;
   supports_json_mode: boolean;
@@ -34,7 +40,6 @@ export interface ProviderEndpoint {
 
 export interface ProviderAccount {
   account_key: string;
-  endpoint_key: string | null;
   enabled: boolean;
   runtime_status?: string;
   status_reason?: string | null;
@@ -88,6 +93,7 @@ export interface ProviderDetails {
   display_name: string;
   protocol: string;
   base_url: string;
+  model_catalog_url: string | null;
   website_url: string | null;
   provider_kind?: "official" | "relay" | "custom";
   enabled: boolean;
@@ -103,6 +109,8 @@ export interface ProviderDetails {
   accounts?: ProviderAccount[];
   endpoints: ProviderEndpoint[];
   latest_sync: {
+    account_key: string | null;
+    catalog_url: string | null;
     status: string;
     error_message: string | null;
     started_at: string;
@@ -110,6 +118,23 @@ export interface ProviderDetails {
     discovered_count: number;
   } | null;
   models: ProviderModel[];
+  account_endpoint_models: ProviderAccountEndpointModel[];
+}
+
+export interface ProviderAccountEndpointModel {
+  account_key: string;
+  endpoint_key: string;
+  model_key: string;
+  runtime_status: string;
+  status_reason?: string | null;
+  status_message?: string | null;
+  status_source?: string | null;
+  status_updated_at?: string | null;
+  status_cooldown_until?: string | null;
+  last_success_at?: string | null;
+  last_error_at?: string | null;
+  last_error_code?: string | null;
+  last_error_message?: string | null;
 }
 
 export interface ProviderListResponse {
@@ -147,7 +172,7 @@ export interface ProviderModelTestResult {
   error_code: string | null;
   error_message: string | null;
   response_body?: string | null;
-  endpoint_key?: string;
+  endpoint_key: string;
 }
 
 export interface ProviderFormValues {
@@ -155,6 +180,7 @@ export interface ProviderFormValues {
   display_name: string;
   endpoints: ProviderEndpointInput[];
   website_url?: string;
+  model_catalog_url?: string;
   api_key?: string;
   provider_kind?: "official" | "relay" | "custom";
   priority?: number;
@@ -163,7 +189,6 @@ export interface ProviderFormValues {
 }
 
 export interface ProviderEndpointInput {
-  endpoint_key?: string;
   protocol: "openai" | "anthropic" | "all";
   base_url: string;
   custom_headers?: string | Record<string, string>;
@@ -172,7 +197,6 @@ export interface ProviderEndpointInput {
 }
 
 export interface ProviderManualModelInput {
-  endpoint_key?: string;
   model_name: string;
   provider_model_id?: string;
   context_window?: number;
@@ -186,7 +210,6 @@ export interface CreateProviderPayload extends ProviderFormValues {
   base_url?: string;
   accounts?: Array<{
     account_key: string;
-    endpoint_key?: string;
     api_key: string;
     expires_at?: string | null;
     quota?: ProviderAccount["quota"];
@@ -254,7 +277,7 @@ export function testProviderModel(
     account_key: string;
     model_key: string;
     prompt: string;
-    endpoint_key?: string;
+    endpoint_key: string;
     temporary_headers?: Record<string, string>;
   }
 ): Promise<ProviderModelTestResult> {
@@ -272,30 +295,16 @@ export function createProviderEndpoint(
   token: string,
   providerKey: string,
   payload: {
-    endpoint_key?: string;
     protocol: "openai" | "anthropic" | "all";
     base_url: string;
     custom_headers?: Record<string, string>;
     enabled?: boolean;
-    api_key?: string;
   }
 ): Promise<ProviderDetails> {
   return requestJson<ProviderDetails>(`/admin/api/providers/${providerKey}/endpoints`, token, {
     method: "POST",
     body: JSON.stringify(payload)
   });
-}
-
-export function syncProviderEndpoint(
-  token: string,
-  providerKey: string,
-  endpointKey: string
-): Promise<ProviderDetails> {
-  return requestJson<ProviderDetails>(
-    `/admin/api/providers/${providerKey}/endpoints/${endpointKey}/sync-models`,
-    token,
-    { method: "POST" }
-  );
 }
 
 export function deleteProvider(token: string, providerKey: string): Promise<null> {
@@ -354,6 +363,25 @@ export function createProviderModel(
   });
 }
 
+export function clearProviderAccountEndpointModelStatus(
+  token: string,
+  providerKey: string,
+  payload: {
+    account_key: string;
+    endpoint_key: string;
+    model_key: string;
+  }
+): Promise<ProviderDetails> {
+  return requestJson<ProviderDetails>(
+    `/admin/api/providers/${encodeURIComponent(providerKey)}/account-endpoint-models/clear-status`,
+    token,
+    {
+      method: "POST",
+      body: JSON.stringify(payload)
+    }
+  );
+}
+
 export function listProviderTemplates(token: string): Promise<{
   data: ProviderTemplate[];
   meta?: { load_errors?: string[] };
@@ -389,7 +417,6 @@ export function createProviderAccount(
   providerKey: string,
   payload: {
     account_key: string;
-    endpoint_key?: string;
     api_key: string;
     expires_at?: string | null;
     quota?: ProviderAccount["quota"];
@@ -408,7 +435,6 @@ export function updateProviderAccount(
   providerKey: string,
   accountKey: string,
   payload: {
-    endpoint_key?: string | null;
     api_key?: string;
     expires_at?: string | null;
     quota?: ProviderAccount["quota"] | null;
