@@ -66,13 +66,14 @@ import {
   runtimeStatusDetail,
   runtimeStatusDisplayLabel
 } from "../runtimeStatusPresentation.js";
+import { providerKeyPattern, suggestProviderKey } from "../../utils/providerKey.js";
 import { readSidebarCollapsed, writeSidebarCollapsed } from "../utils/sidebarCollapse.js";
 
 export const providerTokenStorageKey = "autorouter_admin_token";
 
 // Form 内部状态：custom_headers 是 key-value 数组
 interface ProviderFormData {
-  provider_key?: string;
+  provider_key: string;
   display_name: string;
   endpoints: Array<{
     protocol: "openai" | "anthropic" | "all";
@@ -104,7 +105,10 @@ interface ProviderFormData {
 }
 
 const providerFormSchema = z.object({
-  provider_key: z.string().trim().optional(),
+  provider_key: z.string()
+    .trim()
+    .min(1, "请填写 Provider Key")
+    .regex(providerKeyPattern, "Provider Key 只能包含小写字母、数字和连字符"),
   display_name: z.string().trim().min(1, "请填写 Display Name"),
   endpoints: z.array(z.object({
     protocol: z.enum(["openai", "anthropic", "all"]),
@@ -186,31 +190,6 @@ function nextGeneratedAccountKey(accounts: Array<{ account_key?: string }>) {
     index += 1;
   }
   return `account-${index}`;
-}
-
-function providerKeyBaseFromUrl(baseUrl: string): string {
-  const hostname = new URL(baseUrl).hostname;
-  const normalized = hostname
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return normalized || "provider";
-}
-
-function generatedProviderKey(values: ProviderFormData): string {
-  const preferred = (values.provider_key ?? "").trim();
-  if (preferred) {
-    return preferred;
-  }
-  const firstBaseUrl = values.endpoints[0]?.base_url.trim();
-  if (!firstBaseUrl) {
-    return "provider";
-  }
-  try {
-    return providerKeyBaseFromUrl(firstBaseUrl);
-  } catch {
-    return "provider";
-  }
 }
 
 function expandFormEndpointProtocols(endpoint: { protocol: "openai" | "anthropic" | "all" }) {
@@ -1246,6 +1225,7 @@ function ProviderFormPage(props: {
 
   const [templates, setTemplates] = useState<ProviderTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [providerKeyManuallyEdited, setProviderKeyManuallyEdited] = useState(false);
   const [mergeDialog, setMergeDialog] = useState<{
     open: boolean;
     matches: Array<{
@@ -1351,8 +1331,42 @@ function ProviderFormPage(props: {
       template_id: ""
     });
     setSelectedTemplateId("");
+    setProviderKeyManuallyEdited(isEditing);
     setMessage(null);
-  }, [form, props.provider]);
+  }, [form, isEditing, props.provider]);
+
+  const watchedDisplayName = form.watch("display_name");
+  const watchedBaseUrl = form.watch("endpoints.0.base_url");
+  useEffect(() => {
+    if (isEditing || providerKeyManuallyEdited || selectedTemplateId) {
+      return;
+    }
+    if (!watchedDisplayName.trim() && !watchedBaseUrl.trim()) {
+      form.setValue("provider_key", "");
+      return;
+    }
+    let cancelled = false;
+    void suggestProviderKey({
+      displayName: watchedDisplayName,
+      baseUrl: watchedBaseUrl
+    }).then((providerKey) => {
+      if (!cancelled) {
+        form.setValue("provider_key", providerKey, {
+          shouldValidate: true
+        });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    form,
+    isEditing,
+    providerKeyManuallyEdited,
+    selectedTemplateId,
+    watchedBaseUrl,
+    watchedDisplayName
+  ]);
 
   useEffect(() => {
     if (isEditing) {
@@ -1411,7 +1425,7 @@ function ProviderFormPage(props: {
     }
 
     const normalized: CreateProviderPayload = {
-      provider_key: generatedProviderKey(values),
+      provider_key: values.provider_key.trim(),
       display_name: values.display_name.trim(),
       endpoints: normalizedEndpoints,
       website_url: values.website_url?.trim() ?? "",
@@ -1620,10 +1634,12 @@ function ProviderFormPage(props: {
                 const template = templates.find((item) => item.template_id === templateId);
                 if (!template) {
                   form.setValue("template_id", "");
+                  setProviderKeyManuallyEdited(false);
                   return;
                 }
                 form.setValue("template_id", template.template_id);
                 form.setValue("provider_key", template.suggested_provider_key);
+                setProviderKeyManuallyEdited(true);
                 form.setValue("display_name", template.display_name);
                 form.setValue("website_url", template.website_url ?? "");
                 form.setValue("provider_kind", template.provider_kind);
@@ -1650,19 +1666,26 @@ function ProviderFormPage(props: {
           </label>
         ) : null}
 
-        {isEditing ? (
-          <label className="field">
-            <span>Provider Key</span>
-            <input {...form.register("provider_key")} readOnly placeholder="my-provider" />
-          </label>
-        ) : null}
-
         <label className="field">
           <span>
             Display Name <RequiredMark />
           </span>
           <input {...form.register("display_name")} placeholder="My Provider" />
           {errors.display_name ? <small>{errors.display_name.message}</small> : null}
+        </label>
+
+        <label className="field">
+          <span>
+            Provider Key <RequiredMark />
+          </span>
+          <input
+            {...form.register("provider_key", {
+              onChange: () => setProviderKeyManuallyEdited(true)
+            })}
+            readOnly={isEditing}
+            placeholder="my-provider"
+          />
+          {errors.provider_key ? <small>{errors.provider_key.message}</small> : null}
         </label>
 
         <label className="field">

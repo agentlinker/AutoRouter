@@ -178,26 +178,24 @@ describe("admin providers integration", () => {
     await server.close();
   });
 
-  it("generates unique provider keys from base URL host when omitted", async () => {
+  it("generates provider keys from display names and rejects conflicts", async () => {
     const pool = mockAgent.get("https://api.example.com");
 
-    for (const modelId of ["first-model", "second-model"]) {
-      pool
-        .intercept({
-          path: "/v1/models",
-          method: "GET"
-        })
-        .reply(200, {
-          object: "list",
-          data: [
-            {
-              id: modelId,
-              object: "model",
-              context_window: 64000
-            }
-          ]
-        });
-    }
+    pool
+      .intercept({
+        path: "/v1/models",
+        method: "GET"
+      })
+      .reply(200, {
+        object: "list",
+        data: [
+          {
+            id: "first-model",
+            object: "model",
+            context_window: 64000
+          }
+        ]
+      });
 
     const config = loadConfig({
       override: {
@@ -255,7 +253,7 @@ describe("admin providers integration", () => {
         authorization: "Bearer admin-token"
       },
       payload: {
-        display_name: "First Generated",
+        display_name: "小米模型服务",
         base_url: "https://api.example.com/v1",
         api_key: "first-secret"
       }
@@ -268,18 +266,17 @@ describe("admin providers integration", () => {
         authorization: "Bearer admin-token"
       },
       payload: {
-        display_name: "Second Generated",
+        display_name: "小米模型服务",
         base_url: "https://api.example.com/v1",
         api_key: "second-secret"
       }
     });
 
     expect(firstResponse.statusCode).toBe(201);
-    expect(firstResponse.json().provider_key).toBe("api-example-com");
-    expect(secondResponse.statusCode).toBe(201);
-    expect(secondResponse.json().provider_key).toBe("api-example-com-2");
-    expect(repository.getProviderDetails("api-example-com")).not.toBeNull();
-    expect(repository.getProviderDetails("api-example-com-2")).not.toBeNull();
+    expect(firstResponse.json().provider_key).toBe("xiao-mi-mo-xing-fu-wu");
+    expect(secondResponse.statusCode).toBe(409);
+    expect(secondResponse.json().error.code).toBe("provider_key_conflict");
+    expect(repository.getProviderDetails("xiao-mi-mo-xing-fu-wu")).not.toBeNull();
 
     await server.close();
   });

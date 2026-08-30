@@ -23,10 +23,15 @@ import type { ManagedCredentialRow, ManagedModelRow } from "../../db/schema.js";
 import { HttpError, isHttpError } from "../../utils/httpErrors.js";
 import { customHeadersSchema, RESERVED_CUSTOM_HEADER_NAMES } from "../../config/schema.js";
 import { isResponsesUnsupportedError } from "../../utils/responsesFallback.js";
+import { providerKeyPattern, suggestProviderKey } from "../../utils/providerKey.js";
 
 const protocolSchema = z.enum(["openai", "anthropic"]);
 const protocolInputSchema = z.enum(["openai", "anthropic", "all"]);
 const endpointKeySchema = z.string().min(1).regex(/^[A-Za-z0-9_.-]+$/);
+const providerKeySchema = z.string().trim().regex(
+  providerKeyPattern,
+  "Provider Key 只能包含小写字母、数字和连字符"
+);
 
 function parseCustomHeaders(json: string | null): Record<string, string> | undefined {
   if (!json) return undefined;
@@ -121,7 +126,7 @@ const websiteUrlInputSchema = z.string()
   .pipe(z.string().url().or(z.literal("")));
 
 const createProviderBodySchema = z.object({
-  provider_key: z.string().min(1).optional(),
+  provider_key: providerKeySchema.optional(),
   display_name: z.string().min(1),
   protocol: protocolInputSchema.optional(),
   base_url: urlInputSchema.optional(),
@@ -365,30 +370,6 @@ function buildProviderInput(input: {
     privacyLevel: input.privacy_level,
     usageTrust: input.usage_trust
   };
-}
-
-function providerKeyBaseFromUrl(baseUrl: string): string {
-  const hostname = new URL(baseUrl).hostname;
-  const normalized = hostname
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return normalized || "provider";
-}
-
-function uniqueProviderKey(
-  repository: ManagedProviderRepository,
-  preferredKey: string | undefined,
-  baseUrl: string
-): string {
-  const base = preferredKey?.trim() || providerKeyBaseFromUrl(baseUrl);
-  let candidate = base;
-  let suffix = 2;
-  while (repository.getProviderDetails(candidate)) {
-    candidate = `${base}-${suffix}`;
-    suffix += 1;
-  }
-  return candidate;
 }
 
 function ensureUniqueEndpointKeys(
@@ -1028,11 +1009,18 @@ export async function registerAdminProvidersRoutes(
       throw new HttpError(400, "invalid_request", "At least one endpoint is required");
     }
     ensureUniqueEndpointKeys(endpointInputs);
-    const providerKey = uniqueProviderKey(
-      dependencies.repository,
-      body.provider_key ?? template?.suggested_provider_key,
-      endpointInputs[0]!.base_url
-    );
+    const providerKey = body.provider_key ?? await suggestProviderKey({
+      suggestedKey: template?.suggested_provider_key,
+      displayName: body.display_name,
+      baseUrl: endpointInputs[0]!.base_url
+    });
+    if (dependencies.repository.getProviderDetails(providerKey)) {
+      throw new HttpError(
+        409,
+        "provider_key_conflict",
+        `Provider Key already exists: ${providerKey}`
+      );
+    }
 
     const primaryAccount = body.accounts?.[0];
     if (body.accounts) {
