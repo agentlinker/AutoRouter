@@ -280,7 +280,7 @@ describe("admin providers integration", () => {
       payload: {
         provider_key: "xiao-mi-mo-xing-fu-wu",
         protocol: "openai",
-        base_url: "https://api.example.com/v1"
+        base_url: "https://api.example.com"
       }
     });
     const differentEndpointCheck = await server.inject({
@@ -292,7 +292,7 @@ describe("admin providers integration", () => {
       payload: {
         provider_key: "xiao-mi-mo-xing-fu-wu",
         protocol: "openai",
-        base_url: "https://other.example.com/v1"
+        base_url: "https://api.example.com/anthropic"
       }
     });
 

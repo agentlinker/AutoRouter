@@ -261,10 +261,10 @@ export function normalizeBaseUrlForMerge(baseUrl: string): string {
     const url = new URL(baseUrl.trim());
     url.hash = "";
     url.search = "";
-    const pathname = url.pathname.replace(/\/+$/, "");
+    const pathname = url.pathname.replace(/\/+$/, "").replace(/\/v1$/, "");
     return `${url.protocol}//${url.host.toLowerCase()}${pathname}`;
   } catch {
-    return baseUrl.trim().replace(/\/+$/, "").toLowerCase();
+    return baseUrl.trim().replace(/\/+$/, "").replace(/\/v1$/, "").toLowerCase();
   }
 }
 
