@@ -215,8 +215,10 @@ const patchAccountBodySchema = z.object({
 
 const mergeCheckBodySchema = z.object({
   provider_key: providerKeySchema.optional(),
-  protocol: protocolSchema,
-  base_url: urlInputSchema
+  endpoints: z.array(z.object({
+    protocol: protocolInputSchema,
+    base_url: urlInputSchema
+  }).strict()).min(1)
 }).strict();
 
 const createEndpointBodySchema = z.object({
@@ -755,28 +757,54 @@ export async function registerAdminProvidersRoutes(
 
   fastify.post<{ Body: unknown }>("/admin/api/providers/merge-check", async (request) => {
     const body = mergeCheckBodySchema.parse(request.body);
-    const matches = dependencies.repository.findProvidersByEndpoint({
-      protocol: body.protocol,
-      baseUrl: body.base_url
+    const endpointInputs = normalizeEndpointInputs({
+      endpoints: body.endpoints
     });
+    ensureUniqueEndpointKeys(endpointInputs);
+    const candidates = dependencies.repository.findProvidersByEndpointSet(
+      endpointInputs.map((endpoint) => ({
+        protocol: endpoint.protocol,
+        baseUrl: endpoint.base_url
+      }))
+    );
     const keyConflict = body.provider_key
       ? dependencies.repository.getProviderDetails(body.provider_key)
       : null;
     return {
-      normalized_base_url: normalizeBaseUrlForMerge(body.base_url),
+      normalized_endpoints: endpointInputs.map((endpoint) => ({
+        protocol: endpoint.protocol,
+        base_url: normalizeBaseUrlForMerge(endpoint.base_url)
+      })),
       key_conflict: keyConflict
         ? {
             provider_key: keyConflict.provider.providerKey,
             display_name: keyConflict.provider.displayName
           }
         : null,
-      matches: matches.map((item) => ({
+      candidates: candidates.map((item) => ({
         provider_key: item.provider.providerKey,
         display_name: item.provider.displayName,
         provider_kind: item.provider.providerKind ?? "custom",
-        endpoint_key: item.endpoint.endpointKey,
-        protocol: item.endpoint.protocol,
-        base_url: item.endpoint.baseUrl
+        relation: item.relation,
+        matching_endpoints: item.matchingEndpoints.map((endpoint) => ({
+          endpoint_key: endpoint.endpointKey,
+          protocol: endpoint.protocol,
+          base_url: endpoint.baseUrl
+        })),
+        conflicting_endpoints: item.conflictingEndpoints.map((endpoint) => ({
+          protocol: endpoint.protocol,
+          candidate_base_url: endpoint.candidateBaseUrl,
+          existing_base_url: endpoint.existingBaseUrl
+        })),
+        candidate_only_endpoints: item.candidateOnlyEndpoints.map((endpoint) => ({
+          protocol: endpoint.protocol,
+          base_url: endpoint.baseUrl
+        })),
+        existing_only_endpoints: item.existingOnlyEndpoints.map((endpoint) => ({
+          endpoint_key: endpoint.endpointKey,
+          protocol: endpoint.protocol,
+          base_url: endpoint.baseUrl
+        }))
       }))
     };
   });

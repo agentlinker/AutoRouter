@@ -196,6 +196,27 @@ export interface ProviderEndpointInput {
   enabled?: boolean;
 }
 
+export interface ProviderMergeEndpoint {
+  endpoint_key?: string;
+  protocol: "openai" | "anthropic";
+  base_url: string;
+}
+
+export interface ProviderMergeCandidate {
+  provider_key: string;
+  display_name: string;
+  provider_kind: string;
+  relation: "exact" | "candidate_subset" | "existing_subset" | "conflict";
+  matching_endpoints: ProviderMergeEndpoint[];
+  conflicting_endpoints: Array<{
+    protocol: "openai" | "anthropic";
+    candidate_base_url: string;
+    existing_base_url: string;
+  }>;
+  candidate_only_endpoints: ProviderMergeEndpoint[];
+  existing_only_endpoints: ProviderMergeEndpoint[];
+}
+
 export interface ProviderManualModelInput {
   model_name: string;
   provider_model_id?: string;
@@ -396,23 +417,18 @@ export function mergeCheckProvider(
   token: string,
   payload: {
     provider_key?: string;
-    protocol: "openai" | "anthropic";
-    base_url: string;
+    endpoints: Array<{
+      protocol: "openai" | "anthropic" | "all";
+      base_url: string;
+    }>;
   }
 ): Promise<{
-  normalized_base_url: string;
+  normalized_endpoints: ProviderMergeEndpoint[];
   key_conflict: {
     provider_key: string;
     display_name: string;
   } | null;
-  matches: Array<{
-    provider_key: string;
-    display_name: string;
-    provider_kind: string;
-    endpoint_key: string;
-    protocol: string;
-    base_url: string;
-  }>;
+  candidates: ProviderMergeCandidate[];
 }> {
   return requestJson("/admin/api/providers/merge-check", token, {
     method: "POST",

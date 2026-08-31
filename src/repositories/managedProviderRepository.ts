@@ -77,6 +77,30 @@ export interface ManagedEndpointInput {
   supportsJsonMode?: boolean;
 }
 
+export interface ManagedEndpointSetInput {
+  protocol: "openai" | "anthropic";
+  baseUrl: string;
+}
+
+export type ManagedEndpointSetRelation =
+  | "exact"
+  | "candidate_subset"
+  | "existing_subset"
+  | "conflict";
+
+export interface ManagedProviderEndpointSetCandidate {
+  provider: ManagedProviderRow;
+  relation: ManagedEndpointSetRelation;
+  matchingEndpoints: ManagedProviderEndpointRow[];
+  conflictingEndpoints: Array<{
+    protocol: "openai" | "anthropic";
+    candidateBaseUrl: string;
+    existingBaseUrl: string;
+  }>;
+  candidateOnlyEndpoints: ManagedEndpointSetInput[];
+  existingOnlyEndpoints: ManagedProviderEndpointRow[];
+}
+
 export interface ManagedEndpointBundleInput {
   endpoint: ManagedEndpointInput;
   models: ManagedDiscoveredModelInput[];
@@ -266,6 +290,78 @@ export function normalizeBaseUrlForMerge(baseUrl: string): string {
   } catch {
     return baseUrl.trim().replace(/\/+$/, "").replace(/\/v1$/, "").toLowerCase();
   }
+}
+
+function endpointSetRelation(input: {
+  conflictingCount: number;
+  candidateOnlyCount: number;
+  existingOnlyCount: number;
+}): ManagedEndpointSetRelation {
+  if (
+    input.conflictingCount > 0 ||
+    (input.candidateOnlyCount > 0 && input.existingOnlyCount > 0)
+  ) {
+    return "conflict";
+  }
+  if (input.candidateOnlyCount > 0) {
+    return "existing_subset";
+  }
+  if (input.existingOnlyCount > 0) {
+    return "candidate_subset";
+  }
+  return "exact";
+}
+
+function classifyProviderEndpointSet(
+  provider: ManagedProviderRow,
+  providerEndpoints: ManagedProviderEndpointRow[],
+  inputs: ManagedEndpointSetInput[]
+): ManagedProviderEndpointSetCandidate | null {
+  const candidateProtocols = new Set(inputs.map((input) => input.protocol));
+  const existingByProtocol = new Map(
+    providerEndpoints.map((endpoint) => [endpoint.protocol, endpoint])
+  );
+  const matchingEndpoints: ManagedProviderEndpointRow[] = [];
+  const conflictingEndpoints: ManagedProviderEndpointSetCandidate["conflictingEndpoints"] = [];
+  const candidateOnlyEndpoints: ManagedEndpointSetInput[] = [];
+
+  for (const input of inputs) {
+    const existing = existingByProtocol.get(input.protocol);
+    if (!existing) {
+      candidateOnlyEndpoints.push(input);
+    } else if (
+      normalizeBaseUrlForMerge(existing.baseUrl) ===
+      normalizeBaseUrlForMerge(input.baseUrl)
+    ) {
+      matchingEndpoints.push(existing);
+    } else {
+      conflictingEndpoints.push({
+        protocol: input.protocol,
+        candidateBaseUrl: input.baseUrl,
+        existingBaseUrl: existing.baseUrl
+      });
+    }
+  }
+
+  if (matchingEndpoints.length === 0) {
+    return null;
+  }
+
+  const existingOnlyEndpoints = providerEndpoints.filter(
+    (endpoint) => !candidateProtocols.has(endpoint.protocol as "openai" | "anthropic")
+  );
+  return {
+    provider,
+    relation: endpointSetRelation({
+      conflictingCount: conflictingEndpoints.length,
+      candidateOnlyCount: candidateOnlyEndpoints.length,
+      existingOnlyCount: existingOnlyEndpoints.length
+    }),
+    matchingEndpoints,
+    conflictingEndpoints,
+    candidateOnlyEndpoints,
+    existingOnlyEndpoints
+  };
 }
 
 export class ManagedProviderRepository {
@@ -762,36 +858,34 @@ export class ManagedProviderRepository {
     return this.getProviderDetails(providerKey)?.accounts ?? [];
   }
 
-  public findProvidersByEndpoint(input: {
-    protocol: "openai" | "anthropic";
-    baseUrl: string;
-  }): Array<{
-    provider: ManagedProviderRow;
-    endpoint: ManagedProviderEndpointRow;
-  }> {
-    const normalized = normalizeBaseUrlForMerge(input.baseUrl);
+  public findProvidersByEndpointSet(
+    inputs: ManagedEndpointSetInput[]
+  ): ManagedProviderEndpointSetCandidate[] {
     const endpoints = this.db.select().from(managedProviderEndpointsTable).all();
-    const matches: Array<{
-      provider: ManagedProviderRow;
-      endpoint: ManagedProviderEndpointRow;
-    }> = [];
-
+    const endpointsByProvider = new Map<number, ManagedProviderEndpointRow[]>();
     for (const endpoint of endpoints) {
-      if (endpoint.protocol !== input.protocol) {
+      const providerEndpoints = endpointsByProvider.get(endpoint.providerId) ?? [];
+      providerEndpoints.push(endpoint);
+      endpointsByProvider.set(endpoint.providerId, providerEndpoints);
+    }
+
+    const providers = new Map(
+      this.db.select().from(managedProvidersTable).all().map((provider) => [provider.id, provider])
+    );
+    const results: ManagedProviderEndpointSetCandidate[] = [];
+
+    for (const [providerId, providerEndpoints] of endpointsByProvider) {
+      const provider = providers.get(providerId);
+      if (!provider) {
         continue;
       }
-      if (normalizeBaseUrlForMerge(endpoint.baseUrl) !== normalized) {
-        continue;
-      }
-      const provider = this.db.select().from(managedProvidersTable)
-        .where(eq(managedProvidersTable.id, endpoint.providerId))
-        .get();
-      if (provider) {
-        matches.push({ provider, endpoint });
+      const candidate = classifyProviderEndpointSet(provider, providerEndpoints, inputs);
+      if (candidate) {
+        results.push(candidate);
       }
     }
 
-    return matches;
+    return results;
   }
 
   public createProviderWithModels(input: {

@@ -133,7 +133,7 @@ describe("managed provider multi-account", () => {
     expect(backup?.available).toBe(true);
   });
 
-  it("suggests merge for same base_url + protocol", () => {
+  it("classifies provider endpoint set merge candidates", () => {
     const config = loadConfig({
       override: {
         database: { path: join(tempDir, "autorouter.db") },
@@ -165,16 +165,98 @@ describe("managed provider multi-account", () => {
             baseUrl: "https://open.bigmodel.cn/api/paas/v4/"
           },
           models: []
+        },
+        {
+          endpoint: {
+            endpointKey: "anthropic",
+            protocol: "anthropic",
+            baseUrl: "https://open.bigmodel.cn/api/anthropic"
+          },
+          models: []
         }
       ]
     });
 
-    const matches = repo.findProvidersByEndpoint({
-      protocol: "openai",
-      baseUrl: "https://open.bigmodel.cn/api/paas/v4"
+    repo.createProviderWithEndpointBundles({
+      provider: {
+        providerKey: "openai-only",
+        displayName: "OpenAI Only",
+        baseUrl: "https://api.example.com/v1"
+      },
+      encryptedApiKey: cipher.encrypt("secret"),
+      endpointBundles: [
+        {
+          endpoint: {
+            endpointKey: "openai",
+            protocol: "openai",
+            baseUrl: "https://api.example.com/v1"
+          },
+          models: []
+        }
+      ]
     });
-    expect(matches).toHaveLength(1);
-    expect(matches[0]?.provider.providerKey).toBe("bigmodel");
+
+    const exact = repo.findProvidersByEndpointSet([
+      { protocol: "openai", baseUrl: "https://open.bigmodel.cn/api/paas/v4/v1" },
+      { protocol: "anthropic", baseUrl: "https://open.bigmodel.cn/api/anthropic" }
+    ]);
+    expect(exact).toEqual([
+      expect.objectContaining({
+        provider: expect.objectContaining({ providerKey: "bigmodel" }),
+        relation: "exact",
+        matchingEndpoints: expect.arrayContaining([
+          expect.objectContaining({ protocol: "openai" }),
+          expect.objectContaining({ protocol: "anthropic" })
+        ]),
+        conflictingEndpoints: [],
+        candidateOnlyEndpoints: [],
+        existingOnlyEndpoints: []
+      })
+    ]);
+
+    const candidateSubset = repo.findProvidersByEndpointSet([
+      { protocol: "openai", baseUrl: "https://open.bigmodel.cn/api/paas/v4" }
+    ]);
+    expect(candidateSubset[0]).toEqual(expect.objectContaining({
+      relation: "candidate_subset",
+      existingOnlyEndpoints: [
+        expect.objectContaining({ protocol: "anthropic" })
+      ]
+    }));
+
+    const existingSubset = repo.findProvidersByEndpointSet([
+      { protocol: "openai", baseUrl: "https://api.example.com" },
+      { protocol: "anthropic", baseUrl: "https://api.example.com/anthropic" }
+    ]);
+    expect(existingSubset[0]).toEqual(expect.objectContaining({
+      provider: expect.objectContaining({ providerKey: "openai-only" }),
+      relation: "existing_subset",
+      candidateOnlyEndpoints: [
+        {
+          protocol: "anthropic",
+          baseUrl: "https://api.example.com/anthropic"
+        }
+      ]
+    }));
+
+    const conflict = repo.findProvidersByEndpointSet([
+      { protocol: "openai", baseUrl: "https://open.bigmodel.cn/api/paas/v4" },
+      { protocol: "anthropic", baseUrl: "https://different.example.com/anthropic" }
+    ]);
+    expect(conflict[0]).toEqual(expect.objectContaining({
+      relation: "conflict",
+      conflictingEndpoints: [
+        {
+          protocol: "anthropic",
+          candidateBaseUrl: "https://different.example.com/anthropic",
+          existingBaseUrl: "https://open.bigmodel.cn/api/anthropic"
+        }
+      ]
+    }));
+
+    expect(repo.findProvidersByEndpointSet([
+      { protocol: "openai", baseUrl: "https://unrelated.example.com/v1" }
+    ])).toEqual([]);
   });
 
   it("isolates models so one key does not inherit another key discovery", () => {

@@ -31,6 +31,7 @@ import {
   clearProviderAccountEndpointModelStatus,
   createProvider,
   createProviderAccount,
+  createProviderEndpoint,
   deleteProvider,
   deleteProviderAccount,
   getProvider,
@@ -49,6 +50,7 @@ import {
   type ProviderAccount,
   type ProviderDetails,
   type ProviderListParams,
+  type ProviderMergeCandidate,
   type ProviderModel,
   type ProviderModelTestResult,
   type ProviderSortBy,
@@ -1228,19 +1230,20 @@ function ProviderFormPage(props: {
   const [providerKeyManuallyEdited, setProviderKeyManuallyEdited] = useState(false);
   const [mergeDialog, setMergeDialog] = useState<{
     open: boolean;
-    matches: Array<{
-      provider_key: string;
-      display_name: string;
-      endpoint_key: string;
-      protocol: string;
-      base_url: string;
-    }>;
+    candidates: ProviderMergeCandidate[];
+    selectedProviderKey: string | null;
     keyConflict: {
       provider_key: string;
       display_name: string;
     } | null;
     pendingValues: ProviderFormData | null;
-  }>({ open: false, matches: [], keyConflict: null, pendingValues: null });
+  }>({
+    open: false,
+    candidates: [],
+    selectedProviderKey: null,
+    keyConflict: null,
+    pendingValues: null
+  });
 
   const form = useForm<ProviderFormData>({
     resolver: zodResolver(providerFormSchema),
@@ -1485,17 +1488,22 @@ function ProviderFormPage(props: {
       return updated;
     }
 
-    if (!options?.skipMergeCheck && normalized.endpoints[0]) {
-      const first = normalized.endpoints[0];
+    if (!options?.skipMergeCheck && normalized.endpoints.length > 0) {
       const merge = await mergeCheckProvider(props.token, {
         provider_key: normalized.provider_key,
-        protocol: first.protocol === "all" ? "openai" : first.protocol,
-        base_url: first.base_url
+        endpoints: normalized.endpoints.map((endpoint) => ({
+          protocol: endpoint.protocol,
+          base_url: endpoint.base_url
+        }))
       });
-      if (merge.matches.length > 0) {
+      if (merge.candidates.length > 0) {
+        const firstMergeable = merge.candidates.find(
+          (candidate) => candidate.relation !== "conflict"
+        );
         setMergeDialog({
           open: true,
-          matches: merge.matches,
+          candidates: merge.candidates,
+          selectedProviderKey: firstMergeable?.provider_key ?? null,
           keyConflict: merge.key_conflict,
           pendingValues: values
         });
@@ -1545,7 +1553,13 @@ function ProviderFormPage(props: {
       if (!result) {
         return;
       }
-      setMergeDialog({ open: false, matches: [], keyConflict: null, pendingValues: null });
+      setMergeDialog({
+        open: false,
+        candidates: [],
+        selectedProviderKey: null,
+        keyConflict: null,
+        pendingValues: null
+      });
       setMessage(result.latest_sync?.status === "error"
         ? {
             text: `Provider 已保存，但模型发现失败：${result.latest_sync.error_message ?? "请检查模型目录 URL"}`,
@@ -1589,11 +1603,40 @@ function ProviderFormPage(props: {
   const mergeAccountMutation = useMutation({
     mutationFn: async () => {
       const values = mergeDialog.pendingValues;
-      const target = mergeDialog.matches[0];
+      const target = mergeDialog.candidates.find(
+        (candidate) => candidate.provider_key === mergeDialog.selectedProviderKey
+      );
       const account = values?.accounts[0];
       if (!values || !target || !account?.api_key) {
         throw new Error("缺少合并所需信息");
       }
+      if (target.relation === "conflict") {
+        throw new Error("Endpoint 配置存在冲突，不能直接合并");
+      }
+
+      for (const missingEndpoint of target.candidate_only_endpoints) {
+        const sourceEndpoint = values.endpoints.find(
+          (endpoint) =>
+            endpoint.protocol === missingEndpoint.protocol || endpoint.protocol === "all"
+        );
+        const customHeaders = sourceEndpoint?.custom_headers?.reduce<Record<string, string>>(
+          (result, header) => {
+            const key = header.key.trim();
+            if (key) {
+              result[key] = header.value.trim();
+            }
+            return result;
+          },
+          {}
+        );
+        await createProviderEndpoint(props.token, target.provider_key, {
+          protocol: missingEndpoint.protocol,
+          base_url: missingEndpoint.base_url,
+          custom_headers:
+            customHeaders && Object.keys(customHeaders).length > 0 ? customHeaders : undefined
+        });
+      }
+
       return createProviderAccount(props.token, target.provider_key, {
         account_key: `account-${Date.now().toString(36)}`,
         api_key: account.api_key.trim(),
@@ -1606,8 +1649,14 @@ function ProviderFormPage(props: {
       });
     },
     onSuccess: () => {
-      setMergeDialog({ open: false, matches: [], keyConflict: null, pendingValues: null });
-      setMessage({ text: "已合并到已有 Provider 并添加 API Key", mode: "success" });
+      setMergeDialog({
+        open: false,
+        candidates: [],
+        selectedProviderKey: null,
+        keyConflict: null,
+        pendingValues: null
+      });
+      setMessage({ text: "已合并 Endpoint 并添加 API Key", mode: "success" });
       props.onDone();
     },
     onError: (error) => {
@@ -1621,6 +1670,15 @@ function ProviderFormPage(props: {
   const errors = form.formState.errors;
   const endpointsError = form.formState.errors.endpoints;
   const modelsError = form.formState.errors.models;
+  const conflictingCandidates = mergeDialog.candidates.filter(
+    (candidate) => candidate.relation === "conflict"
+  );
+  const mergeableCandidates = mergeDialog.candidates.filter(
+    (candidate) => candidate.relation !== "conflict"
+  );
+  const selectedMergeCandidate = mergeableCandidates.find(
+    (candidate) => candidate.provider_key === mergeDialog.selectedProviderKey
+  );
 
   return (
     <section className="page-panel form-page">
@@ -1985,27 +2043,77 @@ function ProviderFormPage(props: {
 
       <AppDialog
         open={mergeDialog.open}
-        tone="info"
-        title="检测到可合并的 Provider"
+        tone={mergeableCandidates.length > 0 ? "info" : "error"}
+        title={mergeableCandidates.length > 0 ? "检测到可合并的 Provider" : "Endpoint 配置冲突"}
         confirmLabel="关闭"
         onClose={() =>
           setMergeDialog({
             open: false,
-            matches: [],
+            candidates: [],
+            selectedProviderKey: null,
             keyConflict: null,
             pendingValues: null
           })
         }
       >
-        <p>
-          已有 Provider “{mergeDialog.matches[0]?.display_name}” 使用了相同 base_url / 协议。
-        </p>
-        <p className="muted">
-          可以合并为该 Provider 的一个新 API Key；如果需要独立限额、独立模型或独立优先级，也可以继续新建。
-        </p>
-        <p className="muted">
-          {mergeDialog.matches[0]?.endpoint_key}: {mergeDialog.matches[0]?.base_url}
-        </p>
+        {mergeableCandidates.length > 0 ? (
+          <>
+            <p>以下 Provider 的 Endpoint 集合相同，或与当前配置存在包含关系：</p>
+            {mergeableCandidates.map((candidate) => (
+              <div key={candidate.provider_key}>
+                <label className="checkbox-row">
+                  <input
+                    type="radio"
+                    name="merge-provider"
+                    checked={mergeDialog.selectedProviderKey === candidate.provider_key}
+                    onChange={() =>
+                      setMergeDialog((current) => ({
+                        ...current,
+                        selectedProviderKey: candidate.provider_key
+                      }))
+                    }
+                  />
+                  <span>
+                    {candidate.display_name} ({candidate.provider_key})
+                    {candidate.relation === "exact"
+                      ? " · Endpoint 完全一致"
+                      : candidate.relation === "candidate_subset"
+                        ? " · 当前 Endpoint 是已有配置的子集"
+                        : " · 已有 Endpoint 是当前配置的子集"}
+                  </span>
+                </label>
+                {candidate.existing_only_endpoints.map((endpoint) => (
+                  <p key={`existing-${endpoint.protocol}`} className="muted">
+                    合并后沿用已有 {endpoint.protocol}: {endpoint.base_url}
+                  </p>
+                ))}
+                {candidate.candidate_only_endpoints.map((endpoint) => (
+                  <p key={`candidate-${endpoint.protocol}`} className="muted">
+                    合并时新增 {endpoint.protocol}: {endpoint.base_url}
+                  </p>
+                ))}
+              </div>
+            ))}
+          </>
+        ) : null}
+        {conflictingCandidates.map((candidate) => (
+          <div key={candidate.provider_key}>
+            <p className="status error">
+              Provider “{candidate.display_name}” 仅部分 Endpoint 匹配，不能直接合并。
+            </p>
+            {candidate.matching_endpoints.map((endpoint) => (
+              <p key={`match-${endpoint.protocol}`} className="muted">
+                已匹配 {endpoint.protocol}: {endpoint.base_url}
+              </p>
+            ))}
+            {candidate.conflicting_endpoints.map((endpoint) => (
+              <p key={`conflict-${endpoint.protocol}`} className="status error">
+                {endpoint.protocol} 冲突：已有 {endpoint.existing_base_url}；当前{" "}
+                {endpoint.candidate_base_url}
+              </p>
+            ))}
+          </div>
+        ))}
         {mergeDialog.keyConflict ? (
           <p className="status error">
             Provider Key “{mergeDialog.keyConflict.provider_key}” 已被
@@ -2013,15 +2121,63 @@ function ProviderFormPage(props: {
           </p>
         ) : null}
         <div className="form-actions" style={{ marginTop: 12 }}>
-          <button
-            className="primary-action"
-            type="button"
-            disabled={mergeAccountMutation.isPending}
-            onClick={() => mergeAccountMutation.mutate()}
-          >
-            合并并添加 API Key
-          </button>
-          {mergeDialog.keyConflict ? (
+          {selectedMergeCandidate ? (
+            <button
+              className="primary-action"
+              type="button"
+              disabled={mergeAccountMutation.isPending}
+              onClick={() => mergeAccountMutation.mutate()}
+            >
+              合并并添加 API Key
+            </button>
+          ) : null}
+          {conflictingCandidates.length > 0 ? (
+            <button
+              className="ghost-action"
+              type="button"
+              onClick={() => {
+                const conflict = conflictingCandidates[0]?.conflicting_endpoints[0];
+                const endpointIndex = mergeDialog.pendingValues?.endpoints.findIndex(
+                  (endpoint) =>
+                    endpoint.protocol === conflict?.protocol || endpoint.protocol === "all"
+                ) ?? 0;
+                setMergeDialog({
+                  open: false,
+                  candidates: [],
+                  selectedProviderKey: null,
+                  keyConflict: null,
+                  pendingValues: null
+                });
+                form.setFocus(`endpoints.${Math.max(endpointIndex, 0)}.base_url`);
+              }}
+            >
+              修改 Endpoint
+            </button>
+          ) : null}
+          {conflictingCandidates.length > 0 ? (
+            <button
+              className="ghost-action"
+              type="button"
+              disabled={forceCreateMutation.isPending || !mergeDialog.pendingValues}
+              onClick={() => {
+                const values = mergeDialog.pendingValues;
+                if (values) {
+                  if (mergeDialog.keyConflict) {
+                    const providerKey = `${values.provider_key}-${Date.now().toString(36)}`;
+                    form.setValue("provider_key", providerKey, { shouldValidate: true });
+                    setProviderKeyManuallyEdited(true);
+                    forceCreateMutation.mutate({ ...values, provider_key: providerKey });
+                  } else {
+                    forceCreateMutation.mutate(values);
+                  }
+                }
+              }}
+            >
+              {mergeDialog.keyConflict
+                ? "使用新的 Provider Key 创建"
+                : "作为独立 Provider 创建"}
+            </button>
+          ) : mergeDialog.keyConflict ? (
             <button
               className="ghost-action"
               type="button"
@@ -2032,7 +2188,8 @@ function ProviderFormPage(props: {
                 }
                 setMergeDialog({
                   open: false,
-                  matches: [],
+                  candidates: [],
+                  selectedProviderKey: null,
                   keyConflict: null,
                   pendingValues: null
                 });

@@ -271,6 +271,57 @@ describe("admin providers integration", () => {
         api_key: "second-secret"
       }
     });
+    const existingSubsetCheck = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers/merge-check",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        provider_key: "xiao-mi-mo-xing-fu-wu",
+        endpoints: [
+          {
+            protocol: "openai",
+            base_url: "https://api.example.com"
+          },
+          {
+            protocol: "anthropic",
+            base_url: "https://api.example.com/anthropic"
+          }
+        ]
+      }
+    });
+    const addAnthropicEndpointResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers/xiao-mi-mo-xing-fu-wu/endpoints",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        protocol: "anthropic",
+        base_url: "https://api.example.com/anthropic"
+      }
+    });
+    const exactEndpointCheck = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers/merge-check",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        provider_key: "xiao-mi-mo-xing-fu-wu",
+        endpoints: [
+          {
+            protocol: "openai",
+            base_url: "https://api.example.com"
+          },
+          {
+            protocol: "anthropic",
+            base_url: "https://api.example.com/anthropic"
+          }
+        ]
+      }
+    });
     const sameEndpointCheck = await server.inject({
       method: "POST",
       url: "/admin/api/providers/merge-check",
@@ -279,8 +330,32 @@ describe("admin providers integration", () => {
       },
       payload: {
         provider_key: "xiao-mi-mo-xing-fu-wu",
-        protocol: "openai",
-        base_url: "https://api.example.com"
+        endpoints: [
+          {
+            protocol: "openai",
+            base_url: "https://api.example.com"
+          }
+        ]
+      }
+    });
+    const conflictingEndpointCheck = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers/merge-check",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        provider_key: "xiao-mi-mo-xing-fu-wu",
+        endpoints: [
+          {
+            protocol: "openai",
+            base_url: "https://api.example.com/v1"
+          },
+          {
+            protocol: "anthropic",
+            base_url: "https://other.example.com/anthropic"
+          }
+        ]
       }
     });
     const differentEndpointCheck = await server.inject({
@@ -291,8 +366,12 @@ describe("admin providers integration", () => {
       },
       payload: {
         provider_key: "xiao-mi-mo-xing-fu-wu",
-        protocol: "openai",
-        base_url: "https://api.example.com/anthropic"
+        endpoints: [
+          {
+            protocol: "openai",
+            base_url: "https://other.example.com/v1"
+          }
+        ]
       }
     });
 
@@ -300,14 +379,64 @@ describe("admin providers integration", () => {
     expect(firstResponse.json().provider_key).toBe("xiao-mi-mo-xing-fu-wu");
     expect(secondResponse.statusCode).toBe(409);
     expect(secondResponse.json().error.code).toBe("provider_key_conflict");
+    expect(existingSubsetCheck.statusCode).toBe(200);
+    expect(existingSubsetCheck.json().candidates).toEqual([
+      expect.objectContaining({
+        provider_key: "xiao-mi-mo-xing-fu-wu",
+        relation: "existing_subset",
+        candidate_only_endpoints: [
+          {
+            protocol: "anthropic",
+            base_url: "https://api.example.com/anthropic"
+          }
+        ]
+      })
+    ]);
+    expect(addAnthropicEndpointResponse.statusCode).toBe(201);
+    expect(exactEndpointCheck.statusCode).toBe(200);
+    expect(exactEndpointCheck.json().candidates).toEqual([
+      expect.objectContaining({
+        provider_key: "xiao-mi-mo-xing-fu-wu",
+        relation: "exact",
+        matching_endpoints: expect.arrayContaining([
+          expect.objectContaining({ protocol: "openai" }),
+          expect.objectContaining({ protocol: "anthropic" })
+        ])
+      })
+    ]);
     expect(sameEndpointCheck.statusCode).toBe(200);
-    expect(sameEndpointCheck.json().matches).toHaveLength(1);
+    expect(sameEndpointCheck.json().candidates).toEqual([
+      expect.objectContaining({
+        provider_key: "xiao-mi-mo-xing-fu-wu",
+        relation: "candidate_subset",
+        matching_endpoints: [
+          expect.objectContaining({ protocol: "openai" })
+        ],
+        existing_only_endpoints: [
+          expect.objectContaining({ protocol: "anthropic" })
+        ]
+      })
+    ]);
     expect(sameEndpointCheck.json().key_conflict).toEqual({
       provider_key: "xiao-mi-mo-xing-fu-wu",
       display_name: "小米模型服务"
     });
+    expect(conflictingEndpointCheck.statusCode).toBe(200);
+    expect(conflictingEndpointCheck.json().candidates).toEqual([
+      expect.objectContaining({
+        provider_key: "xiao-mi-mo-xing-fu-wu",
+        relation: "conflict",
+        conflicting_endpoints: [
+          {
+            protocol: "anthropic",
+            candidate_base_url: "https://other.example.com/anthropic",
+            existing_base_url: "https://api.example.com/anthropic"
+          }
+        ]
+      })
+    ]);
     expect(differentEndpointCheck.statusCode).toBe(200);
-    expect(differentEndpointCheck.json().matches).toEqual([]);
+    expect(differentEndpointCheck.json().candidates).toEqual([]);
     expect(differentEndpointCheck.json().key_conflict).toEqual({
       provider_key: "xiao-mi-mo-xing-fu-wu",
       display_name: "小米模型服务"
