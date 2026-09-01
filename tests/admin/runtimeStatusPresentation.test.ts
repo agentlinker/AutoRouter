@@ -4,7 +4,8 @@ import {
   isManualRecoveryRequired,
   isRuntimeStatusSchedulable,
   runtimeStatusBadgeClass,
-  runtimeStatusDisplayLabel
+  runtimeStatusDisplayLabel,
+  runtimeObservationDisplayLabel
 } from "../../src/admin/runtimeStatusPresentation.js";
 
 describe("runtime status presentation", () => {
@@ -38,5 +39,22 @@ describe("runtime status presentation", () => {
     expect(runtimeStatusBadgeClass(status)).toBe("badge warning");
     expect(runtimeStatusDisplayLabel(status)).toBe("限流中");
     expect(isManualRecoveryRequired(status)).toBe(true);
+  });
+
+  it("shows expired observation cooldown as schedulable", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-22T00:00:00Z"));
+
+    expect(runtimeObservationDisplayLabel({
+      runtime_status: "cooling_down",
+      status_reason: "upstream_error_cooldown",
+      status_cooldown_until: "2026-08-21T16:04:43.293Z"
+    })).toBe("可调度");
+
+    expect(runtimeObservationDisplayLabel({
+      runtime_status: "cooling_down",
+      status_reason: "upstream_error_cooldown",
+      status_cooldown_until: "2026-08-22T00:04:43.293Z"
+    })).toBe("冷却中");
   });
 });

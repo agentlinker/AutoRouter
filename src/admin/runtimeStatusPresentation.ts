@@ -75,6 +75,24 @@ export function runtimeStatusDisplayLabel(input: RuntimeStatusInput) {
     : runtimeStatusLabel(input.runtime_status);
 }
 
+export function runtimeObservationDisplayLabel(
+  input?: RuntimeStatusInput & { last_success_at?: string | null }
+) {
+  if (!input) {
+    return "未知（可尝试）";
+  }
+  if (isRuntimeNormal(input.runtime_status)) {
+    return input.last_success_at ? "可用" : "未验证（可尝试）";
+  }
+  if (
+    input.runtime_status === "cooling_down" ||
+    input.runtime_status === "rate_limited"
+  ) {
+    return isRuntimeStatusSchedulable(input) ? "可调度" : "冷却中";
+  }
+  return "不可用";
+}
+
 export function runtimeStatusDetail(input: RuntimeStatusInput) {
   const code = input.status_reason ? `异常码: ${input.status_reason}` : null;
   const message = input.status_message ? `错误信息: ${input.status_message}` : null;

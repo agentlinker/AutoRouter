@@ -69,7 +69,8 @@ import {
   isRuntimeStatusSchedulable,
   runtimeStatusBadgeClass,
   runtimeStatusDetail,
-  runtimeStatusDisplayLabel
+  runtimeStatusDisplayLabel,
+  runtimeObservationDisplayLabel
 } from "../runtimeStatusPresentation.js";
 import { normalizeProviderModelTestSelection } from "../utils/providerModelTestSelection.js";
 import { providerKeyPattern, suggestProviderKey } from "../../utils/providerKey.js";
@@ -2605,16 +2606,7 @@ function ProviderModelTestDialog(props: {
           <span>当前观测</span>
           <div className="inline-actions">
             <strong>
-              {!observation
-                ? "未知（可尝试）"
-                : observation.runtime_status === "normal" && observation.last_success_at
-                  ? "可用"
-                  : observation.runtime_status === "normal"
-                    ? "未验证（可尝试）"
-                  : observation.runtime_status === "cooling_down" ||
-                      observation.runtime_status === "rate_limited"
-                    ? "冷却中"
-                    : "不可用"}
+              {runtimeObservationDisplayLabel(observation)}
             </strong>
             {observation &&
             (observation.runtime_status !== "normal" || observation.last_error_at) ? (
@@ -2708,27 +2700,6 @@ function ProviderModelTestDialog(props: {
   );
 }
 
-function observationDisplayLabel(observation:
-  ProviderDetails["account_endpoint_models"][number] | undefined
-): string {
-  if (!observation) {
-    return "未知（可尝试）";
-  }
-  if (observation.runtime_status === "normal" && observation.last_success_at) {
-    return "可用";
-  }
-  if (observation.runtime_status === "normal") {
-    return "未验证（可尝试）";
-  }
-  if (
-    observation.runtime_status === "cooling_down" ||
-    observation.runtime_status === "rate_limited"
-  ) {
-    return "冷却中";
-  }
-  return "不可用";
-}
-
 function ProviderConnectivityMatrix(props: {
   token: string;
   provider: ProviderDetails;
@@ -2780,7 +2751,7 @@ function ProviderConnectivityMatrix(props: {
                       className="connectivity-cell"
                       key={`${account.account_key}-${endpoint.endpoint_key}`}
                     >
-                      <span>{visible ? observationDisplayLabel(observation) : "不可见"}</span>
+                      <span>{visible ? runtimeObservationDisplayLabel(observation) : "不可见"}</span>
                       {visible ? (
                         <div className="inline-actions">
                           <button
