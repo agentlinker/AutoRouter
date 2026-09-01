@@ -68,6 +68,7 @@ import {
   runtimeStatusDetail,
   runtimeStatusDisplayLabel
 } from "../runtimeStatusPresentation.js";
+import { normalizeProviderModelTestSelection } from "../utils/providerModelTestSelection.js";
 import { providerKeyPattern, suggestProviderKey } from "../../utils/providerKey.js";
 import { readSidebarCollapsed, writeSidebarCollapsed } from "../utils/sidebarCollapse.js";
 
@@ -2337,15 +2338,24 @@ function ProviderModelTestDialog(props: {
       );
 
   useEffect(() => {
-    if (!models.some((model) => model.model_key === modelKey)) {
-      setModelKey(models[0]?.model_key ?? "");
+    const nextSelection = normalizeProviderModelTestSelection({
+      modelKey,
+      modelKeys: models.map((model) => model.model_key),
+      endpointKey,
+      endpointKeys: endpoints.map((endpoint) => endpoint.endpoint_key),
+      defaultEndpointKey
+    });
+    if (nextSelection.changed) {
+      setResult(null);
+      setRequestError(null);
     }
-    if (!endpointKey || !endpoints.some((endpoint) => endpoint.endpoint_key === endpointKey)) {
-      setEndpointKey(defaultEndpointKey);
+    if (nextSelection.modelKey !== modelKey) {
+      setModelKey(nextSelection.modelKey);
     }
-    setResult(null);
-    setRequestError(null);
-  }, [accountKey, modelKey, models, endpointKey, endpoints, defaultEndpointKey]);
+    if (nextSelection.endpointKey !== endpointKey) {
+      setEndpointKey(nextSelection.endpointKey);
+    }
+  }, [modelKey, models, endpointKey, endpoints, defaultEndpointKey]);
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -2402,7 +2412,11 @@ function ProviderModelTestDialog(props: {
           <select
             value={accountKey}
             disabled={mutation.isPending}
-            onChange={(event) => setAccountKey(event.target.value)}
+            onChange={(event) => {
+              setAccountKey(event.target.value);
+              setResult(null);
+              setRequestError(null);
+            }}
           >
             {accounts.map((account) => (
               <option key={account.account_key} value={account.account_key}>
