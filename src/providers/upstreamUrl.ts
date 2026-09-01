@@ -15,8 +15,14 @@ export function resolveUpstreamUrl(
   const url = new URL(configuredUrl.trim());
   const pathname = url.pathname.replace(/\/+$/, "") || "/";
 
-  if (completeOperationPaths.some((path) => pathname.endsWith(path))) {
-    url.pathname = pathname;
+  const configuredOperationPath = completeOperationPaths.find((path) =>
+    pathname.endsWith(path)
+  );
+  if (configuredOperationPath) {
+    const prefix = pathname
+      .slice(0, -configuredOperationPath.length)
+      .replace(/\/+$/, "");
+    url.pathname = `${prefix}${operationPaths[operation]}`;
     return url.toString();
   }
 

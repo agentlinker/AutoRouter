@@ -31,9 +31,21 @@ describe("resolveUpstreamUrl", () => {
     expect(resolveUpstreamUrl(baseUrl, operation)).toBe(expected);
   });
 
-  it("uses an explicitly configured complete operation URL unchanged", () => {
+  it("rewrites an explicitly configured complete operation URL to the requested operation", () => {
     expect(
       resolveUpstreamUrl("https://api.example.com/v1/chat/completions?region=us", "responses")
+    ).toBe("https://api.example.com/v1/responses?region=us");
+    expect(
+      resolveUpstreamUrl("https://api.example.com/v1/responses?region=us", "chat_completions")
     ).toBe("https://api.example.com/v1/chat/completions?region=us");
+  });
+
+  it("preserves a custom prefix when rewriting complete operation URLs", () => {
+    expect(
+      resolveUpstreamUrl(
+        "https://ark.example.com/api/coding/v3/chat/completions",
+        "responses"
+      )
+    ).toBe("https://ark.example.com/api/coding/v3/responses");
   });
 });
