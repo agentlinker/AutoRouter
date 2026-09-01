@@ -1,7 +1,10 @@
 import { request } from "undici";
 
 import type { NormalizedChatRequest } from "../routing/types.js";
-import { PROVIDER_AUTH_FAILED_CODE } from "../utils/providerErrors.js";
+import {
+  PROVIDER_AUTH_FAILED_CODE,
+  throwIfProviderAccessBlocked
+} from "../utils/providerErrors.js";
 import { HttpError } from "../utils/httpErrors.js";
 import { mergeCustomHeaders, pickForwardedRequestHeaders } from "./customHeaders.js";
 import type {
@@ -124,6 +127,13 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     const body = parseJsonSafely(raw);
 
     if (response.statusCode >= 400) {
+      throwIfProviderAccessBlocked({
+        statusCode: response.statusCode,
+        contentType: response.headers["content-type"],
+        operation: "Provider request",
+        bodyText: raw
+      });
+
       const message =
         typeof body === "object" &&
         body !== null &&
@@ -208,6 +218,12 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     }
 
     if (response.statusCode >= 400) {
+      throwIfProviderAccessBlocked({
+        statusCode: response.statusCode,
+        contentType: response.headers["content-type"],
+        operation: "Streaming provider request"
+      });
+
       if (response.statusCode === 401 || response.statusCode === 403) {
         throw new HttpError(
           response.statusCode,
@@ -257,6 +273,13 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     const raw = await response.body.text();
     const body = parseJsonSafely(raw);
     if (response.statusCode >= 400) {
+      throwIfProviderAccessBlocked({
+        statusCode: response.statusCode,
+        contentType: response.headers["content-type"],
+        operation: "Provider responses request",
+        bodyText: raw
+      });
+
       const message =
         typeof body === "object" &&
         body !== null &&
@@ -317,6 +340,12 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     }
 
     if (response.statusCode >= 400) {
+      throwIfProviderAccessBlocked({
+        statusCode: response.statusCode,
+        contentType: response.headers["content-type"],
+        operation: "Streaming responses request"
+      });
+
       if (response.statusCode === 401 || response.statusCode === 403) {
         throw new HttpError(
           response.statusCode,

@@ -110,9 +110,9 @@ describe("OpenAiCompatibleAdapter", () => {
         path: "/v1/chat/completions",
         method: "POST"
       })
-      .reply(401, {
+      .reply(403, {
         error: {
-          message: "unauthorized"
+          message: "forbidden"
         }
       });
 
@@ -133,6 +133,44 @@ describe("OpenAiCompatibleAdapter", () => {
     ).rejects.toMatchObject({
       code: "provider_auth_failed",
       retryable: false
+    });
+
+    await mockAgent.close();
+  });
+
+  it("does not treat HTML 403 responses as API key failures", async () => {
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+
+    mockAgent
+      .get("https://adapter-blocked.example.com")
+      .intercept({
+        path: "/v1/chat/completions",
+        method: "POST"
+      })
+      .reply(403, "<!DOCTYPE html><title>Attention Required!</title>", {
+        headers: { "content-type": "text/html; charset=UTF-8" }
+      });
+
+    const adapter = new OpenAiCompatibleAdapter();
+
+    await expect(
+      adapter.chatCompletion(
+        {
+          model: "auto",
+          messages: [{ role: "user", content: "hello" }],
+          stream: false,
+          tools: [],
+          metadata: {},
+          context_tokens_est: 10
+        },
+        createRouteTarget("https://adapter-blocked.example.com/v1")
+      )
+    ).rejects.toMatchObject({
+      statusCode: 403,
+      code: "provider_access_blocked",
+      retryable: true
     });
 
     await mockAgent.close();
@@ -168,6 +206,40 @@ describe("OpenAiCompatibleAdapter", () => {
     await expect(iterator[Symbol.asyncIterator]().next()).rejects.toMatchObject({
       code: "provider_auth_failed",
       retryable: false
+    });
+
+    await mockAgent.close();
+  });
+
+  it("does not treat streamed HTML 403 responses as API key failures", async () => {
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+
+    mockAgent
+      .get("https://adapter-stream-blocked.example.com")
+      .intercept({
+        path: "/v1/responses",
+        method: "POST"
+      })
+      .reply(403, "<!DOCTYPE html><title>Attention Required!</title>", {
+        headers: { "content-type": "text/html; charset=UTF-8" }
+      });
+
+    const adapter = new OpenAiCompatibleAdapter();
+    const iterator = adapter.streamResponse!(
+      {
+        model: "auto",
+        input: "hello",
+        stream: true
+      },
+      createRouteTarget("https://adapter-stream-blocked.example.com/v1")
+    );
+
+    await expect(iterator[Symbol.asyncIterator]().next()).rejects.toMatchObject({
+      statusCode: 403,
+      code: "provider_access_blocked",
+      retryable: true
     });
 
     await mockAgent.close();

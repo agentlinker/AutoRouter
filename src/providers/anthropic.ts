@@ -1,7 +1,10 @@
 import { request } from "undici";
 
 import type { NormalizedChatRequest } from "../routing/types.js";
-import { PROVIDER_AUTH_FAILED_CODE } from "../utils/providerErrors.js";
+import {
+  PROVIDER_AUTH_FAILED_CODE,
+  throwIfProviderAccessBlocked
+} from "../utils/providerErrors.js";
 import { HttpError } from "../utils/httpErrors.js";
 import { mergeCustomHeaders, pickForwardedRequestHeaders } from "./customHeaders.js";
 import { AnthropicStreamTranslator } from "./anthropicStreamTranslator.js";
@@ -189,38 +192,28 @@ export class AnthropicAdapter implements ProviderAdapter {
       );
     }
 
-    const body = (await response.body.json()) as Record<string, unknown>;
+    const raw = await response.body.text();
+    const parsedBody = parseJsonSafely(raw);
     if (response.statusCode >= 400) {
-      const message =
-        typeof body.error === "object" &&
-        body.error !== null &&
-        "message" in body.error
-          ? String(body.error.message)
-          : `Anthropic request failed with status ${response.statusCode}`;
+      throwIfProviderAccessBlocked({
+        statusCode: response.statusCode,
+        contentType: response.headers["content-type"],
+        operation: "Anthropic request",
+        bodyText: raw
+      });
 
-      if (response.statusCode === 401 || response.statusCode === 403) {
-        throw new HttpError(response.statusCode, PROVIDER_AUTH_FAILED_CODE, message, false);
-      }
-
-      if (response.statusCode === 404) {
-        throw new HttpError(response.statusCode, "provider_invalid_model", message, true);
-      }
-
-      if (response.statusCode === 408) {
-        throw new HttpError(response.statusCode, "provider_timeout", message, true);
-      }
-
-      if (response.statusCode === 429) {
-        throw new HttpError(response.statusCode, "provider_rate_limited", message, true);
-      }
-
-      if (response.statusCode >= 500) {
-        throw new HttpError(response.statusCode, "provider_server_error", message, true);
-      }
-
-      throw new HttpError(response.statusCode, "request_invalid", message, false);
+      throw toAnthropicHttpError(response.statusCode, parsedBody);
+    }
+    if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
+      throw new HttpError(
+        502,
+        "provider_invalid_response",
+        "Anthropic provider returned invalid JSON",
+        true
+      );
     }
 
+    const body = parsedBody as Record<string, unknown>;
     const translated = toOpenAiLikeResponse(body, target.model.model_name);
 
     return {
@@ -254,6 +247,12 @@ export class AnthropicAdapter implements ProviderAdapter {
     }
 
     if (response.statusCode >= 400) {
+      throwIfProviderAccessBlocked({
+        statusCode: response.statusCode,
+        contentType: response.headers["content-type"],
+        operation: "Anthropic streaming request"
+      });
+
       throw new HttpError(
         response.statusCode,
         "provider_error",
@@ -309,6 +308,13 @@ export class AnthropicAdapter implements ProviderAdapter {
     const raw = await response.body.text();
     const body = parseJsonSafely(raw);
     if (response.statusCode >= 400) {
+      throwIfProviderAccessBlocked({
+        statusCode: response.statusCode,
+        contentType: response.headers["content-type"],
+        operation: "Anthropic messages request",
+        bodyText: raw
+      });
+
       throw toAnthropicHttpError(response.statusCode, body);
     }
 
@@ -345,6 +351,12 @@ export class AnthropicAdapter implements ProviderAdapter {
     }
 
     if (response.statusCode >= 400) {
+      throwIfProviderAccessBlocked({
+        statusCode: response.statusCode,
+        contentType: response.headers["content-type"],
+        operation: "Anthropic streaming request"
+      });
+
       if (response.statusCode === 401 || response.statusCode === 403) {
         throw new HttpError(
           response.statusCode,

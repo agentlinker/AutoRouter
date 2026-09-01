@@ -21,6 +21,19 @@ describe("classifyProviderFailure", () => {
     );
   });
 
+  it("classifies HTML access blocks as transient endpoint failures", () => {
+    expect(
+      classifyProviderFailure(
+        new HttpError(
+          403,
+          "provider_access_blocked",
+          "Provider request returned HTML with status 403",
+          true
+        )
+      )
+    ).toBe("transient");
+  });
+
   it("classifies 402 as billing", () => {
     expect(
       classifyProviderFailure(new HttpError(402, "request_invalid", "Insufficient balance"))

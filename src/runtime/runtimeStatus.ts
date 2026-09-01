@@ -1,3 +1,5 @@
+import { PROVIDER_ACCESS_BLOCKED_CODE } from "../utils/providerErrors.js";
+
 /**
  * 运行态状态机：
  * - normal        可调度
@@ -360,6 +362,10 @@ export function classifyProviderFailure(error: unknown): FailureClass {
   const code = "code" in error && typeof error.code === "string" ? error.code : "";
   const message = error instanceof Error ? error.message : "";
   const statusCode = resolveStatusCode(error, message);
+
+  if (code === PROVIDER_ACCESS_BLOCKED_CODE) {
+    return "transient";
+  }
 
   if (code === "provider_auth_failed" || statusCode === 401 || statusCode === 403) {
     return "auth";

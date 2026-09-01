@@ -143,6 +143,29 @@ describe("RuntimeStatusService", () => {
     expect(details?.accounts[0]?.statusMessage).toBeNull();
   });
 
+  it("keeps the account enabled when an HTML access block returns 403", () => {
+    const harness = createHarness(tempDir);
+
+    harness.service.recordFailure({
+      snapshot: harness.runtimeManager.getSnapshot(),
+      providerKey: "demo",
+      modelKey: "demo/demo-model",
+      accountKey: "default",
+      endpointKey: "openai",
+      error: new HttpError(
+        403,
+        "provider_access_blocked",
+        "Provider request returned HTML with status 403",
+        true
+      )
+    });
+
+    const details = harness.managedProviders.getProviderDetails("demo");
+    expect(details?.accounts[0]?.runtimeStatus).toBe("normal");
+    expect(details?.endpoints[0]?.runtimeStatus).toBe("cooling_down");
+    expect(details?.endpoints[0]?.lastErrorCode).toBe("provider_access_blocked");
+  });
+
   it("persists combination rate limits and does not fake recovery when the provider model is enabled", () => {
     const harness = createHarness(tempDir);
 

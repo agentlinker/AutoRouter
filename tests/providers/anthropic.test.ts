@@ -96,6 +96,121 @@ describe("AnthropicAdapter", () => {
     await mockAgent.close();
   });
 
+  it("preserves HTML 403 responses as endpoint access blocks", async () => {
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+
+    mockAgent
+      .get("https://anthropic-blocked.example.com")
+      .intercept({
+        path: "/v1/messages",
+        method: "POST"
+      })
+      .reply(403, "<!DOCTYPE html><title>Attention Required!</title>", {
+        headers: { "content-type": "text/html; charset=UTF-8" }
+      });
+
+    const adapter = new AnthropicAdapter();
+
+    await expect(
+      adapter.chatCompletion(
+        {
+          model: "auto",
+          messages: [{ role: "user", content: "hello" }],
+          stream: false,
+          tools: [],
+          metadata: {},
+          context_tokens_est: 10
+        },
+        createRouteTarget("https://anthropic-blocked.example.com/v1")
+      )
+    ).rejects.toMatchObject({
+      statusCode: 403,
+      code: "provider_access_blocked",
+      retryable: true,
+      message: expect.stringContaining("returned HTML with status 403")
+    });
+
+    await mockAgent.close();
+  });
+
+  it("keeps JSON 403 responses classified as API key failures", async () => {
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+
+    mockAgent
+      .get("https://anthropic-auth.example.com")
+      .intercept({
+        path: "/v1/messages",
+        method: "POST"
+      })
+      .reply(403, {
+        error: {
+          message: "invalid x-api-key"
+        }
+      });
+
+    const adapter = new AnthropicAdapter();
+
+    await expect(
+      adapter.chatCompletion(
+        {
+          model: "auto",
+          messages: [{ role: "user", content: "hello" }],
+          stream: false,
+          tools: [],
+          metadata: {},
+          context_tokens_est: 10
+        },
+        createRouteTarget("https://anthropic-auth.example.com/v1")
+      )
+    ).rejects.toMatchObject({
+      statusCode: 403,
+      code: "provider_auth_failed",
+      retryable: false,
+      message: "invalid x-api-key"
+    });
+
+    await mockAgent.close();
+  });
+
+  it("preserves streamed HTML 403 responses as endpoint access blocks", async () => {
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+
+    mockAgent
+      .get("https://anthropic-stream-blocked.example.com")
+      .intercept({
+        path: "/v1/messages",
+        method: "POST"
+      })
+      .reply(403, "<!DOCTYPE html><title>Attention Required!</title>", {
+        headers: { "content-type": "text/html; charset=UTF-8" }
+      });
+
+    const adapter = new AnthropicAdapter();
+    const iterator = adapter.streamMessage!(
+      {
+        model: "auto",
+        max_tokens: 8,
+        messages: [{ role: "user", content: "hello" }],
+        stream: true
+      },
+      createRouteTarget("https://anthropic-stream-blocked.example.com/v1")
+    );
+
+    await expect(iterator[Symbol.asyncIterator]().next()).rejects.toMatchObject({
+      statusCode: 403,
+      code: "provider_access_blocked",
+      retryable: true
+    });
+
+    await mockAgent.close();
+  });
+
   it("translates streamed anthropic events into OpenAI chat completion chunks", async () => {
     const mockAgent = new MockAgent();
     mockAgent.disableNetConnect();
