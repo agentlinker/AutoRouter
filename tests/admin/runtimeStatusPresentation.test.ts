@@ -41,7 +41,7 @@ describe("runtime status presentation", () => {
     expect(isManualRecoveryRequired(status)).toBe(true);
   });
 
-  it("shows expired observation cooldown as schedulable", () => {
+  it("shows expired observation cooldown as unverified and retryable", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-22T00:00:00Z"));
 
@@ -49,7 +49,7 @@ describe("runtime status presentation", () => {
       runtime_status: "cooling_down",
       status_reason: "upstream_error_cooldown",
       status_cooldown_until: "2026-08-21T16:04:43.293Z"
-    })).toBe("可调度");
+    })).toBe("未验证（可尝试）");
 
     expect(runtimeObservationDisplayLabel({
       runtime_status: "cooling_down",

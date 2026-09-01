@@ -88,7 +88,7 @@ export function runtimeObservationDisplayLabel(
     input.runtime_status === "cooling_down" ||
     input.runtime_status === "rate_limited"
   ) {
-    return isRuntimeStatusSchedulable(input) ? "可调度" : "冷却中";
+    return isRuntimeStatusSchedulable(input) ? "未验证（可尝试）" : "冷却中";
   }
   return "不可用";
 }
