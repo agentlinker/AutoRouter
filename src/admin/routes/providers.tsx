@@ -189,6 +189,19 @@ function protocolDisplayLabel(protocol: "openai" | "anthropic" | "all") {
   }
 }
 
+function endpointProtocolLabel(protocol: string) {
+  switch (protocol) {
+    case "all":
+      return "OpenAI + Anthropic";
+    case "anthropic":
+      return "Anthropic";
+    case "openai":
+      return "OpenAI";
+    default:
+      return protocol;
+  }
+}
+
 function nextGeneratedAccountKey(accounts: Array<{ account_key?: string }>) {
   const existing = new Set(accounts.map((account) => account.account_key).filter(Boolean));
   let index = 1;
@@ -366,16 +379,10 @@ function endpointRouteDetail(
   const detail = observation
     ? runtimeStatusDetail(observation)
     : runtimeStatusDetail(endpoint);
-  const protocolLabel =
-    endpoint.protocol === "openai"
-      ? "OpenAI"
-      : endpoint.protocol === "anthropic"
-        ? "Anthropic"
-        : endpoint.protocol;
-  const endpointLabel = `${protocolLabel} · ${endpoint.endpoint_key}`;
+  const protocolLabel = endpointProtocolLabel(endpoint.protocol);
   return [
-    `- ${endpointLabel}: ${label}`,
-    ...detail.split("\n").filter(Boolean).map((line) => `  ${line}`)
+    `• ${protocolLabel}: ${label}`,
+    ...detail.split("\n").filter(Boolean).map((line) => `  ◦ ${line}`)
   ].join("\n");
 }
 
@@ -2588,7 +2595,7 @@ function ProviderModelTestDialog(props: {
           >
             {endpoints.map((endpoint) => (
               <option key={endpoint.endpoint_key} value={endpoint.endpoint_key}>
-                {endpoint.endpoint_key} · {endpoint.protocol} · {endpoint.base_url}
+                {endpointProtocolLabel(endpoint.protocol)} · {endpoint.base_url}
                 {endpoint.enabled ? "" : " · 已停用"}
               </option>
             ))}
