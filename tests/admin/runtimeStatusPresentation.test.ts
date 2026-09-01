@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  formatRouteStatusDetail,
   isManualRecoveryRequired,
   isRuntimeStatusSchedulable,
   runtimeStatusBadgeClass,
   runtimeStatusDisplayLabel,
-  runtimeObservationDisplayLabel
+  runtimeObservationDisplayLabel,
+  runtimeObservationErrorMessage
 } from "../../src/admin/runtimeStatusPresentation.js";
 
 describe("runtime status presentation", () => {
@@ -56,5 +58,42 @@ describe("runtime status presentation", () => {
       status_reason: "upstream_error_cooldown",
       status_cooldown_until: "2026-08-22T00:04:43.293Z"
     })).toBe("冷却中");
+  });
+
+  it("labels an expired cooldown error as historical", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-01T00:00:00Z"));
+
+    const message = "system memory overloaded (current: 93.0%, threshold: 90%)";
+
+    expect(runtimeObservationErrorMessage({
+      runtime_status: "cooling_down",
+      status_reason: "upstream_error_cooldown",
+      status_message: message,
+      status_cooldown_until: "2026-08-12T14:41:44Z"
+    })).toBe(`最近错误：${message}`);
+
+    expect(runtimeObservationErrorMessage({
+      runtime_status: "cooling_down",
+      status_reason: "upstream_error_cooldown",
+      status_message: message,
+      status_cooldown_until: "2026-09-01T00:04:43Z"
+    })).toBe(`错误信息：${message}`);
+  });
+
+  it("indents every line of a multiline unavailable reason", () => {
+    expect(formatRouteStatusDetail(
+      "Anthropic",
+      [
+        "鉴权异常",
+        "异常码: auth_failed",
+        "错误信息: invalid API key"
+      ].join("\n"),
+      ""
+    )).toBe([
+      "• Anthropic: 鉴权异常",
+      "  ◦ 异常码: auth_failed",
+      "  ◦ 错误信息: invalid API key"
+    ].join("\n"));
   });
 });

@@ -65,12 +65,14 @@ import { AppDialog } from "../components/Dialog.js";
 import { Sidebar } from "../components/Sidebar.js";
 import { providerKindLabel } from "../providerLabels.js";
 import {
+  formatRouteStatusDetail,
   isManualRecoveryRequired,
   isRuntimeStatusSchedulable,
   runtimeStatusBadgeClass,
   runtimeStatusDetail,
   runtimeStatusDisplayLabel,
-  runtimeObservationDisplayLabel
+  runtimeObservationDisplayLabel,
+  runtimeObservationErrorMessage
 } from "../runtimeStatusPresentation.js";
 import { normalizeProviderModelTestSelection } from "../utils/providerModelTestSelection.js";
 import { providerKeyPattern, suggestProviderKey } from "../../utils/providerKey.js";
@@ -380,11 +382,7 @@ function endpointRouteDetail(
   const detail = observation
     ? runtimeStatusDetail(observation)
     : runtimeStatusDetail(endpoint);
-  const protocolLabel = endpointProtocolLabel(endpoint.protocol);
-  return [
-    `• ${protocolLabel}: ${label}`,
-    ...detail.split("\n").filter(Boolean).map((line) => `  ◦ ${line}`)
-  ].join("\n");
+  return formatRouteStatusDetail(endpointProtocolLabel(endpoint.protocol), label, detail);
 }
 
 function modelRouteStatus(
@@ -2476,6 +2474,7 @@ function ProviderModelTestDialog(props: {
         item.endpoint_key === endpointKey &&
         item.model_key === modelKey
       );
+  const observationErrorMessage = runtimeObservationErrorMessage(observation);
 
   useEffect(() => {
     const nextSelection = normalizeProviderModelTestSelection({
@@ -2621,7 +2620,7 @@ function ProviderModelTestDialog(props: {
               </button>
             ) : null}
           </div>
-          {observation?.status_message ? <small>{observation.status_message}</small> : null}
+          {observationErrorMessage ? <small>{observationErrorMessage}</small> : null}
         </div>
         <div className="field">
           <div className="field-group-header">

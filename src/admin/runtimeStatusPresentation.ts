@@ -93,6 +93,29 @@ export function runtimeObservationDisplayLabel(
   return "不可用";
 }
 
+export function runtimeObservationErrorMessage(input?: RuntimeStatusInput) {
+  if (!input?.status_message) {
+    return null;
+  }
+  const label = isRuntimeStatusSchedulable(input) && !isRuntimeNormal(input.runtime_status)
+    ? "最近错误"
+    : "错误信息";
+  return `${label}：${input.status_message}`;
+}
+
+export function formatRouteStatusDetail(
+  protocolLabel: string,
+  label: string,
+  detail: string
+) {
+  const [summary = label, ...labelDetails] = label.split("\n").filter(Boolean);
+  const detailLines = detail.split("\n").filter(Boolean);
+  return [
+    `• ${protocolLabel}: ${summary}`,
+    ...[...labelDetails, ...detailLines].map((line) => `  ◦ ${line}`)
+  ].join("\n");
+}
+
 export function runtimeStatusDetail(input: RuntimeStatusInput) {
   const code = input.status_reason ? `异常码: ${input.status_reason}` : null;
   const message = input.status_message ? `错误信息: ${input.status_message}` : null;
