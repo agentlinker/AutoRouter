@@ -1052,12 +1052,15 @@ button:disabled {
 }
 
 .model-list li .model-chip-endpoint {
+  display: inline-flex;
+  align-items: center;
   margin-left: 6px;
   color: var(--muted);
+  vertical-align: middle;
 }
 
 .model-list li .model-chip-endpoint::before {
-  content: "@";
+  content: none;
 }
 
 .model-list li.available {
@@ -1070,6 +1073,24 @@ button:disabled {
   border-color: rgba(248, 113, 113, 0.28);
   color: #fecaca;
   background: rgba(220, 38, 38, 0.12);
+}
+
+.model-list li.partial {
+  border-color: rgba(250, 204, 21, 0.34);
+  color: #fef08a;
+  background: rgba(202, 138, 4, 0.16);
+}
+
+.model-list li.partial .model-chip-endpoint {
+  color: #facc15;
+}
+
+.model-list li.available .model-chip-endpoint {
+  color: #4ade80;
+}
+
+.model-list li.unavailable .model-chip-endpoint {
+  color: #f87171;
 }
 
 .model-list li.empty-model {

@@ -5,6 +5,9 @@ import {
   Activity,
   BarChart3,
   BookOpen,
+  CircleAlert,
+  CircleCheck,
+  CircleX,
   Cpu,
   DatabaseZap,
   Edit3,
@@ -276,6 +279,135 @@ function modelRouteSummary(provider: ProviderDetails, model: ProviderModel): {
     accounts: accounts.length,
     verified,
     combinations: visibleAccountKeys.size * enabledEndpoints.length
+  };
+}
+
+type ModelRouteState = "available" | "partial" | "unavailable";
+type EndpointRouteState = "available" | "unknown" | "unavailable";
+type AccountEndpointModelObservation = ProviderDetails["account_endpoint_models"][number];
+
+function routeUnavailableReason(
+  provider: ProviderDetails,
+  model: ProviderModel,
+  account?: ProviderAccount
+): string | null {
+  if (!provider.enabled) {
+    return "Provider 已停用";
+  }
+  if (account && !isAccountSchedulable(account)) {
+    return runtimeStatusDetail(account) || "Key 不可调度";
+  }
+  if (!account && !isProviderAvailable(provider)) {
+    return "没有可调度的 API Key";
+  }
+  if (!isProviderModelAvailable(model)) {
+    return runtimeStatusDetail(model) || "模型不可用";
+  }
+  return null;
+}
+
+function findAccountEndpointModelObservation(
+  provider: ProviderDetails,
+  account: ProviderAccount | undefined,
+  model: ProviderModel,
+  endpointKey: string
+): AccountEndpointModelObservation | undefined {
+  if (!account) {
+    return undefined;
+  }
+  return (provider.account_endpoint_models ?? []).find((item) =>
+    item.account_key === account.account_key &&
+    item.endpoint_key === endpointKey &&
+    item.model_key === model.model_key
+  );
+}
+
+function endpointRouteState(
+  endpoint: ProviderDetails["endpoints"][number],
+  observation: AccountEndpointModelObservation | undefined,
+  unavailableReason: string | null
+): EndpointRouteState {
+  if (unavailableReason || !endpoint.enabled) {
+    return "unavailable";
+  }
+  if (!observation || !observation.last_success_at) {
+    return endpoint.runtime_status && !isRuntimeStatusSchedulable(endpoint)
+      ? "unavailable"
+      : "unknown";
+  }
+  return isRuntimeStatusSchedulable(observation) ? "available" : "unavailable";
+}
+
+function endpointRouteLabel(
+  endpoint: ProviderDetails["endpoints"][number],
+  observation: AccountEndpointModelObservation | undefined,
+  unavailableReason: string | null,
+  state: EndpointRouteState
+): string {
+  if (unavailableReason) {
+    return unavailableReason;
+  }
+  if (!endpoint.enabled) {
+    return "Endpoint 已停用";
+  }
+  if (!observation || !observation.last_success_at) {
+    return state === "unavailable"
+      ? runtimeStatusDisplayLabel(endpoint)
+      : "未验证（可尝试）";
+  }
+  return state === "available" ? "可用" : runtimeStatusDisplayLabel(observation);
+}
+
+function endpointRouteDetail(
+  endpoint: ProviderDetails["endpoints"][number],
+  observation: AccountEndpointModelObservation | undefined,
+  label: string
+): string {
+  const detail = observation
+    ? runtimeStatusDetail(observation)
+    : runtimeStatusDetail(endpoint);
+  const protocolLabel =
+    endpoint.protocol === "openai"
+      ? "OpenAI"
+      : endpoint.protocol === "anthropic"
+        ? "Anthropic"
+        : endpoint.protocol;
+  const endpointLabel = `${protocolLabel} · ${endpoint.endpoint_key}`;
+  return [
+    `- ${endpointLabel}: ${label}`,
+    ...detail.split("\n").filter(Boolean).map((line) => `  ${line}`)
+  ].join("\n");
+}
+
+function modelRouteStatus(
+  provider: ProviderDetails,
+  model: ProviderModel,
+  account?: ProviderAccount
+): { state: ModelRouteState; tooltip: string } {
+  const unavailableReason = routeUnavailableReason(provider, model, account);
+  const endpointStatuses = provider.endpoints.map((endpoint) => {
+    const observation = findAccountEndpointModelObservation(provider, account, model, endpoint.endpoint_key);
+    const state = endpointRouteState(endpoint, observation, unavailableReason);
+    const label = endpointRouteLabel(endpoint, observation, unavailableReason, state);
+    return {
+      state,
+      detail: endpointRouteDetail(endpoint, observation, label)
+    };
+  });
+  const availableCount = endpointStatuses.filter((item) => item.state === "available").length;
+  const hasUnknown = endpointStatuses.some((item) => item.state === "unknown");
+  const state: ModelRouteState =
+    availableCount === endpointStatuses.length && endpointStatuses.length > 0
+      ? "available"
+      : availableCount > 0 || hasUnknown
+        ? "partial"
+        : "unavailable";
+  return {
+    state,
+    tooltip: [
+      `路由状态: ${state === "available" ? "可用" : state === "partial" ? "部分可用/待验证" : "不可用"}`,
+      ...endpointStatuses.map((item) => item.detail)
+    ].join("\n")
   };
 }
 
@@ -2721,11 +2853,6 @@ function ProviderCard(props: {
   }, [props.provider.priority]);
   const accounts = props.provider.accounts ?? [];
   const visibleModelLimit = 12;
-  const modelItemTitle = (model: ProviderModel, modelAvailable: boolean, unavailableReason: string) => {
-    const availability = modelAvailable ? "可用" : unavailableReason || "不可用";
-    const summary = modelRouteSummary(props.provider, model);
-    return `${availability}\n账户可见: ${summary.visible}/${summary.accounts}\n已验证路由: ${summary.verified}/${summary.combinations}`;
-  };
   const renderModelList = (
     models: ProviderModel[],
     account?: NonNullable<ProviderDetails["accounts"]>[number]
@@ -2736,33 +2863,26 @@ function ProviderCard(props: {
       <ul className="model-list">
         {visibleModels.length > 0 ? (
           visibleModels.map((model) => {
-            const modelAvailable = account
-              ? isProviderAvailable(props.provider) &&
-                isAccountSchedulable(account) &&
-                isProviderModelAvailable(model)
-              : isProviderModelSchedulable(props.provider, model);
-            const unavailableReason = account
-              ? !isProviderAvailable(props.provider)
-                ? !props.provider.enabled
-                  ? "Provider 已停用"
-                  : "没有可调度的 API Key"
-                : !isAccountSchedulable(account)
-                  ? runtimeStatusDetail(account) || "Key 不可调度"
-                  : providerModelUnavailableReason(props.provider, model)
-              : providerModelUnavailableReason(props.provider, model);
+            const routeStatus = modelRouteStatus(props.provider, model, account);
+            const RouteStatusIcon =
+              routeStatus.state === "available"
+                ? CircleCheck
+                : routeStatus.state === "partial"
+                  ? CircleAlert
+                  : CircleX;
 
             return (
               <li
                 key={model.model_key}
-                className={modelAvailable ? "available" : "unavailable"}
-                title={modelItemTitle(model, modelAvailable, unavailableReason)}
+                className={routeStatus.state}
               >
                 <span className="model-chip-name">{model.model_name}</span>
-                <span className="model-chip-endpoint">
-                  {(() => {
-                    const summary = modelRouteSummary(props.provider, model);
-                    return `${summary.verified}/${summary.combinations}`;
-                  })()}
+                <span
+                  className="model-chip-endpoint model-chip-route-status"
+                  title={routeStatus.tooltip}
+                  aria-label={routeStatus.tooltip}
+                >
+                  <RouteStatusIcon size={14} strokeWidth={2.5} aria-hidden="true" />
                 </span>
               </li>
             );
