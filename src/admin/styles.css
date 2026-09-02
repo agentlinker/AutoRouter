@@ -1253,8 +1253,17 @@ button:disabled {
 }
 
 .connectivity-cell {
-  display: grid;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
+  min-width: max-content;
+}
+
+.connectivity-cell > span,
+.connectivity-cell .inline-actions {
+  flex-wrap: nowrap;
+  white-space: nowrap;
 }
 
 .provider-accounts-table .model-capability-header,
