@@ -50,7 +50,6 @@ import {
   updateProviderAccount,
   updateProviderModelCapabilities,
   type CreateProviderPayload,
-  type ProviderAccount,
   type ProviderDetails,
   type ProviderListParams,
   type ProviderMergeCandidate,
@@ -65,15 +64,20 @@ import { AppDialog } from "../components/Dialog.js";
 import { Sidebar } from "../components/Sidebar.js";
 import { providerKindLabel } from "../providerLabels.js";
 import {
-  formatRouteStatusDetail,
   isManualRecoveryRequired,
-  isRuntimeStatusSchedulable,
   runtimeStatusBadgeClass,
   runtimeStatusDetail,
   runtimeStatusDisplayLabel,
   runtimeObservationDisplayLabel,
   runtimeObservationErrorMessage
 } from "../runtimeStatusPresentation.js";
+import {
+  endpointProtocolLabel,
+  isAccountSchedulable,
+  isProviderModelAvailable,
+  modelRouteStatus,
+  modelRouteSummary
+} from "../utils/providerModelRoutes.js";
 import { normalizeProviderModelTestSelection } from "../utils/providerModelTestSelection.js";
 import { providerKeyPattern, suggestProviderKey } from "../../utils/providerKey.js";
 import { readSidebarCollapsed, writeSidebarCollapsed } from "../utils/sidebarCollapse.js";
@@ -192,19 +196,6 @@ function protocolDisplayLabel(protocol: "openai" | "anthropic" | "all") {
   }
 }
 
-function endpointProtocolLabel(protocol: string) {
-  switch (protocol) {
-    case "all":
-      return "OpenAI + Anthropic";
-    case "anthropic":
-      return "Anthropic";
-    case "openai":
-      return "OpenAI";
-    default:
-      return protocol;
-  }
-}
-
 function nextGeneratedAccountKey(accounts: Array<{ account_key?: string }>) {
   const existing = new Set(accounts.map((account) => account.account_key).filter(Boolean));
   let index = 1;
@@ -267,156 +258,6 @@ function formatCustomHeaders(headers: Record<string, string> | undefined): strin
     .join("\n");
 }
 
-function modelRouteSummary(provider: ProviderDetails, model: ProviderModel): {
-  visible: number;
-  accounts: number;
-  verified: number;
-  combinations: number;
-} {
-  const accounts = provider.accounts ?? [];
-  const visible = accounts.filter((account) =>
-    account.models?.some((item) => item.model_key === model.model_key)
-  ).length;
-  const enabledEndpoints = provider.endpoints.filter((endpoint) => endpoint.enabled);
-  const visibleAccountKeys = new Set(
-    accounts
-      .filter((account) => account.models?.some((item) => item.model_key === model.model_key))
-      .map((account) => account.account_key)
-  );
-  const verified = (provider.account_endpoint_models ?? []).filter((observation) =>
-    observation.model_key === model.model_key &&
-    visibleAccountKeys.has(observation.account_key) &&
-    enabledEndpoints.some((endpoint) => endpoint.endpoint_key === observation.endpoint_key) &&
-    observation.runtime_status === "normal" &&
-    Boolean(observation.last_success_at)
-  ).length;
-  return {
-    visible,
-    accounts: accounts.length,
-    verified,
-    combinations: visibleAccountKeys.size * enabledEndpoints.length
-  };
-}
-
-type ModelRouteState = "available" | "partial" | "unavailable";
-type EndpointRouteState = "available" | "unknown" | "unavailable";
-type AccountEndpointModelObservation = ProviderDetails["account_endpoint_models"][number];
-
-function routeUnavailableReason(
-  provider: ProviderDetails,
-  model: ProviderModel,
-  account?: ProviderAccount
-): string | null {
-  if (!provider.enabled) {
-    return "Provider 已停用";
-  }
-  if (account && !isAccountSchedulable(account)) {
-    return runtimeStatusDetail(account) || "Key 不可调度";
-  }
-  if (!account && !isProviderAvailable(provider)) {
-    return "没有可调度的 API Key";
-  }
-  if (!isProviderModelAvailable(model)) {
-    return runtimeStatusDetail(model) || "模型不可用";
-  }
-  return null;
-}
-
-function findAccountEndpointModelObservation(
-  provider: ProviderDetails,
-  account: ProviderAccount | undefined,
-  model: ProviderModel,
-  endpointKey: string
-): AccountEndpointModelObservation | undefined {
-  if (!account) {
-    return undefined;
-  }
-  return (provider.account_endpoint_models ?? []).find((item) =>
-    item.account_key === account.account_key &&
-    item.endpoint_key === endpointKey &&
-    item.model_key === model.model_key
-  );
-}
-
-function endpointRouteState(
-  endpoint: ProviderDetails["endpoints"][number],
-  observation: AccountEndpointModelObservation | undefined,
-  unavailableReason: string | null
-): EndpointRouteState {
-  if (unavailableReason || !endpoint.enabled) {
-    return "unavailable";
-  }
-  if (!observation || !observation.last_success_at) {
-    return endpoint.runtime_status && !isRuntimeStatusSchedulable(endpoint)
-      ? "unavailable"
-      : "unknown";
-  }
-  return isRuntimeStatusSchedulable(observation) ? "available" : "unavailable";
-}
-
-function endpointRouteLabel(
-  endpoint: ProviderDetails["endpoints"][number],
-  observation: AccountEndpointModelObservation | undefined,
-  unavailableReason: string | null,
-  state: EndpointRouteState
-): string {
-  if (unavailableReason) {
-    return unavailableReason;
-  }
-  if (!endpoint.enabled) {
-    return "Endpoint 已停用";
-  }
-  if (!observation || !observation.last_success_at) {
-    return state === "unavailable"
-      ? runtimeStatusDisplayLabel(endpoint)
-      : "未验证（可尝试）";
-  }
-  return state === "available" ? "可用" : runtimeStatusDisplayLabel(observation);
-}
-
-function endpointRouteDetail(
-  endpoint: ProviderDetails["endpoints"][number],
-  observation: AccountEndpointModelObservation | undefined,
-  label: string
-): string {
-  const detail = observation
-    ? runtimeStatusDetail(observation)
-    : runtimeStatusDetail(endpoint);
-  return formatRouteStatusDetail(endpointProtocolLabel(endpoint.protocol), label, detail);
-}
-
-function modelRouteStatus(
-  provider: ProviderDetails,
-  model: ProviderModel,
-  account?: ProviderAccount
-): { state: ModelRouteState; tooltip: string } {
-  const unavailableReason = routeUnavailableReason(provider, model, account);
-  const endpointStatuses = provider.endpoints.map((endpoint) => {
-    const observation = findAccountEndpointModelObservation(provider, account, model, endpoint.endpoint_key);
-    const state = endpointRouteState(endpoint, observation, unavailableReason);
-    const label = endpointRouteLabel(endpoint, observation, unavailableReason, state);
-    return {
-      state,
-      detail: endpointRouteDetail(endpoint, observation, label)
-    };
-  });
-  const availableCount = endpointStatuses.filter((item) => item.state === "available").length;
-  const hasUnknown = endpointStatuses.some((item) => item.state === "unknown");
-  const state: ModelRouteState =
-    availableCount === endpointStatuses.length && endpointStatuses.length > 0
-      ? "available"
-      : availableCount > 0 || hasUnknown
-        ? "partial"
-        : "unavailable";
-  return {
-    state,
-    tooltip: [
-      `路由状态: ${state === "available" ? "可用" : state === "partial" ? "部分可用/待验证" : "不可用"}`,
-      ...endpointStatuses.map((item) => item.detail)
-    ].join("\n")
-  };
-}
-
 function toDatetimeLocal(value: string | null | undefined): string {
   if (!value) return "";
   const date = new Date(value);
@@ -429,41 +270,12 @@ function RequiredMark() {
   return <span className="required-mark">*</span>;
 }
 
-function isAccountSchedulable(account: NonNullable<ProviderDetails["accounts"]>[number]) {
-  if (!account.enabled) {
-    return false;
-  }
-  if (account.expires_at) {
-    const expiresAt = Date.parse(account.expires_at);
-    if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
-      return false;
-    }
-  }
-  if (
-    account.quota &&
-    typeof account.quota.remaining_usd === "number" &&
-    account.quota.remaining_usd <= 0
-  ) {
-    return false;
-  }
-  return isRuntimeStatusSchedulable(account);
-}
-
 function isProviderAvailable(provider: ProviderDetails) {
   const hasSchedulableAccount =
     (provider.available_account_count ??
       provider.accounts?.filter(isAccountSchedulable).length ??
       (provider.key_hint ? 1 : 0)) > 0;
   return provider.enabled && hasSchedulableAccount;
-}
-
-function isProviderModelAvailable(model: {
-  enabled?: boolean;
-  runtime_status?: string | null;
-  status_reason?: string | null;
-  status_cooldown_until?: string | null;
-}) {
-  return model.enabled !== false && isRuntimeStatusSchedulable(model);
 }
 
 function isProviderModelSchedulable(provider: ProviderDetails, model: ProviderModel) {
@@ -1177,87 +989,99 @@ export function ProviderDetailPage() {
         <div className="model-capability-table provider-model-table provider-detail-model-table">
           <div className="model-capability-header">
             <span>模型</span>
-            <span>协议类型</span>
+            <span title="可调度且可见此模型的账户数 / Provider 账户总数">可用账户</span>
+            <span title="存在成功或失败观测的路由数 / 可见账户与已启用 Endpoint 的组合数">
+              已验证路由
+            </span>
             <span>启用</span>
-            <span>调度状态</span>
+            <span>路由状态</span>
             <span>Streaming</span>
             <span>Tools</span>
             <span>JSON</span>
           </div>
-          {provider.models.map((model) => (
-            <div className="model-capability-row" key={model.model_key}>
-              <div className="model-name-cell">
-                <strong title={model.model_name}>{model.model_name}</strong>
-              </div>
-              <span className="detail-table-text endpoint-protocol-cell">
-                {(() => {
-                  const summary = modelRouteSummary(provider, model);
-                  return `${summary.visible}/${summary.accounts} · ${summary.verified}/${summary.combinations}`;
-                })()}
-              </span>
-              <div className="detail-table-text provider-model-enabled-cell">
-                <SwitchControl
-                  checked={model.enabled !== false}
+          {provider.models.map((model) => {
+            const summary = modelRouteSummary(provider, model);
+            const routeStatus = modelRouteStatus(provider, model);
+            const RouteStatusIcon =
+              routeStatus.state === "available"
+                ? CircleCheck
+                : routeStatus.state === "partial"
+                  ? CircleAlert
+                  : CircleX;
+            return (
+              <div className="model-capability-row" key={model.model_key}>
+                <div className="model-name-cell">
+                  <strong title={model.model_name}>{model.model_name}</strong>
+                </div>
+                <span className="detail-table-text endpoint-protocol-cell">
+                  {summary.availableAccounts}/{summary.accounts}
+                </span>
+                <span className="detail-table-text endpoint-protocol-cell">
+                  {summary.verified}/{summary.combinations}
+                </span>
+                <div className="detail-table-text provider-model-enabled-cell">
+                  <SwitchControl
+                    checked={model.enabled !== false}
+                    disabled={modelMutation.isPending}
+                    label={`${model.model_name} 启用开关`}
+                    onChange={(checked) =>
+                      modelMutation.mutate({
+                        model_key: model.model_key,
+                        enabled: checked
+                      })
+                    }
+                  />
+                </div>
+                <div className="runtime-status-cell">
+                  <span
+                    className={`provider-model-route-status ${routeStatus.state}`}
+                    title={routeStatus.tooltip}
+                    aria-label={routeStatus.tooltip}
+                  >
+                    <RouteStatusIcon size={14} strokeWidth={2.5} aria-hidden="true" />
+                    {routeStatus.state === "available"
+                      ? "可用"
+                      : routeStatus.state === "partial"
+                        ? "部分可用/待验证"
+                        : "不可用"}
+                  </span>
+                </div>
+                <CapabilityToggle
+                  checked={model.supports_streaming}
                   disabled={modelMutation.isPending}
-                  label={`${model.model_name} 启用开关`}
+                  label="Streaming"
                   onChange={(checked) =>
                     modelMutation.mutate({
                       model_key: model.model_key,
-                      enabled: checked
+                      supports_streaming: checked
+                    })
+                  }
+                />
+                <CapabilityToggle
+                  checked={model.supports_tools}
+                  disabled={modelMutation.isPending}
+                  label="Tools"
+                  onChange={(checked) =>
+                    modelMutation.mutate({
+                      model_key: model.model_key,
+                      supports_tools: checked
+                    })
+                  }
+                />
+                <CapabilityToggle
+                  checked={model.supports_json_mode}
+                  disabled={modelMutation.isPending}
+                  label="JSON"
+                  onChange={(checked) =>
+                    modelMutation.mutate({
+                      model_key: model.model_key,
+                      supports_json_mode: checked
                     })
                   }
                 />
               </div>
-              <div className="runtime-status-cell">
-                <span className={runtimeStatusBadgeClass(model)} title={runtimeStatusDetail(model)}>
-                  {runtimeStatusDisplayLabel(model)}
-                </span>
-                {isManualRecoveryRequired(model) ? (
-                  <button
-                    type="button"
-                    className="runtime-recover-action"
-                    disabled={modelMutation.isPending}
-                    onClick={() => modelMutation.mutate({ model_key: model.model_key, enabled: true })}
-                  >
-                    恢复调度
-                  </button>
-                ) : null}
-              </div>
-              <CapabilityToggle
-                checked={model.supports_streaming}
-                disabled={modelMutation.isPending}
-                label="Streaming"
-                onChange={(checked) =>
-                  modelMutation.mutate({
-                    model_key: model.model_key,
-                    supports_streaming: checked
-                  })
-                }
-              />
-              <CapabilityToggle
-                checked={model.supports_tools}
-                disabled={modelMutation.isPending}
-                label="Tools"
-                onChange={(checked) =>
-                  modelMutation.mutate({
-                    model_key: model.model_key,
-                    supports_tools: checked
-                  })
-                }
-              />
-              <CapabilityToggle
-                checked={model.supports_json_mode}
-                disabled={modelMutation.isPending}
-                label="JSON"
-                onChange={(checked) =>
-                  modelMutation.mutate({
-                    model_key: model.model_key,
-                    supports_json_mode: checked
-                  })
-                }
-              />
-            </div>
-          ))}
+            );
+          })}
         </div>
         <ProviderConnectivityMatrix
           token={token}

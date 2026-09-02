@@ -1165,11 +1165,12 @@ button:disabled {
 .provider-detail-model-table .model-capability-header,
 .provider-detail-model-table .model-capability-row {
   grid-template-columns:
-    minmax(180px, 1.2fr)
-    minmax(150px, 0.7fr)
-    minmax(92px, 0.45fr)
-    minmax(112px, 0.65fr)
-    repeat(3, minmax(86px, 0.45fr));
+    minmax(170px, 1.15fr)
+    minmax(90px, 0.45fr)
+    minmax(102px, 0.5fr)
+    minmax(82px, 0.4fr)
+    minmax(160px, 0.78fr)
+    repeat(3, minmax(76px, 0.4fr));
 }
 
 .provider-detail-model-table .model-name-cell strong {
@@ -1181,6 +1182,38 @@ button:disabled {
 .provider-detail-model-table .provider-model-enabled-cell {
   display: inline-flex;
   align-items: center;
+}
+
+.provider-model-route-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.provider-model-route-status.available {
+  border-color: rgba(52, 211, 153, 0.28);
+  color: #4ade80;
+  background: rgba(22, 163, 74, 0.12);
+}
+
+.provider-model-route-status.partial {
+  border-color: rgba(250, 204, 21, 0.34);
+  color: #facc15;
+  background: rgba(202, 138, 4, 0.16);
+}
+
+.provider-model-route-status.unavailable {
+  border-color: rgba(248, 113, 113, 0.28);
+  color: #f87171;
+  background: rgba(220, 38, 38, 0.12);
 }
 
 .provider-connectivity {
