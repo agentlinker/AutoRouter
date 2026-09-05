@@ -401,7 +401,7 @@ describe("OpenAiCompatibleAdapter", () => {
     });
   });
 
-  it("forwards allowlisted request headers and lets custom headers override them", async () => {
+  it("forwards non-blocked request headers and lets custom headers override them", async () => {
     const mockAgent = new MockAgent();
     mockAgent.disableNetConnect();
     setGlobalDispatcher(mockAgent);
@@ -436,11 +436,18 @@ describe("OpenAiCompatibleAdapter", () => {
       }, {
         originator: "codex_cli_rs",
         "user-agent": "client-agent",
+        "x-app": "cli",
+        "x-api-key": "gateway-key",
+        authorization: "Bearer gateway-key",
+        "x-autorouter-session-id": "internal-session",
         cookie: "should-not-forward"
       })
     );
 
     expect(seenHeaders.originator).toBe("codex_cli_rs");
+    expect(seenHeaders["x-app"]).toBe("cli");
+    expect(seenHeaders["x-api-key"]).toBeUndefined();
+    expect(seenHeaders["x-autorouter-session-id"]).toBeUndefined();
     expect(seenHeaders["user-agent"]).toBe("configured-agent");
     expect(seenHeaders["x-title"]).toBe("autorouter");
     expect(seenHeaders.authorization).toBe("Bearer test");

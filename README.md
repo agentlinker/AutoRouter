@@ -125,7 +125,7 @@ Notes:
 - Detailed routing internals such as provider, endpoint, account, fallback chain, and filter reasons are not exposed in response headers.
 - Use `x-autorouter-trace-id` with `GET /v1/autorouter/explain/latest` or local trace files for routing diagnostics.
 - Request `metadata` is consumed by AutoRouter for routing and tracing, and is not forwarded to OpenAI-compatible upstreams. Use `upstream_metadata` when the upstream provider should receive a `metadata` body field.
-- Request headers are not forwarded wholesale. AutoRouter forwards only allowlisted identity headers (`originator`, `user-agent`) by default; endpoint `custom_headers` can override them.
+- Request headers use a denylist: gateway credentials (`authorization`, `x-api-key`), proxy credentials/cookies, `x-autorouter-*`, HTTP/2 pseudo-headers, hop-by-hop headers (including fields named by `Connection`), and `expect` are stripped. `host`, `content-length`, `content-type`, and `content-encoding` are rebuilt for the upstream JSON request; `accept-encoding` is stripped because adapters do not decompress responses. All other headers, including Claude Code identity and Anthropic beta headers, are forwarded. Endpoint `custom_headers` can override forwarded values; Account credentials are applied last. Callers must avoid secrets in unknown custom headers.
 
 ### Responses
 

@@ -1,6 +1,12 @@
 import { RESERVED_CUSTOM_HEADER_NAMES } from "../config/schema.js";
 
-export const DEFAULT_FORWARD_REQUEST_HEADERS = new Set(["originator", "user-agent"]);
+const BLOCKED_REQUEST_HEADERS = new Set([
+  ...RESERVED_CUSTOM_HEADER_NAMES,
+  "proxy-authorization", "cookie", "cookie2",
+  "connection", "keep-alive", "proxy-connection", "proxy-authenticate",
+  "te", "trailer", "transfer-encoding", "upgrade", "expect",
+  "host", "content-length", "content-type", "content-encoding", "accept-encoding"
+]);
 
 type RequestHeaderValue = string | string[] | undefined;
 
@@ -11,15 +17,26 @@ export function pickForwardedRequestHeaders(
     return undefined;
   }
 
-  const forwarded: Record<string, string> = {};
-  for (const [name, value] of Object.entries(requestHeaders)) {
-    const normalized = name.trim().toLowerCase();
-    if (!DEFAULT_FORWARD_REQUEST_HEADERS.has(normalized)) {
+  const entries = Object.entries(requestHeaders).map(([name, value]) => [
+    name.trim().toLowerCase(), Array.isArray(value) ? value.join(", ") : value
+  ] as const);
+  // Connection options name additional hop-by-hop fields, regardless of header order.
+  const blocked = new Set(BLOCKED_REQUEST_HEADERS);
+  for (const [name, value] of entries) {
+    if (name === "connection") {
+      for (const option of (value ?? "").split(",")) {
+        blocked.add(option.trim().toLowerCase());
+      }
+    }
+  }
+
+  const forwarded: Record<string, string> = Object.create(null);
+  for (const [name, value] of entries) {
+    if (!name || name.startsWith(":") || name.startsWith("x-autorouter-") || blocked.has(name)) {
       continue;
     }
-    const headerValue = Array.isArray(value) ? value.join(", ") : value;
-    if (headerValue) {
-      forwarded[normalized] = headerValue;
+    if (value !== undefined) {
+      forwarded[name] = value;
     }
   }
 

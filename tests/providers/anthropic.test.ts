@@ -54,6 +54,52 @@ function createRouteTarget(baseUrl: string) {
 }
 
 describe("AnthropicAdapter", () => {
+  it.each([false, true])("preserves client headers and isolates credentials (stream=%s)", async (stream) => {
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+    let seenHeaders: Record<string, string | string[] | undefined> = {};
+    mockAgent.get("https://anthropic.example.com")
+      .intercept({ path: "/v1/messages", method: "POST" })
+      .reply((options) => {
+        seenHeaders = (options as { headers: typeof seenHeaders }).headers;
+        return { statusCode: 200, data: stream ? "event: message_stop\ndata: {}\n\n" : "{}" };
+      });
+    const target = {
+      ...createRouteTarget("https://anthropic.example.com/v1"),
+      request_headers: {
+        "x-app": "cli", "anthropic-beta": "client-beta",
+        "anthropic-version": "client-version",
+        authorization: "Bearer gateway-key", "x-api-key": "gateway-key",
+        "x-autorouter-session-id": "private", cookie: "private",
+        "content-length": "99999", "content-type": "text/plain",
+        "accept-encoding": "gzip", connection: "x-local", "x-local": "private"
+      }
+    };
+    const adapter = new AnthropicAdapter();
+    const body = { model: "claude", max_tokens: 1, messages: [{ role: "user", content: "Hi" }] };
+    try {
+      if (stream) {
+        for await (const chunk of adapter.streamMessage(body, target)) {
+          expect(chunk.raw).toContain("message_stop");
+        }
+      } else {
+        await adapter.messageCompletion(body, target);
+      }
+      expect(seenHeaders).toMatchObject({
+        "x-app": "cli", "anthropic-beta": "client-beta",
+        "anthropic-version": "client-version", "x-api-key": "anthropic-key",
+        "content-type": "application/json"
+      });
+      for (const name of ["authorization", "cookie", "x-autorouter-session-id", "x-local", "accept-encoding"]) {
+        expect(seenHeaders[name]).toBeUndefined();
+      }
+      expect(seenHeaders["content-length"]).not.toBe("99999");
+    } finally {
+      await mockAgent.close();
+    }
+  });
+
   it("translates anthropic messages response into OpenAI-like chat completion", async () => {
     const mockAgent = new MockAgent();
     mockAgent.disableNetConnect();

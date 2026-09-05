@@ -134,9 +134,15 @@ AutoRouter 是路由网关，不是原始 HTTP 隧道。客户端请求进入 Au
 `upstream_metadata`。OpenAI-compatible adapter 会把 `upstream_metadata` 映射
 成上游请求体里的 `metadata`，但不会透传 AutoRouter 的内部 `metadata`。
 
-客户端请求头不会整体透传给上游。AutoRouter 默认只白名单透传身份类 header：
-`originator` 和 `user-agent`，用于兼容要求 agentic client 指纹的 relay。
-上游请求头合并顺序为：内建 header → 白名单透传 header → Endpoint
+客户端请求头采用黑名单过滤，其余默认透传，包括 Claude Code 身份和 Anthropic beta header。
+黑名单包含 `authorization`、`x-api-key`、`proxy-authorization`、`cookie`、`cookie2`，
+所有 `x-autorouter-*` 内部头和 HTTP/2 伪头，以及 `connection`、`keep-alive`、
+`proxy-connection`、`proxy-authenticate`、`te`、`trailer`、`transfer-encoding`、
+`upgrade`、`expect`。`Connection` 指定的字段也会动态剔除。
+`host`、`content-length`、`content-type`、`content-encoding` 不沿用入站值，
+因为上游 URL 和 JSON 请求体由 adapter 重建。`accept-encoding` 不透传，避免
+当前未解压响应的 adapter 请求到压缩数据。未知自定义头可能包含敏感信息，调用方需自行审查。
+上游请求头合并顺序为：内建 header → 黑名单过滤后的 header → Endpoint
 `custom_headers` → Account 凭证 header。因此 `custom_headers` 可以覆盖
 `originator` / `user-agent`，但不能覆盖 `authorization` / `x-api-key` 等认证
 header。
@@ -165,7 +171,7 @@ header。
 > **Domain expert:** “不要。`metadata` 是 AutoRouter 内部语义；需要给上游的内容放到 `upstream_metadata`。”
 
 > **Dev:** “客户端请求头要不要原样给上游？”
-> **Domain expert:** “不要。默认只透传 `originator` 和 `user-agent`，特殊 provider 用 Endpoint `custom_headers` 显式覆盖。”
+> **Domain expert:** “默认透传黑名单之外的字段；网关凭证、内部头、连接控制头和需要重建的传输头不透传，特殊 provider 用 Endpoint `custom_headers` 显式覆盖。”
 
 ## Flagged ambiguities
 
@@ -196,6 +202,6 @@ header。
 - “metadata 透传”等同于“用户原始字段透传”是错误边界；已解决：
   `metadata` 归 AutoRouter 内部消费，`upstream_metadata` 才表达上游 body
   `metadata`。
-- “header 透传”等同于“客户端 header 全量转发”是安全风险；已解决：默认只白名单
-  `originator` / `user-agent`，其它上游 header 通过 Endpoint `custom_headers`
-  明确配置。
+- “header 透传”等同于“客户端 header 全量转发”是安全风险；已解决：黑名单剔除
+  网关凭证、内部头和传输控制头，其余默认透传。Endpoint `custom_headers` 仍是显式配置，
+  不受入站黑名单过滤，但不能覆盖 Account 认证头。

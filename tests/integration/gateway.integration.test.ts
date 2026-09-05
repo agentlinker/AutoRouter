@@ -253,7 +253,7 @@ describe("gateway integration", () => {
     await gateway.close();
   });
 
-  it("forwards only allowlisted identity headers to upstream providers", async () => {
+  it("forwards non-blocked headers while isolating gateway credentials", async () => {
     let seenHeaders: Record<string, string | string[] | undefined> = {};
     mockAgent
       .get("https://headers.example.com")
@@ -360,6 +360,9 @@ describe("gateway integration", () => {
         authorization: "Bearer test-token",
         originator: "codex_cli_rs",
         "user-agent": "client-agent",
+        "x-app": "cli",
+        "x-api-key": "test-token",
+        "x-autorouter-session-id": "internal-session",
         cookie: "should-not-forward"
       },
       payload: {
@@ -370,6 +373,9 @@ describe("gateway integration", () => {
 
     expect(response.statusCode).toBe(200);
     expect(seenHeaders.originator).toBe("codex_cli_rs");
+    expect(seenHeaders["x-app"]).toBe("cli");
+    expect(seenHeaders["x-api-key"]).toBeUndefined();
+    expect(seenHeaders["x-autorouter-session-id"]).toBeUndefined();
     expect(seenHeaders["user-agent"]).toBe("configured-agent");
     expect(seenHeaders.cookie).toBeUndefined();
     expect(seenHeaders.authorization).toBe("Bearer primary-key");
