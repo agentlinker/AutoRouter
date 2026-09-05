@@ -388,8 +388,7 @@ export async function registerAnthropicMessagesRoute(
         privacyLevel,
         sessionId ? state.stickySessions.get(sessionId) : null,
         state.modelStatuses ?? {},
-        // 优先选 anthropic 协议的 endpoint，命中即可零转换直通
-        "anthropic"
+        "anthropic-messages"
       );
     } catch (error) {
       recordRouteSelectionFailure(runtimeManager, error, {
@@ -592,7 +591,6 @@ export async function registerAnthropicMessagesRoute(
         policy_hits: [
           "anthropic_inbound",
           ...(streamedNatively ? ["anthropic_native", "anthropic_native_stream"] : []),
-          ...(routeDecision.sawProtocolMatch ? [] : ["protocol_mismatch"]),
           ...(sessionId ? ["session_sticky"] : []),
           ...(streamOutcome.fallbacks.length > 0 ? ["fallback_chain"] : []),
           ...(streamOutcome.partialFailure ? ["stream_partial_failed"] : []),
@@ -675,9 +673,7 @@ export async function registerAnthropicMessagesRoute(
     // nativePassthrough 在 invoke 里才确定，所以延迟到落 trace 时再取
     const policyHits = [
       "anthropic_inbound",
-      // 观测实际走了直通还是转换；protocol_mismatch 表示没有同协议候选可选
       ...(nativePassthrough ? ["anthropic_native"] : []),
-      ...(routeDecision.sawProtocolMatch ? [] : ["protocol_mismatch"]),
       ...(sessionId ? ["session_sticky"] : []),
       ...(outcome.fallbacks.length > 0 ? ["fallback_chain"] : []),
       ...(routeDecision.contextWindowUnknown ? ["context_window_unknown"] : [])

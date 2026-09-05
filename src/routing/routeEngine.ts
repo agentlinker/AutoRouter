@@ -5,7 +5,8 @@ import type {
   PolicyConfig,
   PolicyThresholdsConfig,
   PolicyWeightsConfig,
-  RouterConfig
+  RouterConfig,
+  WireProtocol
 } from "../config/schema.js";
 import type {
   AccountRuntimeState,
@@ -219,16 +220,6 @@ function canUseCandidate(
   return null;
 }
 
-/**
- * 入站协议与上游 endpoint 协议一致时的加分。
- *
- * 目的是让 `/v1/messages` 优先命中 anthropic endpoint（零转换透传），
- * 同时保持「偏好」而非硬过滤：没有同协议 endpoint 时仍可用转换路径，
- * 同协议 endpoint 熔断时仍能 fallback。取值需明显大于常规打分区间
- * （各项权重之和量级为 1）才能稳定压过成本/健康分的差异。
- */
-const PROTOCOL_MATCH_BONUS = 50;
-
 function evaluateCandidateScore(
   weights: PolicyWeightsConfig,
   provider: ProviderRuntimeState,
@@ -247,12 +238,9 @@ function evaluateCandidateScore(
     modelId: string;
   },
   priceTable: PriceTable,
-  /** 候选 endpoint 所属 platform 的协议（protocol 定义在 platform 上） */
-  candidateProtocol?: string,
-  preferredProtocol?: string,
   /** 模型级运行态（含 account×model），未熔断时其错误计数仍参与降权 */
   modelStatus?: ModelRuntimeStatusState | null
-): { score: number; sticky: boolean; protocolMatch: boolean } {
+): { score: number; sticky: boolean } {
   const sticky =
     Boolean(
       stickyRoute &&
@@ -294,11 +282,6 @@ function evaluateCandidateScore(
       ? 0
       : 1 / (1 + costEstimate.estimatedUsd * 100);
 
-  const protocolMatch =
-    preferredProtocol !== undefined &&
-    candidateProtocol !== undefined &&
-    candidateProtocol === preferredProtocol;
-
   const score =
     weights.trust * trustScore +
     weights.cost * costScore +
@@ -307,13 +290,11 @@ function evaluateCandidateScore(
     weights.tools * toolsScore +
     weights.sticky * stickyScore -
     weights.error_penalty * recentErrorPenalty -
-    weights.quota_penalty * quotaPressurePenalty +
-    (protocolMatch ? PROTOCOL_MATCH_BONUS : 0);
+    weights.quota_penalty * quotaPressurePenalty;
 
   return {
     score,
-    sticky,
-    protocolMatch
+    sticky
   };
 }
 
@@ -330,13 +311,9 @@ export function selectRoute(
   requiresJson: boolean,
   requestedContextTokens: number,
   privacyLevel: string,
-  stickyRoute?: StickyRoute | null,
-  modelStatuses: Record<string, ModelRuntimeStatusState> = {},
-  /**
-   * 入站协议偏好：与候选 endpoint 协议一致时加分，让同协议候选优先被选中
-   * （零转换透传）。不做硬过滤，没有同协议候选时仍走转换路径。
-   */
-  preferredProtocol?: string
+  stickyRoute: StickyRoute | null | undefined,
+  modelStatuses: Record<string, ModelRuntimeStatusState>,
+  requiredProtocol: WireProtocol
 ): {
   selected: SelectedRoute;
   /**
@@ -352,11 +329,7 @@ export function selectRoute(
   requestedContextWindow?: number;
   /** 命中候选中存在元数据缺失（context_window 未知）的情况，供 policy_hits 观测 */
   contextWindowUnknown: boolean;
-  /**
-   * 是否存在与入站协议一致的候选。false 表示只能走协议转换路径，
-   * 供 policy_hits 打 protocol_mismatch 观测。
-   */
-  sawProtocolMatch: boolean;
+  requiredProtocol: WireProtocol;
 } {
   const resolvedTarget = modelCatalog.resolveRequestTarget(routeId);
   if (!resolvedTarget) {
@@ -432,6 +405,16 @@ export function selectRoute(
       continue;
     }
 
+    if (platform.protocol !== requiredProtocol) {
+      filtered.push({
+        routeId: candidate.routeId, platform: platform.id, provider: provider.id,
+        endpoint: endpoint.id, account: account.id, modelId: candidate.modelId,
+        model: candidate.model, filteredReason: "required_protocol"
+      });
+      continue;
+    }
+    sawProtocolMatch = true;
+
     const modelStatus =
       modelStatuses[accountModelStatusKey(account.id, candidate.modelId)] ??
       modelStatuses[accountModelStatusKey(account.id, candidate.model)] ??
@@ -467,7 +450,7 @@ export function selectRoute(
       continue;
     }
 
-    const { score, sticky, protocolMatch } = evaluateCandidateScore(
+    const { score, sticky } = evaluateCandidateScore(
       weights,
       provider,
       endpoint,
@@ -485,14 +468,8 @@ export function selectRoute(
         modelId: candidate.modelId
       },
       priceTable,
-      platform.protocol,
-      preferredProtocol,
       modelStatus
     );
-
-    if (protocolMatch) {
-      sawProtocolMatch = true;
-    }
 
     // 显式要求了窗口，但候选元数据缺失：放过但记下来，供 policy_hits 观测。
     if (
@@ -531,7 +508,8 @@ export function selectRoute(
   }
 
   if (passed.length === 0) {
-    throw new HttpError(503, "endpoint_unavailable", "No eligible route candidate", false, {
+    throw new HttpError(503, sawProtocolMatch ? "endpoint_unavailable" : "required_protocol_unavailable", "No eligible route candidate", false, {
+      required_protocol: requiredProtocol,
       requested_model: resolvedTarget.requested,
       normalized_model: resolvedTarget.normalized,
       context_tokens_est: requestedContextTokens,
@@ -572,6 +550,6 @@ export function selectRoute(
     filtered,
     requestedContextWindow: resolvedTarget.requestedContextWindow,
     contextWindowUnknown,
-    sawProtocolMatch
+    requiredProtocol
   };
 }

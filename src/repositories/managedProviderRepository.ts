@@ -3,6 +3,7 @@ import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 
 import {
   managedAccountEndpointModelsTable,
+  managedAccountEndpointsTable,
   logicalModelsTable,
   managedAccountModelsTable,
   managedModelsTable,
@@ -11,6 +12,7 @@ import {
   managedProvidersTable,
   modelSyncRunsTable,
   type ManagedAccountEndpointModelRow,
+  type ManagedAccountEndpointRow,
   type ManagedAccountModelRow,
   type ManagedCredentialRow,
   type ManagedModelRow,
@@ -20,6 +22,7 @@ import {
   type schema
 } from "../db/schema.js";
 import { displayNameFromLogicalName, mergeAliases, toLogicalModelName } from "../catalog/logicalModelNames.js";
+import { accountUnavailableReason, isRuntimeStatusValue } from "../runtime/runtimeStatus.js";
 
 export type ProviderKind = "official" | "relay" | "custom";
 
@@ -1281,6 +1284,7 @@ export class ManagedProviderRepository {
     provider: ManagedProviderRow;
     credential: ManagedCredentialRow;
     endpoint: ManagedProviderEndpointRow;
+    accountEndpoint: ManagedAccountEndpointRow | null;
     models: ManagedModelRow[];
   }> {
     const providers = this.db.select().from(managedProvidersTable)
@@ -1314,7 +1318,15 @@ export class ManagedProviderRepository {
       return accounts.flatMap((account) => {
         const accountModelIds = this.listAccountModelIds(account.id);
 
-        return endpoints.map((endpoint) => {
+        return endpoints.flatMap((endpoint) => {
+          const accountEndpoint = this.getAccountEndpoint(provider.providerKey, account.accountKey, endpoint.endpointKey);
+          if (accountEndpoint && (!accountEndpoint.enabled || accountUnavailableReason({
+            runtimeStatus: isRuntimeStatusValue(accountEndpoint.runtimeStatus) ? accountEndpoint.runtimeStatus : "unknown",
+            statusReason: accountEndpoint.statusReason,
+            statusCooldownUntil: accountEndpoint.statusCooldownUntil
+          }))) {
+            return [];
+          }
           const observations = this.db.select().from(managedAccountEndpointModelsTable)
             .where(and(
               eq(managedAccountEndpointModelsTable.accountId, account.id),
@@ -1355,6 +1367,7 @@ export class ManagedProviderRepository {
             provider,
             credential: account,
             endpoint,
+            accountEndpoint,
             models
           };
         });
@@ -2261,6 +2274,76 @@ export class ManagedProviderRepository {
         eq(managedAccountModelsTable.managedModelId, model.id)
       ))
       .get() ?? null;
+  }
+
+  public getAccountEndpoint(providerKey: string, accountKey: string, endpointKey: string): ManagedAccountEndpointRow | null {
+    const account = this.getAccount(providerKey, accountKey);
+    const endpoint = this.getProviderEndpoint(providerKey, endpointKey);
+    if (!account || !endpoint) {
+      return null;
+    }
+    return this.db.select().from(managedAccountEndpointsTable).where(and(
+      eq(managedAccountEndpointsTable.accountId, account.id),
+      eq(managedAccountEndpointsTable.endpointId, endpoint.id)
+    )).get() ?? null;
+  }
+
+  private updateAccountEndpoint(
+    providerKey: string, accountKey: string, endpointKey: string,
+    values: Partial<Omit<ManagedAccountEndpointRow, "id" | "accountId" | "endpointId" | "createdAt">>
+  ): ManagedAccountEndpointRow | null {
+    const account = this.getAccount(providerKey, accountKey);
+    const endpoint = this.getProviderEndpoint(providerKey, endpointKey);
+    if (!account || !endpoint) {
+      return null;
+    }
+    const now = nowIso();
+    this.db.insert(managedAccountEndpointsTable).values({
+      accountId: account.id, endpointId: endpoint.id, ...values, createdAt: now, updatedAt: now
+    }).onConflictDoUpdate({
+      target: [managedAccountEndpointsTable.accountId, managedAccountEndpointsTable.endpointId],
+      set: { ...values, updatedAt: now }
+    }).run();
+    return this.getAccountEndpoint(providerKey, accountKey, endpointKey);
+  }
+
+  public setAccountEndpointEnabled(providerKey: string, accountKey: string, endpointKey: string, enabled: boolean) {
+    return this.updateAccountEndpoint(providerKey, accountKey, endpointKey, { enabled });
+  }
+
+  public clearAccountEndpointStatus(providerKey: string, accountKey: string, endpointKey: string) {
+    return this.updateAccountEndpoint(providerKey, accountKey, endpointKey, {
+      runtimeStatus: "unknown", statusReason: null, statusMessage: null,
+      statusSource: "manual", statusUpdatedAt: nowIso(), statusCooldownUntil: null,
+      cooldownStrike: 0, rateLimitStrike: 0, recentErrorCount: 0,
+      lastSuccessAt: null, lastErrorAt: null, lastErrorCode: null, lastErrorMessage: null
+    });
+  }
+
+  public applyAccountEndpointFailure(
+    providerKey: string, accountKey: string, endpointKey: string,
+    input: { runtimeStatus: "disabled" | "rate_limited" | "cooling_down" | "abnormal";
+      reason: string; cooldownUntil: string | null; cooldownStrike?: number;
+      rateLimitStrike?: number; code?: string; message: string }
+  ) {
+    const previous = this.getAccountEndpoint(providerKey, accountKey, endpointKey);
+    return this.updateAccountEndpoint(providerKey, accountKey, endpointKey, {
+      runtimeStatus: input.runtimeStatus, statusReason: input.reason, statusMessage: input.message,
+      statusSource: "system", statusUpdatedAt: nowIso(), statusCooldownUntil: input.cooldownUntil,
+      cooldownStrike: input.cooldownStrike ?? previous?.cooldownStrike ?? 0,
+      rateLimitStrike: input.rateLimitStrike ?? previous?.rateLimitStrike ?? 0,
+      recentErrorCount: (previous?.recentErrorCount ?? 0) + 1,
+      lastErrorAt: nowIso(), lastErrorCode: input.code ?? "provider_error", lastErrorMessage: input.message
+    });
+  }
+
+  public markAccountEndpointSuccess(providerKey: string, accountKey: string, endpointKey: string, clearCounters: boolean) {
+    return this.updateAccountEndpoint(providerKey, accountKey, endpointKey, {
+      runtimeStatus: "normal", statusReason: null, statusMessage: null,
+      statusSource: "system", statusUpdatedAt: nowIso(), statusCooldownUntil: null,
+      lastSuccessAt: nowIso(),
+      ...(clearCounters ? { cooldownStrike: 0, rateLimitStrike: 0, recentErrorCount: 0 } : {})
+    });
   }
 
   private getAccountEndpointModelTarget(

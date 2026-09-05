@@ -3,7 +3,7 @@ import { resolveEffectiveModelMetadata } from "../catalog/effectiveModelMetadata
 import { ModelCatalog } from "../catalog/modelCatalog.js";
 import { PriceTable } from "../catalog/priceTable.js";
 import { parseConfigSource } from "../config/loadConfig.js";
-import type { PriceEntryConfig, RouterConfig } from "../config/schema.js";
+import { wireProtocolSchema, type PriceEntryConfig, type RouterConfig } from "../config/schema.js";
 import type { AdapterRegistry } from "../providers/registry.js";
 import type { StickySessionStore } from "../routing/stickySession.js";
 import type { TraceStore } from "../trace/traceStore.js";
@@ -156,7 +156,7 @@ export class RuntimeConfigProjector {
       managedCredentials.set(accountId, decryptedCredential);
 
       mergedConfig.platforms[bundle.endpoint.protocol] ??= {
-        protocol: bundle.endpoint.protocol
+        protocol: wireProtocolSchema.parse(bundle.endpoint.protocol)
       };
 
       mergedConfig.providers[providerId] = {

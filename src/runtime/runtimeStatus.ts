@@ -8,7 +8,7 @@ import { PROVIDER_ACCESS_BLOCKED_CODE } from "../utils/providerErrors.js";
  * - abnormal      永久熔断，仅人工 enable 可恢复
  * - disabled      鉴权 / 账单失败，仅人工 enable 可恢复
  */
-export type RuntimeStatus = "normal" | "disabled" | "rate_limited" | "cooling_down" | "abnormal";
+export type RuntimeStatus = "unknown" | "normal" | "disabled" | "rate_limited" | "cooling_down" | "abnormal";
 
 export interface RuntimeStatusSettings {
   /** model 累计错误达到该值 → 永久 abnormal（account 冷却反复救不回来时的兜底归因） */
@@ -89,6 +89,7 @@ export function normalizeRuntimeStatusSettings(
 
 export function isRuntimeStatusValue(value: unknown): value is RuntimeStatus {
   return (
+    value === "unknown" ||
     value === "normal" ||
     value === "disabled" ||
     value === "rate_limited" ||

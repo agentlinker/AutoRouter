@@ -223,7 +223,7 @@ describe("RuntimeStatusService", () => {
         10,
         "normal",
         null,
-        snapshot.modelStatuses
+        snapshot.modelStatuses, "openai-chat-completions"
       );
 
     expect(selectDemoRoute().selected.endpoint.id).toBe("demo/openai");

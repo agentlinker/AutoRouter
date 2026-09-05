@@ -165,7 +165,7 @@ function createHarness(
         10,
         "normal",
         null,
-        snapshot.modelStatuses
+        snapshot.modelStatuses, "openai-chat-completions"
       );
       return { ok: true as const, decision, error: undefined };
     } catch (error) {
@@ -447,7 +447,7 @@ describe("cooling_down routing", () => {
         10,
         "normal",
         null,
-        harness.runtimeManager.getSnapshot().modelStatuses
+        harness.runtimeManager.getSnapshot().modelStatuses, "openai-chat-completions"
       )
     ).toThrow(HttpError);
 
@@ -468,7 +468,7 @@ describe("cooling_down routing", () => {
         10,
         "normal",
         null,
-        harness.runtimeManager.getSnapshot().modelStatuses
+        harness.runtimeManager.getSnapshot().modelStatuses, "openai-chat-completions"
       )
     ).not.toThrow();
   });

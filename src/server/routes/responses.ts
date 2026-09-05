@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 
 import { selectRoute } from "../../routing/routeEngine.js";
@@ -7,18 +7,15 @@ import {
   streamRoutedRequest,
   type RoutedCandidate
 } from "../../routing/executeRoutedRequest.js";
-import { normalizeChatRequest } from "../../routing/normalizeRequest.js";
 import { StreamUsageTap } from "../../routing/streamUsageTap.js";
 import type { ProviderResponse, RouteTarget } from "../../providers/adapter.js";
 import type { TraceAttempt, TraceCandidate } from "../../trace/traceTypes.js";
 import { estimateResponsesContextTokens as estimateResponsesContextTokensUtil } from "../../utils/contextTokens.js";
 import { recordRouteSelectionFailure } from "./routeSelectionFailure.js";
 import { sha256 } from "../../utils/hash.js";
-import type { ChatCompletionsRequestBody, ChatMessage, ToolDefinition } from "../../routing/types.js";
 import { HttpError } from "../../utils/httpErrors.js";
 import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
 import type { RuntimeStatusService } from "../../runtime/runtimeStatusService.js";
-import { isResponsesUnsupportedError } from "../../utils/responsesFallback.js";
 import { resolveUpstreamUrl } from "../../providers/upstreamUrl.js";
 
 interface ResponsesRequestBody {
@@ -34,263 +31,13 @@ interface ResponsesRequestBody {
   upstream_metadata?: Record<string, unknown>;
 }
 
-interface ChatCompletionResponseBody {
-  id?: string;
-  model?: string;
-  choices?: Array<{
-    message?: {
-      role?: string;
-      content?: unknown;
-      tool_calls?: Array<{
-        id?: string;
-        type?: string;
-        function?: {
-          name?: string;
-          arguments?: string;
-        };
-      }>;
-    };
-    finish_reason?: string | null;
-  }>;
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    total_tokens?: number;
-  };
-}
 
-type ResponsesOutputItem =
-  | {
-      id: string;
-      type: "message";
-      status: "completed";
-      role: "assistant";
-      content: Array<{
-        type: "output_text";
-        text: string;
-        annotations: unknown[];
-      }>;
-    }
-  | {
-      id: string;
-      type: "function_call";
-      status: "completed";
-      call_id: string;
-      name: string;
-      arguments: string;
-    };
 
-function contentToText(content: unknown): string {
-  if (typeof content === "string") {
-    return content;
-  }
 
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        if (typeof part === "string") {
-          return part;
-        }
-        if (part && typeof part === "object") {
-          const record = part as Record<string, unknown>;
-          const text = record.text ?? record.input_text ?? record.output_text;
-          return typeof text === "string" ? text : "";
-        }
-        return "";
-      })
-      .filter(Boolean)
-      .join("\n");
-  }
 
-  if (content && typeof content === "object") {
-    const record = content as Record<string, unknown>;
-    const text = record.text ?? record.input_text ?? record.output_text;
-    if (typeof text === "string") {
-      return text;
-    }
-  }
 
-  return content == null ? "" : JSON.stringify(content);
-}
 
-function responsesInputToMessages(input: unknown, instructions?: string): ChatMessage[] {
-  const messages: ChatMessage[] = [];
-  if (instructions) {
-    messages.push({ role: "system", content: instructions });
-  }
 
-  if (typeof input === "string") {
-    messages.push({ role: "user", content: input });
-    return messages;
-  }
-
-  if (!Array.isArray(input)) {
-    throw new HttpError(400, "invalid_request", "input is required");
-  }
-
-  for (const item of input) {
-    if (!item || typeof item !== "object") {
-      continue;
-    }
-
-    const record = item as Record<string, unknown>;
-    const type = typeof record.type === "string" ? record.type : undefined;
-    const role = typeof record.role === "string" ? record.role : undefined;
-
-    if (type === "function_call_output") {
-      messages.push({
-        role: "tool",
-        content: contentToText(record.output),
-        tool_call_id: typeof record.call_id === "string" ? record.call_id : undefined
-      });
-      continue;
-    }
-
-    if (type === "function_call") {
-      const callId = typeof record.call_id === "string"
-        ? record.call_id
-        : typeof record.id === "string"
-          ? record.id
-          : undefined;
-      const name = typeof record.name === "string" ? record.name : undefined;
-      if (!callId || !name) {
-        continue;
-      }
-
-      messages.push({
-        role: "assistant",
-        content: "",
-        tool_calls: [
-          {
-            id: callId,
-            type: "function",
-            function: {
-              name,
-              arguments: typeof record.arguments === "string" ? record.arguments : "{}"
-            }
-          }
-        ]
-      });
-      continue;
-    }
-
-    if (type === "message" || role) {
-      const messageRole =
-        role === "assistant" || role === "system" || role === "tool" ? role : "user";
-      messages.push({
-        role: messageRole,
-        content: contentToText(record.content)
-      } as ChatMessage);
-    }
-  }
-
-  if (messages.length === 0 || messages.every((message) => message.role === "system")) {
-    throw new HttpError(400, "invalid_request", "input must contain at least one message");
-  }
-
-  return messages;
-}
-
-function responsesToolsToChatTools(tools: unknown[] | undefined): ToolDefinition[] {
-  if (!tools) {
-    return [];
-  }
-
-  return tools
-    .map((tool): ToolDefinition | null => {
-      if (!tool || typeof tool !== "object") {
-        return null;
-      }
-
-      const record = tool as Record<string, unknown>;
-      if (record.type !== "function" || typeof record.name !== "string") {
-        return null;
-      }
-
-      return {
-        type: "function",
-        function: {
-          name: record.name,
-          description: typeof record.description === "string" ? record.description : undefined,
-          parameters:
-            record.parameters && typeof record.parameters === "object"
-              ? (record.parameters as Record<string, unknown>)
-              : undefined
-        }
-      };
-    })
-    .filter((tool): tool is ToolDefinition => tool !== null);
-}
-
-function chatToResponsesBody(chatBody: ChatCompletionResponseBody, requestedModel: string) {
-  const responseId = `resp_${randomUUID()}`;
-  const message = chatBody.choices?.[0]?.message;
-  const output: ResponsesOutputItem[] = [];
-  const text = contentToText(message?.content);
-
-  if (text) {
-    output.push({
-      id: `msg_${randomUUID()}`,
-      type: "message",
-      status: "completed",
-      role: "assistant",
-      content: [
-        {
-          type: "output_text",
-          text,
-          annotations: []
-        }
-      ]
-    });
-  }
-
-  for (const toolCall of message?.tool_calls ?? []) {
-    if (toolCall.function?.name) {
-      output.push({
-        id: toolCall.id ?? `fc_${randomUUID()}`,
-        type: "function_call",
-        status: "completed",
-        call_id: toolCall.id ?? `call_${randomUUID()}`,
-        name: toolCall.function.name,
-        arguments: toolCall.function.arguments ?? "{}"
-      });
-    }
-  }
-
-  return {
-    id: responseId,
-    object: "response",
-    created_at: Math.floor(Date.now() / 1000),
-    status: "completed",
-    model: chatBody.model ?? requestedModel,
-    output,
-    output_text: text,
-    usage: chatBody.usage
-      ? {
-          input_tokens: chatBody.usage.prompt_tokens,
-          output_tokens: chatBody.usage.completion_tokens,
-          total_tokens: chatBody.usage.total_tokens
-        }
-      : undefined
-  };
-}
-
-function writeSse(reply: FastifyReply, event: string, data: unknown) {
-  reply.raw.write(`event: ${event}\n`);
-  reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
-}
-
-function wrapResponseEvent(
-  type: "response.created" | "response.in_progress" | "response.completed",
-  response: ReturnType<typeof chatToResponsesBody>,
-  sequenceNumber: number
-) {
-  return {
-    type,
-    response,
-    sequence_number: sequenceNumber
-  };
-}
 
 function estimateResponsesContextTokens(body: ResponsesRequestBody): number {
   return estimateResponsesContextTokensUtil({
@@ -322,267 +69,6 @@ function responsesUsageToChatUsage(usage: unknown): {
   };
 }
 
-/**
- * 所有候选都没有原生 responses 支持时的降级路径：转成 Chat Completions 执行，
- * 再把结果转回 Responses 形状。直接走共享执行层，不再 inject 内部 HTTP 路由。
- */
-async function fallbackResponsesViaChat(
-  runtimeManager: RuntimeManagerLike,
-  runtimeStatusService: RuntimeStatusService | undefined,
-  request: { body: ResponsesRequestBody; headers?: RouteTarget["request_headers"] },
-  reply: FastifyReply
-) {
-  const state = runtimeManager.getSnapshot();
-  const normalizedRequest = normalizeChatRequest({
-    model: request.body.model!,
-    messages: responsesInputToMessages(request.body.input, request.body.instructions),
-    stream: false,
-    tools: responsesToolsToChatTools(request.body.tools),
-    tool_choice: request.body.tool_choice,
-    temperature: request.body.temperature,
-    max_tokens: request.body.max_output_tokens,
-    metadata: request.body.metadata,
-    upstream_metadata: request.body.upstream_metadata
-  });
-
-  const privacyLevel =
-    typeof normalizedRequest.metadata.privacy_level === "string"
-      ? normalizedRequest.metadata.privacy_level
-      : state.config.defaults.privacy_level;
-  const traceId = randomUUID();
-  const startedAt = Date.now();
-  const promptHash = sha256(JSON.stringify(normalizedRequest.messages));
-
-  let routeDecision;
-  try {
-    routeDecision = selectRoute(
-      state.config,
-      state.modelCatalog,
-      state.priceTable,
-      state.platforms,
-      state.providers,
-      state.endpoints,
-      state.accounts,
-      normalizedRequest.model,
-      normalizedRequest.tools.length > 0,
-      normalizedRequest.response_format !== undefined,
-      normalizedRequest.context_tokens_est,
-      privacyLevel,
-      null,
-      state.modelStatuses ?? {},
-      // 已降级成 Chat Completions 形态，优先选 openai 协议的 endpoint（零转换透传）
-      "openai"
-    );
-  } catch (error) {
-    recordRouteSelectionFailure(runtimeManager, error, {
-      model: normalizedRequest.model,
-      promptHash,
-      stream: request.body.stream ?? false,
-      hasTools: normalizedRequest.tools.length > 0,
-      privacyLevel,
-      contextTokensEst: normalizedRequest.context_tokens_est,
-      sessionId: null,
-      policyHits: ["responses_via_chat", "route_selection_failed"]
-    });
-    throw error;
-  }
-
-  const outcome = await executeRoutedRequest({
-    state,
-    runtimeStatusService,
-    candidates: routeDecision.ordered,
-    requestHeaders: request.headers,
-    attemptMetadata: (_candidate, target) => ({
-      actual_upstream_url: resolveUpstreamUrl(
-        target.endpoint.base_url,
-        target.platform.protocol === "anthropic" ? "messages" : "chat_completions"
-      )
-    }),
-    invoke: (_candidate, target) =>
-      state.adapters.forProtocol(target.platform.protocol).chatCompletion(normalizedRequest, target)
-  });
-
-  const priceEstimate = outcome.selected
-    ? state.priceTable.estimateCost(
-        outcome.selected.modelId,
-        outcome.response?.usage?.prompt_tokens,
-        outcome.response?.usage?.completion_tokens
-      )
-    : null;
-
-  state.traceStore.append({
-    trace_id: traceId,
-    timestamp: new Date().toISOString(),
-    session_id: null,
-    request: {
-      model: request.body.model!,
-      normalized_model: routeDecision.normalizedModel,
-      prompt_hash: promptHash,
-      stream: request.body.stream ?? false,
-      has_tools: normalizedRequest.tools.length > 0,
-      privacy_level: privacyLevel,
-      context_tokens_est: normalizedRequest.context_tokens_est,
-      requested_context_window: routeDecision.requestedContextWindow ?? null
-    },
-    candidates: routeDecision.candidates.map((candidate) => ({
-      route_id: candidate.routeId,
-      endpoint: candidate.endpoint,
-      platform: candidate.platform,
-      provider: candidate.provider,
-      account: candidate.account,
-      model_id: candidate.modelId,
-      model: candidate.model,
-      score: candidate.score,
-      sticky: candidate.sticky
-    })),
-    filtered: routeDecision.filtered.map((candidate) => ({
-      route_id: candidate.routeId,
-      endpoint: candidate.endpoint,
-      platform: candidate.platform,
-      provider: candidate.provider,
-      account: candidate.account,
-      model_id: candidate.modelId,
-      model: candidate.model,
-      reason: candidate.filteredReason,
-      score: candidate.score,
-      sticky: candidate.sticky
-    })),
-    selected: outcome.selected
-      ? {
-          route_id: outcome.selected.routeId,
-          endpoint: outcome.selected.endpoint.id,
-          platform: outcome.selected.platform.id,
-          provider: outcome.selected.provider.id,
-          account_hash: sha256(outcome.selected.account.id),
-          model_id: outcome.selected.modelId,
-          model: outcome.selected.model,
-          score: outcome.selected.score
-        }
-      : null,
-    policy_hits: [
-      "responses_via_chat",
-      ...(outcome.fallbacks.length > 0 ? ["fallback_chain"] : []),
-      ...(routeDecision.contextWindowUnknown ? ["context_window_unknown"] : [])
-    ],
-    execution: outcome.response
-      ? {
-          status: outcome.fallbacks.length > 0 ? "success_with_fallback" : "success",
-          latency_ms: Date.now() - startedAt,
-          input_tokens: outcome.response.usage?.prompt_tokens,
-          output_tokens: outcome.response.usage?.completion_tokens,
-          total_tokens: outcome.response.usage?.total_tokens
-        }
-      : {
-          status: "failed",
-          latency_ms: Date.now() - startedAt,
-          error:
-            outcome.lastError instanceof Error
-              ? outcome.lastError.message
-              : "provider_request_failed"
-        },
-    cost: {
-      estimated_usd: priceEstimate?.estimatedUsd ?? null,
-      actual_usd: null,
-      price_confidence: priceEstimate?.confidence ?? "unknown"
-    },
-    attempts: outcome.attempts,
-    fallbacks: outcome.fallbacks,
-    feedback: null
-  });
-
-  if (!outcome.response) {
-    throw outcome.lastError instanceof Error
-      ? outcome.lastError
-      : new HttpError(503, "all_candidates_failed", "All candidates failed", true);
-  }
-
-  reply.header("x-autorouter-trace-id", traceId);
-  reply.header("x-autorouter-normalized-model", routeDecision.normalizedModel);
-
-  const responseBody = chatToResponsesBody(
-    outcome.response.body as ChatCompletionResponseBody,
-    request.body.model!
-  );
-
-  if (request.body.stream) {
-    reply.raw.setHeader("content-type", "text/event-stream; charset=utf-8");
-    reply.raw.setHeader("cache-control", "no-cache");
-    reply.raw.setHeader("connection", "keep-alive");
-
-    let sequenceNumber = 1;
-    const inProgressResponse = { ...responseBody, status: "in_progress", output: [] };
-    writeSse(
-      reply,
-      "response.created",
-      wrapResponseEvent("response.created", inProgressResponse, sequenceNumber++)
-    );
-    writeSse(
-      reply,
-      "response.in_progress",
-      wrapResponseEvent("response.in_progress", inProgressResponse, sequenceNumber++)
-    );
-    for (const item of responseBody.output) {
-      writeSse(reply, "response.output_item.added", {
-        type: "response.output_item.added",
-        item,
-        output_index: 0,
-        sequence_number: sequenceNumber++
-      });
-      if (item.type === "message") {
-        const content = item.content[0];
-        const contentText = content?.text ?? "";
-        writeSse(reply, "response.content_part.added", {
-          type: "response.content_part.added",
-          item_id: item.id,
-          output_index: 0,
-          content_index: 0,
-          part: { type: "output_text", text: "", annotations: [] },
-          sequence_number: sequenceNumber++
-        });
-        writeSse(reply, "response.output_text.delta", {
-          type: "response.output_text.delta",
-          item_id: item.id,
-          output_index: 0,
-          content_index: 0,
-          delta: contentText,
-          sequence_number: sequenceNumber++
-        });
-        writeSse(reply, "response.output_text.done", {
-          type: "response.output_text.done",
-          item_id: item.id,
-          output_index: 0,
-          content_index: 0,
-          text: contentText,
-          sequence_number: sequenceNumber++
-        });
-        writeSse(reply, "response.content_part.done", {
-          type: "response.content_part.done",
-          item_id: item.id,
-          output_index: 0,
-          content_index: 0,
-          part: content ?? { type: "output_text", text: "", annotations: [] },
-          sequence_number: sequenceNumber++
-        });
-      }
-      writeSse(reply, "response.output_item.done", {
-        type: "response.output_item.done",
-        item,
-        output_index: 0,
-        sequence_number: sequenceNumber++
-      });
-    }
-    writeSse(
-      reply,
-      "response.completed",
-      wrapResponseEvent("response.completed", { ...responseBody, status: "completed" }, sequenceNumber++)
-    );
-    reply.raw.write("data: [DONE]\n\n");
-    reply.raw.end();
-    return reply;
-  }
-
-  return responseBody;
-}
 
 export async function registerResponsesRoute(
   fastify: FastifyInstance,
@@ -621,7 +107,8 @@ export async function registerResponsesRoute(
         contextTokensEst,
         privacyLevel,
         null,
-        state.modelStatuses ?? {}
+        state.modelStatuses ?? {},
+        "openai-responses"
       );
     } catch (error) {
       recordRouteSelectionFailure(runtimeManager, error, {
@@ -646,7 +133,6 @@ export async function registerResponsesRoute(
     // selected 恒等于实际执行过的候选，不预设为打分最高者
     let selectedCandidate: RoutedCandidate | null = null;
     let lastError: unknown;
-    let sawNativeResponsesAdapter = false;
     // 流式旁路观测到的 usage（上游未发 usage 时保持 undefined）
     let streamUsage: ProviderResponse["usage"];
 
@@ -715,13 +201,7 @@ export async function registerResponsesRoute(
       requestHeaders: request.headers,
       attemptMetadata: (_candidate: RoutedCandidate, target: RouteTarget) => ({
         actual_upstream_url: resolveUpstreamUrl(target.endpoint.base_url, "responses")
-      }),
-      // 只有实现了原生 responses 方法的 adapter 才能直通；其余候选跳过，
-      // 全部跳过时降级为 Chat Completions 转换。
-      supportsCandidate: (_candidate: RoutedCandidate, target: RouteTarget) => {
-        const adapter = state.adapters.forProtocol(target.platform.protocol);
-        return Boolean(request.body.stream ? adapter.streamResponse : adapter.responseCompletion);
-      }
+      })
     };
 
     if (request.body.stream) {
@@ -772,7 +252,6 @@ export async function registerResponsesRoute(
       attempts = outcome.attempts;
       fallbacks = outcome.fallbacks;
       lastError = outcome.lastError;
-      sawNativeResponsesAdapter = outcome.sawSupportedCandidate;
 
       if (outcome.partialFailure) {
         const latencyMs = Date.now() - startedAt;
@@ -825,15 +304,6 @@ export async function registerResponsesRoute(
       fallbacks = outcome.fallbacks;
       lastError = outcome.lastError;
       providerResponse = outcome.response;
-      sawNativeResponsesAdapter = outcome.sawSupportedCandidate;
-    }
-
-    if (!sawNativeResponsesAdapter) {
-      return fallbackResponsesViaChat(runtimeManager, runtimeStatusService, request, reply);
-    }
-
-    if (!providerResponse && isResponsesUnsupportedError(lastError) && !reply.raw.headersSent) {
-      return fallbackResponsesViaChat(runtimeManager, runtimeStatusService, request, reply);
     }
 
     const latencyMs = Date.now() - startedAt;

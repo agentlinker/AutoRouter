@@ -11,7 +11,7 @@ import { OpenAiCompatibleAdapter } from "./openaiCompatible.js";
  * custom_headers 表达，不需要单独的 adapter。
  */
 export function adapterTypeForProtocol(protocol: string): AdapterType {
-  return protocol === "anthropic" ? "anthropic" : "openai_compatible";
+  return protocol === "anthropic-messages" ? "anthropic" : "openai_compatible";
 }
 
 export class AdapterRegistry {

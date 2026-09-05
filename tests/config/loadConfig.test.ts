@@ -13,7 +13,7 @@ describe("loadConfig", () => {
             trust_level: "medium",
             privacy_level: "normal",
             usage_trust: "medium",
-            protocol: "openai",
+            protocol: "openai-responses",
             adapter: "openai_compatible",
             base_url: "https://example.com/v1",
             accounts: [
@@ -56,7 +56,7 @@ describe("loadConfig", () => {
       }
     });
 
-    expect(config.platforms.openai.protocol).toBe("openai");
+    expect(config.platforms["openai-responses"].protocol).toBe("openai-responses");
     expect(config.providers.demo.display_name).toBe("Demo");
     expect(config.endpoints["demo/default"].provider).toBe("demo");
     expect(config.accounts["demo/main"].endpoint).toBe("demo/default");
@@ -109,7 +109,7 @@ describe("loadConfig", () => {
       override: {
         platforms: {
           openai: {
-            protocol: "openai"
+            protocol: "openai-chat-completions"
           }
         },
         providers: {

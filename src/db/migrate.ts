@@ -14,6 +14,44 @@ function backupBeforeAdapterColumnRemoval(sqlite: Database.Database): void {
   backupDatabase(sqlite, "adapter-column");
 }
 
+function migrateWireProtocols(sqlite: Database.Database): void {
+  const legacy = sqlite.prepare(`SELECT 1 FROM managed_provider_endpoints
+    WHERE protocol IN ('openai', 'anthropic') LIMIT 1`).get();
+  if (!legacy) {
+    return;
+  }
+
+  backupDatabase(sqlite, "wire-protocols");
+  sqlite.transaction(() => {
+    // Legacy OpenAI observations cannot distinguish Responses from Chat Completions.
+    sqlite.exec(`
+      UPDATE managed_account_endpoint_models SET
+        runtime_status = 'unknown', status_reason = NULL, status_message = NULL,
+        status_source = 'system', status_updated_at = NULL, status_cooldown_until = NULL,
+        rate_limit_strike = 0, cooldown_strike = 0, recent_error_count = 0,
+        last_success_at = NULL, last_error_at = NULL, last_error_code = NULL,
+        last_error_message = NULL
+      WHERE endpoint_id IN (SELECT id FROM managed_provider_endpoints WHERE protocol = 'openai');
+      UPDATE managed_provider_endpoints SET
+        runtime_status = 'unknown', status_reason = NULL, status_message = NULL,
+        status_source = 'system', status_updated_at = NULL, status_cooldown_until = NULL,
+        cooldown_strike = 0, recent_error_count = 0,
+        last_error_at = NULL, last_error_code = NULL, last_error_message = NULL
+      WHERE protocol = 'openai';
+      UPDATE managed_provider_endpoints
+      SET endpoint_key = 'wire-migration-' || lower(hex(randomblob(16)))
+      WHERE protocol IN ('openai', 'anthropic');
+      UPDATE managed_provider_endpoints SET
+        endpoint_key = CASE protocol WHEN 'openai' THEN 'openai-responses' ELSE 'anthropic-messages' END,
+        protocol = CASE protocol WHEN 'openai' THEN 'openai-responses' ELSE 'anthropic-messages' END,
+        protocol_bundle_key = NULL
+      WHERE protocol IN ('openai', 'anthropic');
+      CREATE UNIQUE INDEX IF NOT EXISTS managed_provider_endpoints_provider_protocol_unique
+        ON managed_provider_endpoints(provider_id, protocol);
+    `);
+  })();
+}
+
 // 与 src/catalog/logicalModelNames.ts 保持一致：migrate 不依赖应用层代码，故复制一份。
 function toLogicalModelName(modelName: string): string {
   const trimmed = modelName.trim();
@@ -2017,4 +2055,30 @@ export function runMigrations(sqlite: Database.Database) {
     backupDatabase(sqlite, "managed-model-endpoint-column");
     sqlite.exec("ALTER TABLE managed_models DROP COLUMN endpoint_id;");
   }
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS managed_account_endpoints (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id INTEGER NOT NULL REFERENCES managed_provider_credentials(id) ON DELETE CASCADE,
+      endpoint_id INTEGER NOT NULL REFERENCES managed_provider_endpoints(id) ON DELETE CASCADE,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      runtime_status TEXT NOT NULL DEFAULT 'unknown',
+      status_reason TEXT,
+      status_message TEXT,
+      status_source TEXT NOT NULL DEFAULT 'system',
+      status_updated_at TEXT,
+      status_cooldown_until TEXT,
+      cooldown_strike INTEGER NOT NULL DEFAULT 0,
+      rate_limit_strike INTEGER NOT NULL DEFAULT 0,
+      recent_error_count INTEGER NOT NULL DEFAULT 0,
+      last_success_at TEXT,
+      last_error_at TEXT,
+      last_error_code TEXT,
+      last_error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS managed_account_endpoints_account_endpoint_unique
+      ON managed_account_endpoints(account_id, endpoint_id);
+  `);
+  migrateWireProtocols(sqlite);
 }
