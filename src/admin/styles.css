@@ -35,7 +35,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -416,6 +417,13 @@ input:focus {
   gap: 10px;
 }
 
+.inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .endpoint-group {
   gap: 10px;
 }
@@ -484,7 +492,7 @@ input:focus {
 
 .account-editor-row {
   display: grid;
-  grid-template-columns: repeat(5, minmax(130px, 1fr)) auto auto;
+  grid-template-columns: repeat(4, minmax(130px, 1fr)) auto auto;
   gap: 12px;
   align-items: end;
   padding: 14px;
@@ -495,6 +503,30 @@ input:focus {
 
 .account-editor-row .capability-toggle {
   min-height: 38px;
+}
+
+.model-editor {
+  display: grid;
+  gap: 12px;
+}
+
+.model-editor-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) minmax(100px, 0.7fr) auto auto auto auto;
+  gap: 12px;
+  align-items: end;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.3);
+}
+
+.model-editor-row .capability-toggle {
+  min-height: 38px;
+}
+
+.compact-note {
+  margin: 0;
 }
 
 .endpoint-summary {
@@ -1020,12 +1052,15 @@ button:disabled {
 }
 
 .model-list li .model-chip-endpoint {
+  display: inline-flex;
+  align-items: center;
   margin-left: 6px;
   color: var(--muted);
+  vertical-align: middle;
 }
 
 .model-list li .model-chip-endpoint::before {
-  content: "@";
+  content: none;
 }
 
 .model-list li.available {
@@ -1038,6 +1073,24 @@ button:disabled {
   border-color: rgba(248, 113, 113, 0.28);
   color: #fecaca;
   background: rgba(220, 38, 38, 0.12);
+}
+
+.model-list li.partial {
+  border-color: rgba(250, 204, 21, 0.34);
+  color: #fef08a;
+  background: rgba(202, 138, 4, 0.16);
+}
+
+.model-list li.partial .model-chip-endpoint {
+  color: #facc15;
+}
+
+.model-list li.available .model-chip-endpoint {
+  color: #4ade80;
+}
+
+.model-list li.unavailable .model-chip-endpoint {
+  color: #f87171;
 }
 
 .model-list li.empty-model {
@@ -1112,11 +1165,12 @@ button:disabled {
 .provider-detail-model-table .model-capability-header,
 .provider-detail-model-table .model-capability-row {
   grid-template-columns:
-    minmax(180px, 1.2fr)
-    minmax(150px, 0.7fr)
-    minmax(92px, 0.45fr)
-    minmax(112px, 0.65fr)
-    repeat(3, minmax(86px, 0.45fr));
+    minmax(170px, 1.15fr)
+    minmax(90px, 0.45fr)
+    minmax(102px, 0.5fr)
+    minmax(82px, 0.4fr)
+    minmax(160px, 0.78fr)
+    repeat(3, minmax(76px, 0.4fr));
 }
 
 .provider-detail-model-table .model-name-cell strong {
@@ -1130,6 +1184,100 @@ button:disabled {
   align-items: center;
 }
 
+.provider-model-route-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: max-content;
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.provider-model-route-status.available {
+  border-color: rgba(52, 211, 153, 0.28);
+  color: #4ade80;
+  background: rgba(22, 163, 74, 0.12);
+}
+
+.provider-model-route-status.partial {
+  border-color: rgba(250, 204, 21, 0.34);
+  color: #facc15;
+  background: rgba(202, 138, 4, 0.16);
+}
+
+.provider-model-route-status.unavailable {
+  border-color: rgba(248, 113, 113, 0.28);
+  color: #f87171;
+  background: rgba(220, 38, 38, 0.12);
+}
+
+.provider-connectivity {
+  display: grid;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.provider-connectivity h3 {
+  margin: 0;
+}
+
+.provider-connectivity details {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.provider-connectivity summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.connectivity-grid {
+  display: grid;
+  gap: 1px;
+  margin-top: 10px;
+  overflow-x: auto;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.connectivity-grid > * {
+  min-width: 0;
+  padding: 10px;
+  background: var(--surface);
+}
+
+.connectivity-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: max-content;
+}
+
+.connectivity-cell > span,
+.connectivity-cell .inline-actions {
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.provider-accounts-table .model-capability-header,
+.provider-accounts-table .model-capability-row {
+  grid-template-columns:
+    minmax(120px, 0.7fr)
+    minmax(80px, 0.45fr)
+    minmax(100px, 0.55fr)
+    minmax(130px, 0.7fr)
+    minmax(100px, 0.55fr)
+    minmax(140px, 0.85fr)
+    minmax(120px, 0.7fr);
+}
+
 .provider-accounts-table .model-name-cell {
   gap: 6px;
 }
@@ -1140,10 +1288,12 @@ button:disabled {
   font-weight: 600;
 }
 
-.provider-accounts-table .page-actions .small-action {
+.provider-accounts-table .account-action-select {
   font-family: inherit;
   font-size: 13px;
   font-weight: 600;
+  width: 100%;
+  min-width: 0;
 }
 
 .provider-model-table .page-actions {
@@ -1727,6 +1877,10 @@ button:disabled {
   }
 
   .account-editor-row {
+    grid-template-columns: 1fr;
+  }
+
+  .model-editor-row {
     grid-template-columns: 1fr;
   }
 

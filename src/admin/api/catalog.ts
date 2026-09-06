@@ -3,8 +3,8 @@ import { requestJson } from "./client.js";
 export interface CatalogModelInstance {
   provider_key: string;
   provider_display_name: string;
-  endpoint_key: string;
-  protocol: string | null;
+  endpoint_keys: string[];
+  protocols: string[];
   model_key: string;
   provider_model_id: string;
   model_name: string;
@@ -18,7 +18,6 @@ export interface CatalogModelInstance {
   rate_limit_strike?: number;
   recent_error_count?: number;
   provider_kind?: string;
-  model_availability_scope?: string;
   available_accounts?: string[];
   available_account_count?: number;
   context_window: number | null;

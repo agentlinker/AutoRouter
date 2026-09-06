@@ -28,6 +28,7 @@ export class RuntimeManager implements RuntimeManagerLike {
 export function createStaticRuntimeManager(state: RouterState): RuntimeManagerLike {
   const snapshot: RuntimeSnapshot = {
     ...state,
+    accountEndpoints: state.accountEndpoints ?? [],
     modelStatuses: state.modelStatuses ?? {},
     runtimeStatusSettings: state.runtimeStatusSettings ?? DEFAULT_RUNTIME_STATUS_SETTINGS,
     modelCatalog: new ModelCatalog(state.config),

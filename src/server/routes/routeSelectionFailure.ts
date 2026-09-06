@@ -48,6 +48,7 @@ export function recordRouteSelectionFailure(
     contextTokensEst: number;
     sessionId?: string | null;
     policyHits?: string[];
+    requiredProtocol?: string;
   }
 ): void {
   if (!isHttpError(error)) {
@@ -58,7 +59,8 @@ export function recordRouteSelectionFailure(
   if (
     error.code !== "endpoint_unavailable" &&
     error.code !== "model_not_found" &&
-    error.code !== "provider_model_not_found"
+    error.code !== "provider_model_not_found" &&
+    error.code !== "required_protocol_unavailable"
   ) {
     return;
   }
@@ -82,7 +84,10 @@ export function recordRouteSelectionFailure(
       stream: input.stream,
       has_tools: input.hasTools,
       privacy_level: input.privacyLevel,
-      context_tokens_est: contextTokensEst
+      context_tokens_est: contextTokensEst,
+      required_protocol:
+        input.requiredProtocol ??
+        (typeof details.required_protocol === "string" ? details.required_protocol : null)
     },
     candidates: asTraceCandidates(details.candidates),
     filtered: asTraceCandidates(details.filtered),
@@ -109,6 +114,7 @@ export function isRouteSelectionHttpError(error: unknown): error is HttpError {
     isHttpError(error) &&
     (error.code === "endpoint_unavailable" ||
       error.code === "model_not_found" ||
-      error.code === "provider_model_not_found")
+      error.code === "provider_model_not_found" ||
+      error.code === "required_protocol_unavailable")
   );
 }

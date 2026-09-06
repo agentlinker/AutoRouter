@@ -3,11 +3,11 @@ import { z } from "zod";
 export const trustLevelSchema = z.enum(["low", "medium", "high"]);
 export const privacyLevelSchema = z.enum(["public_only", "normal", "private"]);
 export const usageTrustSchema = z.enum(["low", "medium", "high"]);
-/**
- * 内部 adapter 实现标识，由 endpoint 的 protocol 唯一决定，不是用户输入字段。
- * 用户只需要选 protocol（openai / anthropic）。
- */
-export const adapterTypeSchema = z.enum(["openai_compatible", "anthropic"]);
+export const wireProtocolSchema = z.enum([
+  "openai-responses",
+  "openai-chat-completions",
+  "anthropic-messages"
+]);
 export const accountTypeSchema = z.enum(["api_key", "local_model"]);
 
 export const quotaSchema = z
@@ -21,7 +21,7 @@ export const quotaSchema = z
 
 export const platformSchema = z
   .object({
-    protocol: z.string().min(1)
+    protocol: wireProtocolSchema
   })
   .strict();
 
@@ -83,7 +83,7 @@ export const accountSchema = z
     credential_env: z.string().min(1).optional(),
     enabled: z.boolean().default(true),
     quota: quotaSchema.optional(),
-    // per_account scope: only these config model ids may pair with this account
+    // Only these config model ids may pair with this account.
     allowed_models: z.array(z.string().min(1)).optional()
   })
   .strict();
@@ -243,7 +243,7 @@ export const routerConfigSchema = z
 export type TrustLevel = z.infer<typeof trustLevelSchema>;
 export type PrivacyLevel = z.infer<typeof privacyLevelSchema>;
 export type UsageTrust = z.infer<typeof usageTrustSchema>;
-export type AdapterType = z.infer<typeof adapterTypeSchema>;
+export type WireProtocol = z.infer<typeof wireProtocolSchema>;
 export type AccountType = z.infer<typeof accountTypeSchema>;
 export type QuotaConfig = z.infer<typeof quotaSchema>;
 export type PlatformConfig = z.infer<typeof platformSchema>;

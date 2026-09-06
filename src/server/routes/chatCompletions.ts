@@ -12,7 +12,8 @@ import { HttpError } from "../../utils/httpErrors.js";
 import { normalizeChatRequest } from "../../routing/normalizeRequest.js";
 import { StreamUsageTap } from "../../routing/streamUsageTap.js";
 import type { ChatCompletionsRequestBody } from "../../routing/types.js";
-import type { ProviderResponse } from "../../providers/adapter.js";
+import type { ProviderResponse, RouteTarget } from "../../providers/adapter.js";
+import { resolveUpstreamUrl } from "../../providers/upstreamUrl.js";
 import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
 import type { RuntimeStatusService } from "../../runtime/runtimeStatusService.js";
 import type { TraceAttempt, TraceCandidate } from "../../trace/traceTypes.js";
@@ -60,8 +61,8 @@ export async function registerChatCompletionsRoute(
         privacyLevel,
         sessionId ? state.stickySessions.get(sessionId) : null,
         state.modelStatuses ?? {},
-        // 入站是 Chat Completions，优先选 openai 协议的 endpoint（零转换透传）
-        "openai"
+        "openai-chat-completions",
+        state.accountEndpoints
       );
     } catch (error) {
       recordRouteSelectionFailure(runtimeManager, error, {
@@ -72,7 +73,8 @@ export async function registerChatCompletionsRoute(
         privacyLevel,
         contextTokensEst: normalizedRequest.context_tokens_est,
         sessionId,
-        policyHits: ["route_selection_failed"]
+        policyHits: ["route_selection_failed"],
+        requiredProtocol: "openai-chat-completions"
       });
       throw error;
     }
@@ -89,9 +91,7 @@ export async function registerChatCompletionsRoute(
     // 显式要求了上下文窗口但候选元数据缺失时留下观测标记（宽松策略，不过滤候选）
     const withPolicyHits = (...hits: string[]) => [
       ...hits,
-      ...(routeDecision.contextWindowUnknown ? ["context_window_unknown"] : []),
-      // 没有同协议候选说明只能走 anthropic→openai 转换，值得在 trace 里留痕
-      ...(routeDecision.sawProtocolMatch ? [] : ["protocol_mismatch"])
+      ...(routeDecision.contextWindowUnknown ? ["context_window_unknown"] : [])
     ];
 
     const buildBaseTrace = () => {
@@ -107,7 +107,8 @@ export async function registerChatCompletionsRoute(
           has_tools: normalizedRequest.tools.length > 0,
           privacy_level: privacyLevel,
           context_tokens_est: normalizedRequest.context_tokens_est,
-          requested_context_window: routeDecision.requestedContextWindow ?? null
+          requested_context_window: routeDecision.requestedContextWindow ?? null,
+          required_protocol: "openai-chat-completions"
         },
         candidates: routeDecision.candidates.map((candidate) => ({
           route_id: candidate.routeId,
@@ -155,7 +156,13 @@ export async function registerChatCompletionsRoute(
       state,
       runtimeStatusService,
       candidates: orderedCandidates,
-      requestHeaders: request.headers
+      requestHeaders: request.headers,
+      attemptMetadata: (_candidate: RoutedCandidate, target: RouteTarget) => ({
+        actual_upstream_url: resolveUpstreamUrl(
+          target.endpoint.base_url,
+          "chat_completions"
+        )
+      })
     };
 
     if (normalizedRequest.stream) {
@@ -165,19 +172,16 @@ export async function registerChatCompletionsRoute(
         attempts: [] as TraceAttempt[],
         fallbacks: [] as TraceCandidate[],
         lastError: undefined as unknown,
-        sawSupportedCandidate: false,
         partialFailure: false
       };
 
       const stream = streamRoutedRequest(
         {
           ...executionInput,
-          supportsCandidate: (_candidate, target) =>
-            Boolean(state.adapters.forProtocol(target.platform.protocol).streamChatCompletion),
           invokeStream: (_candidate, target) =>
             state.adapters
-              .forProtocol(target.platform.protocol)
-              .streamChatCompletion!(normalizedRequest, target),
+              .forProtocol("openai-chat-completions")
+              .streamChatCompletion(normalizedRequest, target),
           onStreamStart: () => {
             if (!reply.raw.headersSent) {
               reply.raw.setHeader("content-type", "text/event-stream; charset=utf-8");
@@ -240,7 +244,7 @@ export async function registerChatCompletionsRoute(
       const outcome = await executeRoutedRequest({
         ...executionInput,
         invoke: (_candidate, target) =>
-          state.adapters.forProtocol(target.platform.protocol).chatCompletion(
+          state.adapters.forProtocol("openai-chat-completions").chatCompletion(
             normalizedRequest,
             target
           )

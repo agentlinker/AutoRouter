@@ -14,6 +14,43 @@ function backupBeforeAdapterColumnRemoval(sqlite: Database.Database): void {
   backupDatabase(sqlite, "adapter-column");
 }
 
+function migrateWireProtocols(sqlite: Database.Database): void {
+  const legacy = sqlite.prepare(`SELECT 1 FROM managed_provider_endpoints
+    WHERE protocol IN ('openai', 'anthropic') LIMIT 1`).get();
+  if (!legacy) {
+    return;
+  }
+
+  backupDatabase(sqlite, "wire-protocols");
+  sqlite.transaction(() => {
+    // Legacy OpenAI observations cannot distinguish Responses from Chat Completions.
+    sqlite.exec(`
+      UPDATE managed_account_endpoint_models SET
+        runtime_status = 'unknown', status_reason = NULL, status_message = NULL,
+        status_source = 'system', status_updated_at = NULL, status_cooldown_until = NULL,
+        rate_limit_strike = 0, cooldown_strike = 0, recent_error_count = 0,
+        last_success_at = NULL, last_error_at = NULL, last_error_code = NULL,
+        last_error_message = NULL
+      WHERE endpoint_id IN (SELECT id FROM managed_provider_endpoints WHERE protocol = 'openai');
+      UPDATE managed_provider_endpoints SET
+        runtime_status = 'unknown', status_reason = NULL, status_message = NULL,
+        status_source = 'system', status_updated_at = NULL, status_cooldown_until = NULL,
+        cooldown_strike = 0, recent_error_count = 0,
+        last_error_at = NULL, last_error_code = NULL, last_error_message = NULL
+      WHERE protocol = 'openai';
+      UPDATE managed_provider_endpoints
+      SET endpoint_key = 'wire-migration-' || lower(hex(randomblob(16)))
+      WHERE protocol IN ('openai', 'anthropic');
+      UPDATE managed_provider_endpoints SET
+        endpoint_key = CASE protocol WHEN 'openai' THEN 'openai-responses' ELSE 'anthropic-messages' END,
+        protocol = CASE protocol WHEN 'openai' THEN 'openai-responses' ELSE 'anthropic-messages' END
+      WHERE protocol IN ('openai', 'anthropic');
+      CREATE UNIQUE INDEX IF NOT EXISTS managed_provider_endpoints_provider_protocol_unique
+        ON managed_provider_endpoints(provider_id, protocol);
+    `);
+  })();
+}
+
 // 与 src/catalog/logicalModelNames.ts 保持一致：migrate 不依赖应用层代码，故复制一份。
 function toLogicalModelName(modelName: string): string {
   const trimmed = modelName.trim();
@@ -266,100 +303,480 @@ function stripSyntheticAliasPrefixes(sqlite: Database.Database, now: string): vo
   }
 }
 
-function normalizeBaseUrl(value: string): string {
-  return value.trim().replace(/\/+$/g, "").toLowerCase();
+type MutableMigrationRow = Record<string, string | number | null>;
+
+function earlierIso(left: string | null, right: string | null): string | null {
+  if (!left) return right;
+  if (!right) return left;
+  return left <= right ? left : right;
 }
 
-function normalizeJsonValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(normalizeJsonValue);
-  }
-
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, nestedValue]) => [key, normalizeJsonValue(nestedValue)])
-    );
-  }
-
-  return value;
+function laterIso(left: string | null, right: string | null): string | null {
+  if (!left) return right;
+  if (!right) return left;
+  return left >= right ? left : right;
 }
 
-function normalizeJsonText(value: string | null): string {
-  if (!value) {
-    return "";
-  }
-
-  try {
-    return JSON.stringify(normalizeJsonValue(JSON.parse(value)));
-  } catch {
-    return value;
-  }
+function statusTimestamp(row: MutableMigrationRow): string {
+  return String(
+    row.status_updated_at ??
+      row.last_error_at ??
+      row.updated_at ??
+      row.last_seen_at ??
+      row.created_at ??
+      ""
+  );
 }
 
-function backfillProtocolBundles(sqlite: Database.Database): void {
-  const endpoints = sqlite.prepare(`
-    SELECT
-      id,
-      provider_id AS providerId,
-      protocol,
-      base_url AS baseUrl,
-      custom_headers_json AS customHeadersJson,
-      enabled,
-      supports_streaming AS supportsStreaming,
-      supports_tools AS supportsTools,
-      supports_json_mode AS supportsJsonMode
-    FROM managed_provider_endpoints
-    WHERE protocol IN ('openai', 'anthropic')
-      AND protocol_bundle_key IS NULL
-  `).all() as Array<{
-    id: number;
-    providerId: number;
-    protocol: string;
-    baseUrl: string;
-    customHeadersJson: string | null;
-    enabled: number;
-    supportsStreaming: number;
-    supportsTools: number;
-    supportsJsonMode: number;
-  }>;
-
-  const byProvider = new Map<number, typeof endpoints>();
-  for (const endpoint of endpoints) {
-    const group = byProvider.get(endpoint.providerId) ?? [];
-    group.push(endpoint);
-    byProvider.set(endpoint.providerId, group);
+function latestStatusRow(
+  left: MutableMigrationRow,
+  right: MutableMigrationRow
+): MutableMigrationRow {
+  const leftStatusUpdatedAt = left.status_updated_at as string | null;
+  const rightStatusUpdatedAt = right.status_updated_at as string | null;
+  if (leftStatusUpdatedAt || rightStatusUpdatedAt) {
+    if (!leftStatusUpdatedAt) return right;
+    if (!rightStatusUpdatedAt) return left;
+    return rightStatusUpdatedAt > leftStatusUpdatedAt ? right : left;
   }
+  return statusTimestamp(right) > statusTimestamp(left) ? right : left;
+}
 
-  const markBundled = sqlite.prepare(`
-    UPDATE managed_provider_endpoints
-    SET protocol_bundle_key = 'all'
-    WHERE id IN (?, ?)
+function latestErrorRow(
+  left: MutableMigrationRow,
+  right: MutableMigrationRow
+): MutableMigrationRow {
+  return String(right.last_error_at ?? "") > String(left.last_error_at ?? "") ? right : left;
+}
+
+function mergeAccountModelRows(
+  sqlite: Database.Database,
+  sourceModelId: number,
+  survivorModelId: number
+): void {
+  const sourceRows = sqlite.prepare(
+    "SELECT * FROM managed_account_models WHERE managed_model_id = ?"
+  ).all(sourceModelId) as MutableMigrationRow[];
+  const findTarget = sqlite.prepare(
+    "SELECT * FROM managed_account_models WHERE account_id = ? AND managed_model_id = ?"
+  );
+  const moveSource = sqlite.prepare(
+    "UPDATE managed_account_models SET managed_model_id = ? WHERE id = ?"
+  );
+  const deleteSource = sqlite.prepare("DELETE FROM managed_account_models WHERE id = ?");
+  const updateTarget = sqlite.prepare(`
+    UPDATE managed_account_models
+    SET enabled = ?,
+        runtime_status = ?,
+        status_reason = ?,
+        status_message = ?,
+        status_source = ?,
+        status_updated_at = ?,
+        status_cooldown_until = ?,
+        rate_limit_strike = ?,
+        cooldown_strike = ?,
+        recent_error_count = ?,
+        last_error_at = ?,
+        last_error_code = ?,
+        last_error_message = ?,
+        discovered_at = ?,
+        last_seen_at = ?
+    WHERE id = ?
   `);
 
-  for (const group of byProvider.values()) {
-    const openai = group.filter((endpoint) => endpoint.protocol === "openai");
-    const anthropic = group.filter((endpoint) => endpoint.protocol === "anthropic");
-    if (openai.length !== 1 || anthropic.length !== 1 || group.length !== 2) {
+  for (const source of sourceRows) {
+    const target = findTarget.get(source.account_id, survivorModelId) as
+      | MutableMigrationRow
+      | undefined;
+    if (!target) {
+      moveSource.run(survivorModelId, source.id);
       continue;
     }
 
-    const left = openai[0];
-    const right = anthropic[0];
-    const sameConfig =
-      normalizeBaseUrl(left.baseUrl) === normalizeBaseUrl(right.baseUrl) &&
-      normalizeJsonText(left.customHeadersJson) === normalizeJsonText(right.customHeadersJson) &&
-      left.enabled === right.enabled &&
-      left.supportsStreaming === right.supportsStreaming &&
-      left.supportsTools === right.supportsTools &&
-      left.supportsJsonMode === right.supportsJsonMode;
-
-    if (sameConfig) {
-      markBundled.run(left.id, right.id);
-    }
+    const status = latestStatusRow(target, source);
+    const error = latestErrorRow(target, source);
+    updateTarget.run(
+      Math.min(Number(target.enabled), Number(source.enabled)),
+      status.runtime_status,
+      status.status_reason,
+      status.status_message,
+      status.status_source,
+      status.status_updated_at,
+      laterIso(
+        target.status_cooldown_until as string | null,
+        source.status_cooldown_until as string | null
+      ),
+      Math.max(Number(target.rate_limit_strike), Number(source.rate_limit_strike)),
+      Math.max(Number(target.cooldown_strike), Number(source.cooldown_strike)),
+      Math.max(Number(target.recent_error_count), Number(source.recent_error_count)),
+      error.last_error_at,
+      error.last_error_code,
+      error.last_error_message,
+      earlierIso(target.discovered_at as string, source.discovered_at as string),
+      laterIso(target.last_seen_at as string, source.last_seen_at as string),
+      target.id
+    );
+    deleteSource.run(source.id);
   }
 }
+
+function mergeAccountEndpointModelRows(
+  sqlite: Database.Database,
+  sourceModelId: number,
+  survivorModelId: number
+): void {
+  const sourceRows = sqlite.prepare(
+    "SELECT * FROM managed_account_endpoint_models WHERE managed_model_id = ?"
+  ).all(sourceModelId) as MutableMigrationRow[];
+  const findTarget = sqlite.prepare(`
+    SELECT *
+    FROM managed_account_endpoint_models
+    WHERE account_id = ? AND endpoint_id = ? AND managed_model_id = ?
+  `);
+  const moveSource = sqlite.prepare(
+    "UPDATE managed_account_endpoint_models SET managed_model_id = ? WHERE id = ?"
+  );
+  const deleteSource = sqlite.prepare(
+    "DELETE FROM managed_account_endpoint_models WHERE id = ?"
+  );
+  const updateTarget = sqlite.prepare(`
+    UPDATE managed_account_endpoint_models
+    SET runtime_status = ?,
+        status_reason = ?,
+        status_message = ?,
+        status_source = ?,
+        status_updated_at = ?,
+        status_cooldown_until = ?,
+        rate_limit_strike = ?,
+        cooldown_strike = ?,
+        recent_error_count = ?,
+        last_success_at = ?,
+        last_error_at = ?,
+        last_error_code = ?,
+        last_error_message = ?,
+        created_at = ?,
+        updated_at = ?
+    WHERE id = ?
+  `);
+
+  for (const source of sourceRows) {
+    const target = findTarget.get(
+      source.account_id,
+      source.endpoint_id,
+      survivorModelId
+    ) as MutableMigrationRow | undefined;
+    if (!target) {
+      moveSource.run(survivorModelId, source.id);
+      continue;
+    }
+
+    const status = latestStatusRow(target, source);
+    const error = latestErrorRow(target, source);
+    updateTarget.run(
+      status.runtime_status,
+      status.status_reason,
+      status.status_message,
+      status.status_source,
+      status.status_updated_at,
+      laterIso(
+        target.status_cooldown_until as string | null,
+        source.status_cooldown_until as string | null
+      ),
+      Math.max(Number(target.rate_limit_strike), Number(source.rate_limit_strike)),
+      Math.max(Number(target.cooldown_strike), Number(source.cooldown_strike)),
+      Math.max(Number(target.recent_error_count), Number(source.recent_error_count)),
+      laterIso(target.last_success_at as string | null, source.last_success_at as string | null),
+      error.last_error_at,
+      error.last_error_code,
+      error.last_error_message,
+      earlierIso(target.created_at as string, source.created_at as string),
+      laterIso(target.updated_at as string, source.updated_at as string),
+      target.id
+    );
+    deleteSource.run(source.id);
+  }
+}
+
+function mergeManagedModelRows(
+  sqlite: Database.Database,
+  sourceModelId: number,
+  survivorModelId: number
+): void {
+  const selectModel = sqlite.prepare("SELECT * FROM managed_models WHERE id = ?");
+  const survivor = selectModel.get(survivorModelId) as MutableMigrationRow;
+  const source = selectModel.get(sourceModelId) as MutableMigrationRow;
+  const newer = String(source.updated_at) > String(survivor.updated_at) ? source : survivor;
+  const status = latestStatusRow(survivor, source);
+  const error = latestErrorRow(survivor, source);
+
+  sqlite.prepare(`
+    UPDATE managed_models
+    SET logical_model_id = ?,
+        model_name = ?,
+        context_window = ?,
+        supports_streaming = ?,
+        supports_tools = ?,
+        supports_json_mode = ?,
+        pricing_json = ?,
+        raw_metadata_json = ?,
+        enabled = ?,
+        runtime_status = ?,
+        status_reason = ?,
+        status_message = ?,
+        status_source = ?,
+        status_updated_at = ?,
+        status_cooldown_until = ?,
+        rate_limit_strike = ?,
+        cooldown_strike = ?,
+        recent_error_count = ?,
+        last_error_at = ?,
+        last_error_code = ?,
+        last_error_message = ?,
+        context_window_override = ?,
+        supports_tools_override = ?,
+        supports_streaming_override = ?,
+        supports_json_mode_override = ?,
+        pricing_json_override = ?,
+        manual_override_json = ?,
+        discovered_at = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).run(
+    survivor.logical_model_id ?? source.logical_model_id,
+    newer.model_name,
+    Math.max(Number(survivor.context_window ?? 0), Number(source.context_window ?? 0)) || null,
+    Math.max(Number(survivor.supports_streaming), Number(source.supports_streaming)),
+    Math.max(Number(survivor.supports_tools), Number(source.supports_tools)),
+    Math.max(Number(survivor.supports_json_mode), Number(source.supports_json_mode)),
+    newer.pricing_json ?? survivor.pricing_json ?? source.pricing_json,
+    newer.raw_metadata_json ?? survivor.raw_metadata_json ?? source.raw_metadata_json,
+    Math.min(Number(survivor.enabled), Number(source.enabled)),
+    status.runtime_status,
+    status.status_reason,
+    status.status_message,
+    status.status_source,
+    status.status_updated_at,
+    laterIso(
+      survivor.status_cooldown_until as string | null,
+      source.status_cooldown_until as string | null
+    ),
+    Math.max(Number(survivor.rate_limit_strike), Number(source.rate_limit_strike)),
+    Math.max(Number(survivor.cooldown_strike), Number(source.cooldown_strike)),
+    Math.max(Number(survivor.recent_error_count), Number(source.recent_error_count)),
+    error.last_error_at,
+    error.last_error_code,
+    error.last_error_message,
+    newer.context_window_override ??
+      survivor.context_window_override ??
+      source.context_window_override,
+    newer.supports_tools_override ??
+      survivor.supports_tools_override ??
+      source.supports_tools_override,
+    newer.supports_streaming_override ??
+      survivor.supports_streaming_override ??
+      source.supports_streaming_override,
+    newer.supports_json_mode_override ??
+      survivor.supports_json_mode_override ??
+      source.supports_json_mode_override,
+    newer.pricing_json_override ??
+      survivor.pricing_json_override ??
+      source.pricing_json_override,
+    newer.manual_override_json ??
+      survivor.manual_override_json ??
+      source.manual_override_json,
+    earlierIso(survivor.discovered_at as string, source.discovered_at as string),
+    laterIso(survivor.updated_at as string, source.updated_at as string),
+    survivorModelId
+  );
+}
+
+function repairSyntheticManagedModels(sqlite: Database.Database): void {
+  const endpointRows = sqlite.prepare(`
+    SELECT provider_id, endpoint_key
+    FROM managed_provider_endpoints
+    WHERE endpoint_key != 'default'
+  `).all() as Array<{ provider_id: number; endpoint_key: string }>;
+  const endpointKeysByProvider = new Map<number, string[]>();
+  for (const endpoint of endpointRows) {
+    endpointKeysByProvider.set(endpoint.provider_id, [
+      ...(endpointKeysByProvider.get(endpoint.provider_id) ?? []),
+      endpoint.endpoint_key
+    ]);
+  }
+
+  const models = sqlite.prepare(`
+    SELECT models.*, providers.provider_key
+    FROM managed_models AS models
+    INNER JOIN managed_providers AS providers ON providers.id = models.provider_id
+  `).all() as Array<MutableMigrationRow & { provider_key: string }>;
+  const normalized = models.map((model) => {
+    const providerId = Number(model.provider_id);
+    const providerModelId = String(model.provider_model_id);
+    const modelKey = String(model.model_key);
+    const providerKey = model.provider_key;
+    const endpointKey = (endpointKeysByProvider.get(providerId) ?? []).find((key) => {
+      const prefix = `${key}:`;
+      const realId = providerModelId.startsWith(prefix)
+        ? providerModelId.slice(prefix.length)
+        : "";
+      return realId.length > 0 && modelKey === `${providerKey}/${key}/${realId}`;
+    });
+
+    return {
+      model,
+      synthetic: Boolean(endpointKey),
+      realProviderModelId: endpointKey
+        ? providerModelId.slice(`${endpointKey}:`.length)
+        : providerModelId,
+      targetModelKey: endpointKey
+        ? `${providerKey}/${providerModelId.slice(`${endpointKey}:`.length)}`
+        : null
+    };
+  });
+
+  const parent = normalized.map((_, index) => index);
+  const findRoot = (index: number): number => {
+    let root = index;
+    while (parent[root] !== root) {
+      root = parent[root];
+    }
+    while (parent[index] !== index) {
+      const next = parent[index];
+      parent[index] = root;
+      index = next;
+    }
+    return root;
+  };
+  const union = (left: number, right: number): void => {
+    const leftRoot = findRoot(left);
+    const rightRoot = findRoot(right);
+    if (leftRoot !== rightRoot) {
+      parent[rightRoot] = leftRoot;
+    }
+  };
+
+  const modelIndexByKey = new Map<string, number>();
+  const identityIndex = new Map<string, number>();
+  normalized.forEach((item, index) => {
+    modelIndexByKey.set(
+      `${item.model.provider_id}|${item.model.model_key}`,
+      index
+    );
+    const identity = `${item.model.provider_id}|${item.realProviderModelId}`;
+    const matchingIdentity = identityIndex.get(identity);
+    if (matchingIdentity === undefined) {
+      identityIndex.set(identity, index);
+    } else {
+      union(index, matchingIdentity);
+    }
+  });
+
+  normalized.forEach((item, index) => {
+    if (!item.targetModelKey) {
+      return;
+    }
+    const targetIndex = modelIndexByKey.get(
+      `${item.model.provider_id}|${item.targetModelKey}`
+    );
+    if (targetIndex !== undefined && targetIndex !== index) {
+      union(index, targetIndex);
+    }
+  });
+
+  const resolveFinalProviderModelId = (startIndex: number): string => {
+    const seen = new Set<number>();
+    let index = startIndex;
+    while (normalized[index].synthetic) {
+      if (seen.has(index)) {
+        throw new Error(
+          `Cyclic synthetic managed model chain at model ${normalized[index].model.id}`
+        );
+      }
+      seen.add(index);
+      const item = normalized[index];
+      if (!item.targetModelKey) {
+        return item.realProviderModelId;
+      }
+      const targetIndex = modelIndexByKey.get(
+        `${item.model.provider_id}|${item.targetModelKey}`
+      );
+      if (targetIndex === undefined || targetIndex === index) {
+        return item.realProviderModelId;
+      }
+      const target = normalized[targetIndex];
+      if (!target.synthetic) {
+        return item.realProviderModelId;
+      }
+      index = targetIndex;
+    }
+    return normalized[index].realProviderModelId;
+  };
+
+  const groups = new Map<number, typeof normalized>();
+  normalized.forEach((item, index) => {
+    const root = findRoot(index);
+    groups.set(root, [...(groups.get(root) ?? []), item]);
+  });
+  const repairGroups = Array.from(groups.values()).filter((group) =>
+    group.some((item) => item.synthetic)
+  ).map((group) => {
+    const finalProviderModelIds = new Set(
+      group
+        .map((item) => normalized.indexOf(item))
+        .filter((index) => normalized[index].synthetic)
+        .map(resolveFinalProviderModelId)
+    );
+    if (finalProviderModelIds.size !== 1) {
+      throw new Error(
+        `Ambiguous synthetic managed model chain: ${Array.from(finalProviderModelIds).join(", ")}`
+      );
+    }
+    return {
+      items: group,
+      finalProviderModelId: Array.from(finalProviderModelIds)[0]
+    };
+  });
+  if (repairGroups.length === 0) {
+    return;
+  }
+
+  backupDatabase(sqlite, "provider-model-prefix");
+  sqlite.transaction(() => {
+    for (const group of repairGroups) {
+      const ordered = group.items.slice().sort((left, right) => {
+        if (left.synthetic !== right.synthetic) {
+          return left.synthetic ? 1 : -1;
+        }
+        return Number(left.model.id) - Number(right.model.id);
+      });
+      const survivor = ordered[0];
+      const survivorId = Number(survivor.model.id);
+
+      for (const source of ordered.slice(1)) {
+        const sourceId = Number(source.model.id);
+        mergeAccountModelRows(sqlite, sourceId, survivorId);
+        mergeAccountEndpointModelRows(sqlite, sourceId, survivorId);
+        mergeManagedModelRows(sqlite, sourceId, survivorId);
+        sqlite.prepare("DELETE FROM managed_models WHERE id = ?").run(sourceId);
+      }
+
+      sqlite.prepare(`
+        UPDATE managed_models
+        SET provider_model_id = ?, model_key = ?, updated_at = ?
+        WHERE id = ?
+      `).run(
+        group.finalProviderModelId,
+        `${survivor.model.provider_key}/${group.finalProviderModelId}`,
+        new Date().toISOString(),
+        survivorId
+      );
+    }
+  })();
+}
+
+
+
+
 
 function metadataRank(source: string | null | undefined): number {
   switch (source) {
@@ -385,6 +802,7 @@ export function runMigrations(sqlite: Database.Database) {
       display_name TEXT NOT NULL,
       base_url TEXT NOT NULL,
       website_url TEXT,
+      model_catalog_url TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       priority INTEGER NOT NULL DEFAULT 0,
       trust_level TEXT NOT NULL DEFAULT 'low',
@@ -408,14 +826,24 @@ export function runMigrations(sqlite: Database.Database) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       provider_id INTEGER NOT NULL,
       endpoint_key TEXT NOT NULL,
-      protocol TEXT NOT NULL DEFAULT 'openai',
+      protocol TEXT NOT NULL DEFAULT 'openai-responses',
       base_url TEXT NOT NULL,
       custom_headers_json TEXT,
-      protocol_bundle_key TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       supports_streaming INTEGER NOT NULL DEFAULT 1,
       supports_tools INTEGER NOT NULL DEFAULT 0,
       supports_json_mode INTEGER NOT NULL DEFAULT 0,
+      runtime_status TEXT NOT NULL DEFAULT 'normal',
+      status_reason TEXT,
+      status_message TEXT,
+      status_source TEXT NOT NULL DEFAULT 'system',
+      status_updated_at TEXT,
+      status_cooldown_until TEXT,
+      cooldown_strike INTEGER NOT NULL DEFAULT 0,
+      recent_error_count INTEGER NOT NULL DEFAULT 0,
+      last_error_at TEXT,
+      last_error_code TEXT,
+      last_error_message TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (provider_id) REFERENCES managed_providers(id) ON DELETE CASCADE,
@@ -446,12 +874,15 @@ export function runMigrations(sqlite: Database.Database) {
     CREATE TABLE IF NOT EXISTS model_sync_runs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       provider_id INTEGER NOT NULL,
+      account_id INTEGER,
+      catalog_url TEXT,
       status TEXT NOT NULL,
       error_message TEXT,
       started_at TEXT NOT NULL,
       finished_at TEXT,
       discovered_count INTEGER NOT NULL DEFAULT 0,
-      FOREIGN KEY (provider_id) REFERENCES managed_providers(id) ON DELETE CASCADE
+      FOREIGN KEY (provider_id) REFERENCES managed_providers(id) ON DELETE CASCADE,
+      FOREIGN KEY (account_id) REFERENCES managed_provider_credentials(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS route_traces (
@@ -507,6 +938,19 @@ export function runMigrations(sqlite: Database.Database) {
 
   if (!hasWebsiteUrl) {
     sqlite.exec("ALTER TABLE managed_providers ADD COLUMN website_url TEXT;");
+  }
+  if (!providerColumns.some((column) => column.name === "model_catalog_url")) {
+    sqlite.exec("ALTER TABLE managed_providers ADD COLUMN model_catalog_url TEXT;");
+  }
+
+  const modelSyncRunColumns = sqlite.pragma("table_info(model_sync_runs)") as Array<{
+    name: string;
+  }>;
+  if (!modelSyncRunColumns.some((column) => column.name === "account_id")) {
+    sqlite.exec("ALTER TABLE model_sync_runs ADD COLUMN account_id INTEGER;");
+  }
+  if (!modelSyncRunColumns.some((column) => column.name === "catalog_url")) {
+    sqlite.exec("ALTER TABLE model_sync_runs ADD COLUMN catalog_url TEXT;");
   }
 
   const modelColumns = sqlite.pragma("table_info(managed_models)") as Array<{
@@ -585,11 +1029,25 @@ export function runMigrations(sqlite: Database.Database) {
     sqlite.exec("ALTER TABLE managed_provider_endpoints ADD COLUMN custom_headers_json TEXT;");
   }
 
-  if (!endpointColumns.some((column) => column.name === "protocol_bundle_key")) {
-    sqlite.exec("ALTER TABLE managed_provider_endpoints ADD COLUMN protocol_bundle_key TEXT;");
+  const endpointRuntimeDefinitions: Array<{ name: string; sql: string }> = [
+    { name: "runtime_status", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN runtime_status TEXT NOT NULL DEFAULT 'normal';" },
+    { name: "status_reason", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN status_reason TEXT;" },
+    { name: "status_message", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN status_message TEXT;" },
+    { name: "status_source", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN status_source TEXT NOT NULL DEFAULT 'system';" },
+    { name: "status_updated_at", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN status_updated_at TEXT;" },
+    { name: "status_cooldown_until", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN status_cooldown_until TEXT;" },
+    { name: "cooldown_strike", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN cooldown_strike INTEGER NOT NULL DEFAULT 0;" },
+    { name: "recent_error_count", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN recent_error_count INTEGER NOT NULL DEFAULT 0;" },
+    { name: "last_error_at", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN last_error_at TEXT;" },
+    { name: "last_error_code", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN last_error_code TEXT;" },
+    { name: "last_error_message", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN last_error_message TEXT;" }
+  ];
+  for (const definition of endpointRuntimeDefinitions) {
+    if (!endpointColumns.some((column) => column.name === definition.name)) {
+      sqlite.exec(definition.sql);
+    }
   }
 
-  backfillProtocolBundles(sqlite);
 
   const duplicateEndpointProtocols = sqlite.prepare(`
     SELECT 1
@@ -741,11 +1199,7 @@ export function runMigrations(sqlite: Database.Database) {
     name: string;
   }>;
   const managedProviderKindDefinitions: Array<{ name: string; sql: string }> = [
-    { name: "provider_kind", sql: "ALTER TABLE managed_providers ADD COLUMN provider_kind TEXT NOT NULL DEFAULT 'custom';" },
-    {
-      name: "model_availability_scope",
-      sql: "ALTER TABLE managed_providers ADD COLUMN model_availability_scope TEXT NOT NULL DEFAULT 'per_account';"
-    }
+    { name: "provider_kind", sql: "ALTER TABLE managed_providers ADD COLUMN provider_kind TEXT NOT NULL DEFAULT 'custom';" }
   ];
   for (const definition of managedProviderKindDefinitions) {
     if (!managedProviderKindColumns.some((column) => column.name === definition.name)) {
@@ -763,7 +1217,6 @@ export function runMigrations(sqlite: Database.Database) {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         provider_id INTEGER NOT NULL,
         account_key TEXT NOT NULL DEFAULT 'default',
-        endpoint_id INTEGER,
         enabled INTEGER NOT NULL DEFAULT 1,
         runtime_status TEXT NOT NULL DEFAULT 'normal',
         status_reason TEXT,
@@ -774,6 +1227,7 @@ export function runMigrations(sqlite: Database.Database) {
         recent_error_count INTEGER NOT NULL DEFAULT 0,
         expires_at TEXT,
         quota_json TEXT,
+        remark TEXT,
         last_error_at TEXT,
         last_error_code TEXT,
         last_error_message TEXT,
@@ -789,7 +1243,6 @@ export function runMigrations(sqlite: Database.Database) {
         id,
         provider_id,
         account_key,
-        endpoint_id,
         enabled,
         runtime_status,
         status_reason,
@@ -807,15 +1260,6 @@ export function runMigrations(sqlite: Database.Database) {
         credentials.id,
         credentials.provider_id,
         'default',
-        (
-          SELECT endpoints.id
-          FROM managed_provider_endpoints AS endpoints
-          WHERE endpoints.provider_id = credentials.provider_id
-          ORDER BY
-            CASE WHEN endpoints.endpoint_key = 'default' THEN 0 ELSE 1 END,
-            endpoints.id ASC
-          LIMIT 1
-        ),
         1,
         CASE
           WHEN providers.runtime_status = 'disabled'
@@ -874,7 +1318,6 @@ export function runMigrations(sqlite: Database.Database) {
     `);
   } else {
     const credentialColumnDefinitions: Array<{ name: string; sql: string }> = [
-      { name: "endpoint_id", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN endpoint_id INTEGER;" },
       { name: "enabled", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;" },
       { name: "runtime_status", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN runtime_status TEXT NOT NULL DEFAULT 'normal';" },
       { name: "status_reason", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN status_reason TEXT;" },
@@ -885,6 +1328,7 @@ export function runMigrations(sqlite: Database.Database) {
       { name: "recent_error_count", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN recent_error_count INTEGER NOT NULL DEFAULT 0;" },
       { name: "expires_at", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN expires_at TEXT;" },
       { name: "quota_json", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN quota_json TEXT;" },
+      { name: "remark", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN remark TEXT;" },
       { name: "last_error_at", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN last_error_at TEXT;" },
       { name: "last_error_code", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN last_error_code TEXT;" },
       { name: "last_error_message", sql: "ALTER TABLE managed_provider_credentials ADD COLUMN last_error_message TEXT;" }
@@ -912,13 +1356,97 @@ export function runMigrations(sqlite: Database.Database) {
     );
   }
 
+  const credentialColumnsAfterCooldown = sqlite.pragma(
+    "table_info(managed_provider_credentials)"
+  ) as Array<{ name: string }>;
+  if (credentialColumnsAfterCooldown.some((column) => column.name === "endpoint_id")) {
+    sqlite.exec(`
+      CREATE TABLE managed_provider_credentials_v3 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider_id INTEGER NOT NULL,
+        account_key TEXT NOT NULL DEFAULT 'default',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        runtime_status TEXT NOT NULL DEFAULT 'normal',
+        status_reason TEXT,
+        status_message TEXT,
+        status_source TEXT NOT NULL DEFAULT 'system',
+        status_updated_at TEXT,
+        status_cooldown_until TEXT,
+        cooldown_strike INTEGER NOT NULL DEFAULT 0,
+        recent_error_count INTEGER NOT NULL DEFAULT 0,
+        expires_at TEXT,
+        quota_json TEXT,
+        remark TEXT,
+        last_error_at TEXT,
+        last_error_code TEXT,
+        last_error_message TEXT,
+        api_key_encrypted TEXT NOT NULL,
+        key_hint TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (provider_id) REFERENCES managed_providers(id) ON DELETE CASCADE,
+        UNIQUE (provider_id, account_key)
+      );
 
-  // Backfill official provider kind/scope from known official endpoint base urls.
+      INSERT INTO managed_provider_credentials_v3 (
+        id,
+        provider_id,
+        account_key,
+        enabled,
+        runtime_status,
+        status_reason,
+        status_message,
+        status_source,
+        status_updated_at,
+        status_cooldown_until,
+        cooldown_strike,
+        recent_error_count,
+        expires_at,
+        quota_json,
+        remark,
+        last_error_at,
+        last_error_code,
+        last_error_message,
+        api_key_encrypted,
+        key_hint,
+        created_at,
+        updated_at
+      )
+      SELECT
+        id,
+        provider_id,
+        account_key,
+        enabled,
+        runtime_status,
+        status_reason,
+        status_message,
+        status_source,
+        status_updated_at,
+        status_cooldown_until,
+        cooldown_strike,
+        recent_error_count,
+        expires_at,
+        quota_json,
+        remark,
+        last_error_at,
+        last_error_code,
+        last_error_message,
+        api_key_encrypted,
+        key_hint,
+        created_at,
+        updated_at
+      FROM managed_provider_credentials;
+
+      DROP TABLE managed_provider_credentials;
+      ALTER TABLE managed_provider_credentials_v3 RENAME TO managed_provider_credentials;
+    `);
+  }
+
+
+  // Backfill official provider kind from known official endpoint base urls.
   sqlite.exec(`
     UPDATE managed_providers
-    SET
-      provider_kind = 'official',
-      model_availability_scope = 'shared_by_provider'
+    SET provider_kind = 'official'
     WHERE id IN (
       SELECT DISTINCT provider_id
       FROM managed_provider_endpoints
@@ -987,7 +1515,72 @@ export function runMigrations(sqlite: Database.Database) {
     }
   }
 
-  // For per_account providers, seed default account model availability from existing models.
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS managed_account_endpoint_models (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id INTEGER NOT NULL,
+      endpoint_id INTEGER NOT NULL,
+      managed_model_id INTEGER NOT NULL,
+      runtime_status TEXT NOT NULL DEFAULT 'normal',
+      status_reason TEXT,
+      status_message TEXT,
+      status_source TEXT NOT NULL DEFAULT 'system',
+      status_updated_at TEXT,
+      status_cooldown_until TEXT,
+      rate_limit_strike INTEGER NOT NULL DEFAULT 0,
+      cooldown_strike INTEGER NOT NULL DEFAULT 0,
+      recent_error_count INTEGER NOT NULL DEFAULT 0,
+      last_success_at TEXT,
+      last_error_at TEXT,
+      last_error_code TEXT,
+      last_error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (account_id) REFERENCES managed_provider_credentials(id) ON DELETE CASCADE,
+      FOREIGN KEY (endpoint_id) REFERENCES managed_provider_endpoints(id) ON DELETE CASCADE,
+      FOREIGN KEY (managed_model_id) REFERENCES managed_models(id) ON DELETE CASCADE,
+      UNIQUE (account_id, endpoint_id, managed_model_id)
+    );
+  `);
+
+  const legacyProviderColumns = sqlite.pragma("table_info(managed_providers)") as Array<{
+    name: string;
+  }>;
+  const hasLegacyModelAvailabilityScope = legacyProviderColumns.some(
+    (column) => column.name === "model_availability_scope"
+  );
+  if (hasLegacyModelAvailabilityScope) {
+    // Preserve legacy shared-by-provider data before model availability becomes account-owned.
+    sqlite.exec(`
+      INSERT OR IGNORE INTO managed_account_models (
+        account_id,
+        managed_model_id,
+        enabled,
+        discovered_at,
+        last_seen_at
+      )
+      SELECT
+        credentials.id,
+        models.id,
+        1,
+        models.discovered_at,
+        models.updated_at
+      FROM managed_provider_credentials AS credentials
+      INNER JOIN managed_providers AS providers
+        ON providers.id = credentials.provider_id
+      INNER JOIN managed_models AS models
+        ON models.provider_id = providers.id
+      WHERE providers.model_availability_scope != 'per_account';
+    `);
+
+    sqlite.exec(`
+      UPDATE managed_providers
+      SET model_availability_scope = 'per_account'
+      WHERE model_availability_scope != 'per_account';
+    `);
+  }
+
+  // Seed default account model availability from existing account-owned models.
   sqlite.exec(`
     INSERT OR IGNORE INTO managed_account_models (
       account_id,
@@ -1007,9 +1600,93 @@ export function runMigrations(sqlite: Database.Database) {
       ON providers.id = credentials.provider_id
     INNER JOIN managed_models AS models
       ON models.provider_id = providers.id
-    WHERE providers.model_availability_scope = 'per_account'
-      AND credentials.account_key = 'default';
+    WHERE credentials.account_key = 'default';
   `);
+
+  // Historical managed-model runtime state was scoped by endpoint_id. Preserve only
+  // actual error/cooldown observations, then clear the provider-wide copy.
+  sqlite.exec(`
+    INSERT OR IGNORE INTO managed_account_endpoint_models (
+      account_id,
+      endpoint_id,
+      managed_model_id,
+      runtime_status,
+      status_reason,
+      status_message,
+      status_source,
+      status_updated_at,
+      status_cooldown_until,
+      rate_limit_strike,
+      cooldown_strike,
+      recent_error_count,
+      last_error_at,
+      last_error_code,
+      last_error_message,
+      created_at,
+      updated_at
+    )
+    SELECT
+      account_models.account_id,
+      models.endpoint_id,
+      models.id,
+      models.runtime_status,
+      models.status_reason,
+      models.status_message,
+      models.status_source,
+      models.status_updated_at,
+      models.status_cooldown_until,
+      models.rate_limit_strike,
+      models.cooldown_strike,
+      models.recent_error_count,
+      models.last_error_at,
+      models.last_error_code,
+      models.last_error_message,
+      COALESCE(
+        models.status_updated_at,
+        models.last_error_at,
+        models.updated_at,
+        models.discovered_at
+      ),
+      COALESCE(
+        models.status_updated_at,
+        models.last_error_at,
+        models.updated_at,
+        models.discovered_at
+      )
+    FROM managed_models AS models
+    INNER JOIN managed_provider_endpoints AS endpoints
+      ON endpoints.id = models.endpoint_id
+    INNER JOIN managed_account_models AS account_models
+      ON account_models.managed_model_id = models.id
+      AND account_models.enabled = 1
+    WHERE models.endpoint_id IS NOT NULL
+      AND (
+        models.runtime_status != 'normal'
+        OR models.status_reason IS NOT NULL
+        OR models.status_message IS NOT NULL
+        OR models.status_updated_at IS NOT NULL
+        OR models.status_cooldown_until IS NOT NULL
+        OR models.last_error_at IS NOT NULL
+      );
+
+    UPDATE managed_models
+    SET
+      runtime_status = 'normal',
+      status_reason = NULL,
+      status_message = NULL,
+      status_source = 'system',
+      status_updated_at = NULL,
+      status_cooldown_until = NULL,
+      rate_limit_strike = 0,
+      cooldown_strike = 0,
+      recent_error_count = 0,
+      last_error_at = NULL,
+      last_error_code = NULL,
+      last_error_message = NULL
+    WHERE endpoint_id IS NOT NULL;
+  `);
+
+  repairSyntheticManagedModels(sqlite);
 
   // Backfill logical models from provider model ids and bind all managed rows to canonical logical rows.
   const now = new Date().toISOString();
@@ -1273,4 +1950,46 @@ export function runMigrations(sqlite: Database.Database) {
 
   // 放在最后：上面的 canonical 合并会把各来源 alias 并起来，清理必须在并完之后。
   stripSyntheticAliasPrefixes(sqlite, now);
+
+  const finalModelColumns = sqlite.pragma("table_info(managed_models)") as Array<{
+    name: string;
+  }>;
+  if (finalModelColumns.some((column) => column.name === "endpoint_id")) {
+    backupDatabase(sqlite, "managed-model-endpoint-column");
+    sqlite.exec("ALTER TABLE managed_models DROP COLUMN endpoint_id;");
+  }
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS managed_account_endpoints (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id INTEGER NOT NULL REFERENCES managed_provider_credentials(id) ON DELETE CASCADE,
+      endpoint_id INTEGER NOT NULL REFERENCES managed_provider_endpoints(id) ON DELETE CASCADE,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      runtime_status TEXT NOT NULL DEFAULT 'unknown',
+      status_reason TEXT,
+      status_message TEXT,
+      status_source TEXT NOT NULL DEFAULT 'system',
+      status_updated_at TEXT,
+      status_cooldown_until TEXT,
+      cooldown_strike INTEGER NOT NULL DEFAULT 0,
+      rate_limit_strike INTEGER NOT NULL DEFAULT 0,
+      recent_error_count INTEGER NOT NULL DEFAULT 0,
+      last_success_at TEXT,
+      last_error_at TEXT,
+      last_error_code TEXT,
+      last_error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS managed_account_endpoints_account_endpoint_unique
+      ON managed_account_endpoints(account_id, endpoint_id);
+  `);
+  const traceColumns = sqlite.pragma("table_info(route_traces)") as Array<{ name: string }>;
+  if (!traceColumns.some((column) => column.name === "required_protocol")) {
+    sqlite.exec("ALTER TABLE route_traces ADD COLUMN required_protocol TEXT;");
+  }
+  migrateWireProtocols(sqlite);
+  const finalEndpointColumns = sqlite.pragma("table_info(managed_provider_endpoints)") as Array<{ name: string }>;
+  if (finalEndpointColumns.some((column) => column.name === "protocol_bundle_key")) {
+    sqlite.exec("ALTER TABLE managed_provider_endpoints DROP COLUMN protocol_bundle_key;");
+  }
 }

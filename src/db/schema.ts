@@ -1,4 +1,5 @@
 import { integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import type { WireProtocol } from "../config/schema.js";
 
 export const managedProvidersTable = sqliteTable("managed_providers", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -6,8 +7,8 @@ export const managedProvidersTable = sqliteTable("managed_providers", {
   displayName: text("display_name").notNull(),
   baseUrl: text("base_url").notNull(),
   websiteUrl: text("website_url"),
+  modelCatalogUrl: text("model_catalog_url"),
   providerKind: text("provider_kind").notNull().default("custom"),
-  modelAvailabilityScope: text("model_availability_scope").notNull().default("per_account"),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
   runtimeStatus: text("runtime_status").notNull().default("normal"),
   statusReason: text("status_reason"),
@@ -30,7 +31,6 @@ export const managedProviderCredentialsTable = sqliteTable("managed_provider_cre
   id: integer("id").primaryKey({ autoIncrement: true }),
   providerId: integer("provider_id").notNull(),
   accountKey: text("account_key").notNull().default("default"),
-  endpointId: integer("endpoint_id"),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
   runtimeStatus: text("runtime_status").notNull().default("normal"),
   statusReason: text("status_reason"),
@@ -43,6 +43,7 @@ export const managedProviderCredentialsTable = sqliteTable("managed_provider_cre
   recentErrorCount: integer("recent_error_count").notNull().default(0),
   expiresAt: text("expires_at"),
   quotaJson: text("quota_json"),
+  remark: text("remark"),
   lastErrorAt: text("last_error_at"),
   lastErrorCode: text("last_error_code"),
   lastErrorMessage: text("last_error_message"),
@@ -61,14 +62,24 @@ export const managedProviderEndpointsTable = sqliteTable("managed_provider_endpo
   id: integer("id").primaryKey({ autoIncrement: true }),
   providerId: integer("provider_id").notNull(),
   endpointKey: text("endpoint_key").notNull(),
-  protocol: text("protocol").notNull().default("openai"),
+  protocol: text("protocol").$type<WireProtocol>().notNull().default("openai-responses"),
   baseUrl: text("base_url").notNull(),
   customHeadersJson: text("custom_headers_json"),
-  protocolBundleKey: text("protocol_bundle_key"),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
   supportsStreaming: integer("supports_streaming", { mode: "boolean" }).notNull().default(true),
   supportsTools: integer("supports_tools", { mode: "boolean" }).notNull().default(false),
   supportsJsonMode: integer("supports_json_mode", { mode: "boolean" }).notNull().default(false),
+  runtimeStatus: text("runtime_status").notNull().default("normal"),
+  statusReason: text("status_reason"),
+  statusMessage: text("status_message"),
+  statusSource: text("status_source").notNull().default("system"),
+  statusUpdatedAt: text("status_updated_at"),
+  statusCooldownUntil: text("status_cooldown_until"),
+  cooldownStrike: integer("cooldown_strike").notNull().default(0),
+  recentErrorCount: integer("recent_error_count").notNull().default(0),
+  lastErrorAt: text("last_error_at"),
+  lastErrorCode: text("last_error_code"),
+  lastErrorMessage: text("last_error_message"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull()
 }, (table) => ({
@@ -108,7 +119,6 @@ export const logicalModelsTable = sqliteTable("logical_models", {
 export const managedModelsTable = sqliteTable("managed_models", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   providerId: integer("provider_id").notNull(),
-  endpointId: integer("endpoint_id"),
   logicalModelId: integer("logical_model_id"),
   modelKey: text("model_key").notNull(),
   providerModelId: text("provider_model_id").notNull(),
@@ -178,9 +188,41 @@ export const managedAccountModelsTable = sqliteTable("managed_account_models", {
   )
 }));
 
+export const managedAccountEndpointModelsTable = sqliteTable("managed_account_endpoint_models", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  accountId: integer("account_id").notNull(),
+  endpointId: integer("endpoint_id").notNull(),
+  managedModelId: integer("managed_model_id").notNull(),
+  runtimeStatus: text("runtime_status").notNull().default("normal"),
+  statusReason: text("status_reason"),
+  statusMessage: text("status_message"),
+  statusSource: text("status_source").notNull().default("system"),
+  statusUpdatedAt: text("status_updated_at"),
+  statusCooldownUntil: text("status_cooldown_until"),
+  rateLimitStrike: integer("rate_limit_strike").notNull().default(0),
+  cooldownStrike: integer("cooldown_strike").notNull().default(0),
+  recentErrorCount: integer("recent_error_count").notNull().default(0),
+  lastSuccessAt: text("last_success_at"),
+  lastErrorAt: text("last_error_at"),
+  lastErrorCode: text("last_error_code"),
+  lastErrorMessage: text("last_error_message"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+}, (table) => ({
+  accountEndpointModelUnique: uniqueIndex(
+    "managed_account_endpoint_models_account_endpoint_model_unique"
+  ).on(
+    table.accountId,
+    table.endpointId,
+    table.managedModelId
+  )
+}));
+
 export const modelSyncRunsTable = sqliteTable("model_sync_runs", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   providerId: integer("provider_id").notNull(),
+  accountId: integer("account_id"),
+  catalogUrl: text("catalog_url"),
   status: text("status").notNull(),
   errorMessage: text("error_message"),
   startedAt: text("started_at").notNull(),
@@ -208,6 +250,7 @@ export const routeTracesTable = sqliteTable("route_traces", {
   privacyLevel: text("privacy_level").notNull(),
   contextTokensEst: integer("context_tokens_est").notNull().default(0),
   requestedContextWindow: integer("requested_context_window"),
+  requiredProtocol: text("required_protocol"),
   selectedRouteId: text("selected_route_id"),
   selectedEndpoint: text("selected_endpoint"),
   selectedPlatform: text("selected_platform"),
@@ -241,6 +284,31 @@ export const routeTracesTable = sqliteTable("route_traces", {
   timestampIndex: uniqueIndex("route_traces_timestamp_trace_id_unique").on(table.timestamp, table.traceId)
 }));
 
+export const managedAccountEndpointsTable = sqliteTable("managed_account_endpoints", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  accountId: integer("account_id").notNull().references(() => managedProviderCredentialsTable.id, { onDelete: "cascade" }),
+  endpointId: integer("endpoint_id").notNull().references(() => managedProviderEndpointsTable.id, { onDelete: "cascade" }),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  runtimeStatus: text("runtime_status").notNull().default("unknown"),
+  statusReason: text("status_reason"),
+  statusMessage: text("status_message"),
+  statusSource: text("status_source").notNull().default("system"),
+  statusUpdatedAt: text("status_updated_at"),
+  statusCooldownUntil: text("status_cooldown_until"),
+  cooldownStrike: integer("cooldown_strike").notNull().default(0),
+  rateLimitStrike: integer("rate_limit_strike").notNull().default(0),
+  recentErrorCount: integer("recent_error_count").notNull().default(0),
+  lastSuccessAt: text("last_success_at"),
+  lastErrorAt: text("last_error_at"),
+  lastErrorCode: text("last_error_code"),
+  lastErrorMessage: text("last_error_message"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+}, (table) => ({
+  accountEndpointUnique: uniqueIndex("managed_account_endpoints_account_endpoint_unique")
+    .on(table.accountId, table.endpointId)
+}));
+
 export const schema = {
   managedProvidersTable,
   managedProviderCredentialsTable,
@@ -248,6 +316,8 @@ export const schema = {
   logicalModelsTable,
   managedModelsTable,
   managedAccountModelsTable,
+  managedAccountEndpointModelsTable,
+  managedAccountEndpointsTable,
   modelSyncRunsTable,
   appSettingsTable,
   routeTracesTable
@@ -259,6 +329,8 @@ export type ManagedProviderEndpointRow = typeof managedProviderEndpointsTable.$i
 export type LogicalModelRow = typeof logicalModelsTable.$inferSelect;
 export type ManagedModelRow = typeof managedModelsTable.$inferSelect;
 export type ManagedAccountModelRow = typeof managedAccountModelsTable.$inferSelect;
+export type ManagedAccountEndpointModelRow = typeof managedAccountEndpointModelsTable.$inferSelect;
+export type ManagedAccountEndpointRow = typeof managedAccountEndpointsTable.$inferSelect;
 export type ModelSyncRunRow = typeof modelSyncRunsTable.$inferSelect;
 export type RouteTraceRow = typeof routeTracesTable.$inferSelect;
 

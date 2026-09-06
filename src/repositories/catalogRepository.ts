@@ -26,7 +26,7 @@ function nowIso(): string {
 export interface CatalogModelInstance {
   model: ManagedModelRow;
   provider: ManagedProviderRow;
-  endpoint: ManagedProviderEndpointRow | null;
+  endpoints: ManagedProviderEndpointRow[];
   available_accounts: string[];
   available_account_count: number;
 }
@@ -312,9 +312,12 @@ export class CatalogRepository {
     const providers = new Map(
       this.db.select().from(managedProvidersTable).all().map((provider) => [provider.id, provider])
     );
-    const endpoints = new Map(
-      this.db.select().from(managedProviderEndpointsTable).all().map((endpoint) => [endpoint.id, endpoint])
-    );
+    const endpointsByProvider = new Map<number, ManagedProviderEndpointRow[]>();
+    for (const endpoint of this.db.select().from(managedProviderEndpointsTable).all()) {
+      const list = endpointsByProvider.get(endpoint.providerId) ?? [];
+      list.push(endpoint);
+      endpointsByProvider.set(endpoint.providerId, list);
+    }
     const accountsByProvider = new Map<number, Array<{ id: number; accountKey: string; enabled: boolean }>>();
     for (const account of this.db.select().from(managedProviderCredentialsTable).all()) {
       const list = accountsByProvider.get(account.providerId) ?? [];
@@ -342,22 +345,15 @@ export class CatalogRepository {
       }
 
       const providerAccounts = accountsByProvider.get(provider.id) ?? [];
-      let availableAccounts: string[];
-      if (provider.modelAvailabilityScope === "per_account") {
-        const linked = modelAccountIds.get(model.id) ?? new Set<number>();
-        availableAccounts = providerAccounts
-          .filter((account) => account.enabled && linked.has(account.id))
-          .map((account) => account.accountKey);
-      } else {
-        availableAccounts = providerAccounts
-          .filter((account) => account.enabled)
-          .map((account) => account.accountKey);
-      }
+      const linked = modelAccountIds.get(model.id) ?? new Set<number>();
+      const availableAccounts = providerAccounts
+        .filter((account) => account.enabled && linked.has(account.id))
+        .map((account) => account.accountKey);
 
       return [{
         model,
         provider,
-        endpoint: model.endpointId ? endpoints.get(model.endpointId) ?? null : null,
+        endpoints: endpointsByProvider.get(provider.id) ?? [],
         available_accounts: availableAccounts,
         available_account_count: availableAccounts.length
       }];

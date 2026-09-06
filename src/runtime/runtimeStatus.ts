@@ -1,3 +1,5 @@
+import { PROVIDER_ACCESS_BLOCKED_CODE } from "../utils/providerErrors.js";
+
 /**
  * 运行态状态机：
  * - normal        可调度
@@ -6,7 +8,7 @@
  * - abnormal      永久熔断，仅人工 enable 可恢复
  * - disabled      鉴权 / 账单失败，仅人工 enable 可恢复
  */
-export type RuntimeStatus = "normal" | "disabled" | "rate_limited" | "cooling_down" | "abnormal";
+export type RuntimeStatus = "unknown" | "normal" | "disabled" | "rate_limited" | "cooling_down" | "abnormal";
 
 export interface RuntimeStatusSettings {
   /** model 累计错误达到该值 → 永久 abnormal（account 冷却反复救不回来时的兜底归因） */
@@ -87,6 +89,7 @@ export function normalizeRuntimeStatusSettings(
 
 export function isRuntimeStatusValue(value: unknown): value is RuntimeStatus {
   return (
+    value === "unknown" ||
     value === "normal" ||
     value === "disabled" ||
     value === "rate_limited" ||
@@ -94,7 +97,6 @@ export function isRuntimeStatusValue(value: unknown): value is RuntimeStatus {
     value === "abnormal"
   );
 }
-
 export interface CooldownDecision {
   /** 落库的 strike，最多到 ladder.length + 1 */
   strike: number;
@@ -318,86 +320,4 @@ export function resolveAccountExecutionGate(input: {
     canExecute: true,
     recoveredFromExpiredCooldown: !input.available && recoverableExpired
   };
-}
-
-export type FailureClass =
-  | "auth"
-  | "billing"
-  | "rate_limit"
-  | "model_unavailable"
-  | "upstream_error"
-  | "transient"
-  | "client_error";
-
-/** 从错误对象或 message 里尽力恢复上游状态码 */
-function resolveStatusCode(error: object, message: string): number | undefined {
-  const direct =
-    "statusCode" in error && typeof error.statusCode === "number" ? error.statusCode : undefined;
-  if (direct !== undefined) {
-    return direct;
-  }
-
-  // 适配器在部分分支只把状态码写进 message（"... failed with status 502"）
-  const matched = /status (\d{3})\b/i.exec(message);
-  if (!matched) {
-    return undefined;
-  }
-  const parsed = Number.parseInt(matched[1]!, 10);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-/**
- * 判定顺序刻意让 statusCode 优先于 code：适配器的流式分支对所有非 429 的
- * 4xx/5xx 都抛 code=provider_error（openaiCompatible.ts:160、:275），
- * 只看 code 会把 410 这类确定性下线误判成可重试的 transient。
- * 兜底为 transient —— 没有状态码的未知异常（undici SSE 断流等）本质是上游不稳。
- */
-export function classifyProviderFailure(error: unknown): FailureClass {
-  if (!error || typeof error !== "object") {
-    return "transient";
-  }
-
-  const code = "code" in error && typeof error.code === "string" ? error.code : "";
-  const message = error instanceof Error ? error.message : "";
-  const statusCode = resolveStatusCode(error, message);
-
-  if (code === "provider_auth_failed" || statusCode === 401 || statusCode === 403) {
-    return "auth";
-  }
-
-  if (statusCode === 402) {
-    return "billing";
-  }
-
-  if (code === "provider_rate_limited" || statusCode === 429 || /status 429\b/i.test(message)) {
-    return "rate_limit";
-  }
-
-  if (code === "provider_invalid_model" || statusCode === 404 || statusCode === 410) {
-    return "model_unavailable";
-  }
-
-  if (code === "provider_unreachable") {
-    return "transient";
-  }
-
-  if (
-    code === "provider_timeout" ||
-    code === "provider_server_error" ||
-    statusCode === 408 ||
-    (statusCode !== undefined && statusCode >= 500)
-  ) {
-    return "upstream_error";
-  }
-
-  if (statusCode !== undefined && statusCode >= 400) {
-    return "client_error";
-  }
-
-  return "transient";
-}
-
-/** 该错误类别是否应当惩罚上游（client_error 只留痕，不影响调度） */
-export function shouldPenalizeProvider(failureClass: FailureClass): boolean {
-  return failureClass !== "client_error";
 }

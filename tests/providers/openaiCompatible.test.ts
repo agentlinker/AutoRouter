@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MockAgent, setGlobalDispatcher } from "undici";
 
-import { OpenAiCompatibleAdapter } from "../../src/providers/openaiCompatible.js";
+import { OpenAiChatCompletionsAdapter, OpenAiResponsesAdapter } from "../../src/providers/openaiCompatible.js";
 import { HttpError } from "../../src/utils/httpErrors.js";
 
 function createRouteTarget(
@@ -12,7 +12,7 @@ function createRouteTarget(
   return {
     platform: {
       id: "openai",
-      protocol: "openai"
+      protocol: "openai-chat-completions"
     },
     provider: {
       id: "demo",
@@ -59,7 +59,7 @@ function createRouteTarget(
   };
 }
 
-describe("OpenAiCompatibleAdapter", () => {
+describe("OpenAI native adapters", () => {
   it("maps rate limit responses to retryable provider_rate_limited", async () => {
     const mockAgent = new MockAgent();
     mockAgent.disableNetConnect();
@@ -77,7 +77,7 @@ describe("OpenAiCompatibleAdapter", () => {
         }
       });
 
-    const adapter = new OpenAiCompatibleAdapter();
+    const adapter = new OpenAiChatCompletionsAdapter();
 
     await expect(
       adapter.chatCompletion(
@@ -110,13 +110,13 @@ describe("OpenAiCompatibleAdapter", () => {
         path: "/v1/chat/completions",
         method: "POST"
       })
-      .reply(401, {
+      .reply(403, {
         error: {
-          message: "unauthorized"
+          message: "forbidden"
         }
       });
 
-    const adapter = new OpenAiCompatibleAdapter();
+    const adapter = new OpenAiChatCompletionsAdapter();
 
     await expect(
       adapter.chatCompletion(
@@ -133,6 +133,44 @@ describe("OpenAiCompatibleAdapter", () => {
     ).rejects.toMatchObject({
       code: "provider_auth_failed",
       retryable: false
+    });
+
+    await mockAgent.close();
+  });
+
+  it("does not treat HTML 403 responses as API key failures", async () => {
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+
+    mockAgent
+      .get("https://adapter-blocked.example.com")
+      .intercept({
+        path: "/v1/chat/completions",
+        method: "POST"
+      })
+      .reply(403, "<!DOCTYPE html><title>Attention Required!</title>", {
+        headers: { "content-type": "text/html; charset=UTF-8" }
+      });
+
+    const adapter = new OpenAiChatCompletionsAdapter();
+
+    await expect(
+      adapter.chatCompletion(
+        {
+          model: "auto",
+          messages: [{ role: "user", content: "hello" }],
+          stream: false,
+          tools: [],
+          metadata: {},
+          context_tokens_est: 10
+        },
+        createRouteTarget("https://adapter-blocked.example.com/v1")
+      )
+    ).rejects.toMatchObject({
+      statusCode: 403,
+      code: "provider_access_blocked",
+      retryable: true
     });
 
     await mockAgent.close();
@@ -155,7 +193,7 @@ describe("OpenAiCompatibleAdapter", () => {
         }
       });
 
-    const adapter = new OpenAiCompatibleAdapter();
+    const adapter = new OpenAiResponsesAdapter();
     const iterator = adapter.streamResponse!(
       {
         model: "auto",
@@ -168,6 +206,40 @@ describe("OpenAiCompatibleAdapter", () => {
     await expect(iterator[Symbol.asyncIterator]().next()).rejects.toMatchObject({
       code: "provider_auth_failed",
       retryable: false
+    });
+
+    await mockAgent.close();
+  });
+
+  it("does not treat streamed HTML 403 responses as API key failures", async () => {
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+
+    mockAgent
+      .get("https://adapter-stream-blocked.example.com")
+      .intercept({
+        path: "/v1/responses",
+        method: "POST"
+      })
+      .reply(403, "<!DOCTYPE html><title>Attention Required!</title>", {
+        headers: { "content-type": "text/html; charset=UTF-8" }
+      });
+
+    const adapter = new OpenAiResponsesAdapter();
+    const iterator = adapter.streamResponse!(
+      {
+        model: "auto",
+        input: "hello",
+        stream: true
+      },
+      createRouteTarget("https://adapter-stream-blocked.example.com/v1")
+    );
+
+    await expect(iterator[Symbol.asyncIterator]().next()).rejects.toMatchObject({
+      statusCode: 403,
+      code: "provider_access_blocked",
+      retryable: true
     });
 
     await mockAgent.close();
@@ -206,7 +278,7 @@ describe("OpenAiCompatibleAdapter", () => {
         headers: { "content-type": "text/event-stream" }
       });
 
-    const adapter = new OpenAiCompatibleAdapter();
+    const adapter = new OpenAiChatCompletionsAdapter();
     const chunks: string[] = [];
     for await (const chunk of adapter.streamChatCompletion!(
       {
@@ -248,7 +320,7 @@ describe("OpenAiCompatibleAdapter", () => {
         };
       });
 
-    const adapter = new OpenAiCompatibleAdapter();
+    const adapter = new OpenAiChatCompletionsAdapter();
     await adapter.chatCompletion(
       {
         model: "auto",
@@ -288,7 +360,7 @@ describe("OpenAiCompatibleAdapter", () => {
         };
       });
 
-    const adapter = new OpenAiCompatibleAdapter();
+    const adapter = new OpenAiResponsesAdapter();
     await adapter.responseCompletion!(
       {
         model: "auto",
@@ -309,7 +381,7 @@ describe("OpenAiCompatibleAdapter", () => {
   });
 
   it("marks network failures as retryable provider_unreachable", async () => {
-    const adapter = new OpenAiCompatibleAdapter();
+    const adapter = new OpenAiChatCompletionsAdapter();
 
     await expect(
       adapter.chatCompletion(
@@ -347,7 +419,7 @@ describe("OpenAiCompatibleAdapter", () => {
         };
       });
 
-    const adapter = new OpenAiCompatibleAdapter();
+    const adapter = new OpenAiChatCompletionsAdapter();
     await adapter.chatCompletion(
       {
         model: "auto",
@@ -392,7 +464,7 @@ describe("OpenAiCompatibleAdapter", () => {
       .intercept({ path: "/v1/chat/completions", method: "POST" })
       .reply(200, upstreamRaw, { headers: { "content-type": "application/json" } });
 
-    const adapter = new OpenAiCompatibleAdapter();
+    const adapter = new OpenAiChatCompletionsAdapter();
     const response = await adapter.chatCompletion(
       {
         model: "auto",

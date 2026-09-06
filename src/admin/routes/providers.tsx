@@ -5,6 +5,9 @@ import {
   Activity,
   BarChart3,
   BookOpen,
+  CircleAlert,
+  CircleCheck,
+  CircleX,
   Cpu,
   DatabaseZap,
   Edit3,
@@ -16,7 +19,6 @@ import {
   Network,
   Plus,
   RefreshCw,
-  RotateCcw,
   Route,
   ScrollText,
   Settings,
@@ -29,8 +31,11 @@ import { useFieldArray, useForm, type Control } from "react-hook-form";
 import { z } from "zod";
 
 import {
+  clearProviderAccountEndpointModelStatus,
+  clearProviderAccountEndpointStatus,
   createProvider,
   createProviderAccount,
+  createProviderEndpoint,
   deleteProvider,
   deleteProviderAccount,
   getProvider,
@@ -44,14 +49,17 @@ import {
   testProviderModel,
   updateProvider,
   updateProviderAccount,
+  updateProviderAccountEndpoint,
   updateProviderModelCapabilities,
   type CreateProviderPayload,
   type ProviderDetails,
   type ProviderListParams,
+  type ProviderMergeCandidate,
   type ProviderModel,
   type ProviderModelTestResult,
   type ProviderSortBy,
   type ProviderTemplate,
+  type WireProtocol,
   type SortDirection,
   type UpdateProviderPayload
 } from "../api/providers.js";
@@ -60,11 +68,21 @@ import { Sidebar } from "../components/Sidebar.js";
 import { providerKindLabel } from "../providerLabels.js";
 import {
   isManualRecoveryRequired,
-  isRuntimeStatusSchedulable,
   runtimeStatusBadgeClass,
   runtimeStatusDetail,
-  runtimeStatusDisplayLabel
+  runtimeStatusDisplayLabel,
+  runtimeObservationDisplayLabel,
+  runtimeObservationErrorMessage
 } from "../runtimeStatusPresentation.js";
+import {
+  endpointProtocolLabel,
+  isAccountSchedulable,
+  isProviderModelAvailable,
+  modelRouteStatus,
+  modelRouteSummary
+} from "../utils/providerModelRoutes.js";
+import { normalizeProviderModelTestSelection } from "../utils/providerModelTestSelection.js";
+import { providerKeyPattern, suggestProviderKey } from "../../utils/providerKey.js";
 import { readSidebarCollapsed, writeSidebarCollapsed } from "../utils/sidebarCollapse.js";
 
 export const providerTokenStorageKey = "autorouter_admin_token";
@@ -74,39 +92,56 @@ interface ProviderFormData {
   provider_key: string;
   display_name: string;
   endpoints: Array<{
-    endpoint_key?: string;
-    protocol: "openai" | "anthropic" | "all";
+    protocol: WireProtocol;
     base_url: string;
     custom_headers?: Array<{ key: string; value: string }>;
   }>;
+  models: Array<{
+    model_name: string;
+    provider_model_id: string;
+    context_window: string;
+    supports_streaming: boolean;
+    supports_tools: boolean;
+    supports_json_mode: boolean;
+  }>;
   website_url?: string;
+  model_catalog_url?: string;
   api_key?: string;
   provider_kind?: "official" | "relay" | "custom";
-  model_availability_scope?: "shared_by_provider" | "per_account";
   priority: string;
   template_id?: string;
   accounts: Array<{
     account_key: string;
-    endpoint_key: string;
     api_key: string;
     expires_at: string;
     remaining_usd: string;
+    remark: string;
     enabled: boolean;
   }>;
 }
 
 const providerFormSchema = z.object({
-  provider_key: z.string().trim().min(1, "请填写 Provider Key"),
+  provider_key: z.string()
+    .trim()
+    .min(1, "请填写 Provider Key")
+    .regex(providerKeyPattern, "Provider Key 只能包含小写字母、数字和连字符"),
   display_name: z.string().trim().min(1, "请填写 Display Name"),
   endpoints: z.array(z.object({
-    endpoint_key: z.string().optional(),
-    protocol: z.enum(["openai", "anthropic", "all"]),
+    protocol: z.enum(["openai-responses", "openai-chat-completions", "anthropic-messages"]),
     base_url: z.string().trim().url("Base URL 必须是有效网址"),
     custom_headers: z.array(z.object({
       key: z.string(),
       value: z.string()
     })).optional()
   }).strict()).min(1, "至少添加一个 Endpoint"),
+  models: z.array(z.object({
+    model_name: z.string(),
+    provider_model_id: z.string(),
+    context_window: z.string(),
+    supports_streaming: z.boolean(),
+    supports_tools: z.boolean(),
+    supports_json_mode: z.boolean()
+  })),
   website_url: z
     .string()
     .trim()
@@ -114,84 +149,67 @@ const providerFormSchema = z.object({
     .refine((value) => !value || z.string().url().safeParse(value).success, {
       message: "官网地址必须是有效网址"
     }),
+  model_catalog_url: z
+    .string()
+    .trim()
+    .optional()
+    .refine((value) => !value || z.string().url().safeParse(value).success, {
+      message: "模型目录 URL 必须是有效网址"
+    }),
   api_key: z.string().optional(),
   provider_kind: z.enum(["official", "relay", "custom"]).optional(),
-  model_availability_scope: z.enum(["shared_by_provider", "per_account"]).optional(),
   priority: z.string().refine((value) => value === "" || /^\d+$/.test(value), {
     message: "优先级必须是非负整数"
   }),
   template_id: z.string().optional(),
   accounts: z.array(z.object({
     account_key: z.string(),
-    endpoint_key: z.string(),
     api_key: z.string(),
     expires_at: z.string(),
     remaining_usd: z.string(),
+    remark: z.string(),
     enabled: z.boolean()
   })).min(1, "至少添加一个 Account")
 }).strict().superRefine((value, ctx) => {
   const seen = new Map<string, number>();
   value.endpoints.forEach((endpoint, index) => {
-    for (const protocol of expandFormEndpointProtocols(endpoint)) {
-      const previous = seen.get(protocol);
-      if (previous !== undefined) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["endpoints", index, "protocol"],
-          message: `${protocolDisplayLabel(protocol)} 协议已配置`
-        });
-      }
-      seen.set(protocol, index);
+    const previous = seen.get(endpoint.protocol);
+    if (previous !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["endpoints", index, "protocol"],
+        message: `${protocolDisplayLabel(endpoint.protocol)} 协议已配置`
+      });
     }
+    seen.set(endpoint.protocol, index);
   });
 });
 
-function protocolDisplayLabel(protocol: "openai" | "anthropic" | "all") {
+function protocolDisplayLabel(protocol: WireProtocol) {
   switch (protocol) {
-    case "all":
-      return "OpenAI + Anthropic";
-    case "anthropic":
-      return "Anthropic";
-    case "openai":
-    default:
-      return "OpenAI";
+    case "openai-responses": return "OpenAI Responses";
+    case "openai-chat-completions": return "OpenAI Chat Completions";
+    case "anthropic-messages": return "Anthropic Messages";
   }
 }
 
-function expandFormEndpointProtocols(endpoint: { protocol: "openai" | "anthropic" | "all" }) {
-  return endpoint.protocol === "all" ? ["openai", "anthropic"] as const : [endpoint.protocol] as const;
+function nextGeneratedAccountKey(accounts: Array<{ account_key?: string }>) {
+  const existing = new Set(accounts.map((account) => account.account_key).filter(Boolean));
+  let index = 1;
+  while (existing.has(`account-${index}`)) {
+    index += 1;
+  }
+  return `account-${index}`;
 }
 
 function providerEndpointsToForm(
   endpoints: ProviderDetails["endpoints"]
 ): ProviderFormData["endpoints"] {
-  const allBundle = endpoints.filter((endpoint) => endpoint.protocol_bundle_key === "all");
-  const allProtocols = new Set(allBundle.map((endpoint) => endpoint.protocol));
-  const hasAllBundle = allProtocols.has("openai") && allProtocols.has("anthropic");
-  const consumed = new Set<string>();
   const result: ProviderFormData["endpoints"] = [];
 
-  if (hasAllBundle) {
-    const representative = allBundle[0]!;
-    for (const endpoint of allBundle) {
-      consumed.add(endpoint.endpoint_key);
-    }
-    result.push({
-      protocol: "all",
-      base_url: representative.base_url,
-      custom_headers: representative.custom_headers
-        ? Object.entries(representative.custom_headers).map(([key, value]) => ({ key, value }))
-        : []
-    });
-  }
-
   for (const endpoint of endpoints) {
-    if (consumed.has(endpoint.endpoint_key)) {
-      continue;
-    }
     result.push({
-      endpoint_key: endpoint.endpoint_key,
-      protocol: endpoint.protocol as "openai" | "anthropic",
+      protocol: endpoint.protocol,
       base_url: endpoint.base_url,
       custom_headers: endpoint.custom_headers
         ? Object.entries(endpoint.custom_headers).map(([key, value]) => ({ key, value }))
@@ -202,53 +220,6 @@ function providerEndpointsToForm(
   return result;
 }
 
-interface ProviderEndpointDisplayRow {
-  key: string;
-  protocolLabel: string;
-  baseUrl: string;
-  customHeaders?: Record<string, string>;
-  enabled: boolean;
-}
-
-function providerEndpointsToDisplayRows(
-  endpoints: ProviderDetails["endpoints"]
-): ProviderEndpointDisplayRow[] {
-  const allBundle = endpoints.filter((endpoint) => endpoint.protocol_bundle_key === "all");
-  const allProtocols = new Set(allBundle.map((endpoint) => endpoint.protocol));
-  const hasAllBundle = allProtocols.has("openai") && allProtocols.has("anthropic");
-  const consumed = new Set<string>();
-  const rows: ProviderEndpointDisplayRow[] = [];
-
-  if (hasAllBundle) {
-    const representative = allBundle[0]!;
-    for (const endpoint of allBundle) {
-      consumed.add(endpoint.endpoint_key);
-    }
-    rows.push({
-      key: "bundle:all",
-      protocolLabel: protocolDisplayLabel("all"),
-      baseUrl: representative.base_url,
-      customHeaders: representative.custom_headers,
-      enabled: allBundle.every((endpoint) => endpoint.enabled)
-    });
-  }
-
-  for (const endpoint of endpoints) {
-    if (consumed.has(endpoint.endpoint_key)) {
-      continue;
-    }
-    rows.push({
-      key: endpoint.endpoint_key,
-      protocolLabel: protocolDisplayLabel(endpoint.protocol as "openai" | "anthropic"),
-      baseUrl: endpoint.base_url,
-      customHeaders: endpoint.custom_headers,
-      enabled: endpoint.enabled
-    });
-  }
-
-  return rows;
-}
-
 function formatCustomHeaders(headers: Record<string, string> | undefined): string {
   if (!headers || Object.keys(headers).length === 0) {
     return "无";
@@ -257,15 +228,6 @@ function formatCustomHeaders(headers: Record<string, string> | undefined): strin
   return Object.entries(headers)
     .map(([key, value]) => `${key}: ${value}`)
     .join("\n");
-}
-
-function providerModelProtocolLabel(provider: ProviderDetails, model: ProviderModel): string {
-  const endpoint = provider.endpoints.find((item) => item.endpoint_key === model.endpoint_key);
-  if (!endpoint) {
-    return model.endpoint_key;
-  }
-
-  return protocolDisplayLabel(endpoint.protocol as "openai" | "anthropic");
 }
 
 function toDatetimeLocal(value: string | null | undefined): string {
@@ -280,41 +242,12 @@ function RequiredMark() {
   return <span className="required-mark">*</span>;
 }
 
-function isAccountSchedulable(account: NonNullable<ProviderDetails["accounts"]>[number]) {
-  if (!account.enabled) {
-    return false;
-  }
-  if (account.expires_at) {
-    const expiresAt = Date.parse(account.expires_at);
-    if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
-      return false;
-    }
-  }
-  if (
-    account.quota &&
-    typeof account.quota.remaining_usd === "number" &&
-    account.quota.remaining_usd <= 0
-  ) {
-    return false;
-  }
-  return isRuntimeStatusSchedulable(account);
-}
-
 function isProviderAvailable(provider: ProviderDetails) {
   const hasSchedulableAccount =
     (provider.available_account_count ??
       provider.accounts?.filter(isAccountSchedulable).length ??
       (provider.key_hint ? 1 : 0)) > 0;
   return provider.enabled && hasSchedulableAccount;
-}
-
-function isProviderModelAvailable(model: {
-  enabled?: boolean;
-  runtime_status?: string | null;
-  status_reason?: string | null;
-  status_cooldown_until?: string | null;
-}) {
-  return model.enabled !== false && isRuntimeStatusSchedulable(model);
 }
 
 function isProviderModelSchedulable(provider: ProviderDetails, model: ProviderModel) {
@@ -830,7 +763,7 @@ export function ProviderEditPage() {
   return (
     <ProviderFormPage
       title="编辑 Provider"
-      help="可直接增删 Endpoint；保存后会重新检查并同步可用模型。"
+      help="可直接增删 Endpoint；模型目录与推理 Endpoint 分开维护。"
       mode="edit"
       token={token}
       provider={provider}
@@ -848,6 +781,11 @@ export function ProviderDetailPage() {
   const { providerKey } = useParams({ from: "/providers/$providerKey" });
   const { provider, isLoading } = useProvider(token, providerKey);
   const queryClient = useQueryClient();
+  const [testSelection, setTestSelection] = useState<{
+    accountKey: string;
+    modelKey: string;
+    endpointKey: string;
+  } | null>(null);
   const mutation = useMutation({
     mutationFn: async (action: "sync" | "toggle" | "delete") => {
       if (!provider) {
@@ -935,7 +873,7 @@ export function ProviderDetailPage() {
       </div>
 
       <div className="panel detail-card">
-        <h3>连接信息</h3>
+        <h3>基础信息</h3>
         <dl>
           <dt>启用</dt>
           <dd>
@@ -948,12 +886,6 @@ export function ProviderDetailPage() {
           </dd>
           <dt>Provider 类型</dt>
           <dd>{providerKindLabel(provider.provider_kind)}</dd>
-          <dt>模型可用性</dt>
-          <dd>
-            {provider.model_availability_scope === "shared_by_provider"
-              ? "按 Provider 共享"
-              : "按 Account 独立"}
-          </dd>
           <dt>Accounts</dt>
           <dd>
             {provider.account_count ?? provider.accounts?.length ?? 1} keys /
@@ -973,29 +905,44 @@ export function ProviderDetailPage() {
               "未填写"
             )}
           </dd>
+          <dt>模型目录</dt>
+          <dd>{provider.model_catalog_url || provider.latest_sync?.catalog_url || "未配置"}</dd>
           <dt>添加时间</dt>
           <dd>{formatDateTime(provider.created_at)}</dd>
           <dt>修改时间</dt>
           <dd>{formatDateTime(provider.updated_at)}</dd>
           <dt>最近同步</dt>
-          <dd>{provider.latest_sync?.status ?? "暂无记录"}</dd>
+          <dd>
+            {provider.latest_sync?.status ?? "暂无记录"}
+            {provider.latest_sync?.account_key ? ` · ${provider.latest_sync.account_key}` : ""}
+            {provider.latest_sync?.error_message ? ` · ${provider.latest_sync.error_message}` : ""}
+          </dd>
         </dl>
         <h3>协议配置</h3>
         <div className="model-capability-table endpoint-table">
           <div className="model-capability-header">
-            <span>协议类型</span>
+            <span>协议</span>
             <span>Base URL</span>
             <span>状态</span>
             <span>自定义 Headers</span>
           </div>
-          {providerEndpointsToDisplayRows(provider.endpoints).map((endpoint) => (
-            <div className="model-capability-row" key={endpoint.key}>
-              <span className="detail-table-text endpoint-protocol-cell">{endpoint.protocolLabel}</span>
+          {provider.endpoints.map((endpoint) => (
+            <div className="model-capability-row" key={endpoint.endpoint_key}>
+              <span className="detail-table-text endpoint-protocol-cell">
+                {protocolDisplayLabel(endpoint.protocol)}
+              </span>
               <div className="model-name-cell">
-                <span className="detail-table-text endpoint-base-url-cell">{endpoint.baseUrl}</span>
+                <span className="detail-table-text endpoint-base-url-cell">{endpoint.base_url}</span>
               </div>
-              <span className="detail-table-text">{endpoint.enabled ? "已启用" : "已停用"}</span>
-              <span className="detail-table-text endpoint-headers-cell">{formatCustomHeaders(endpoint.customHeaders)}</span>
+              <span
+                className={endpoint.enabled ? runtimeStatusBadgeClass(endpoint) : "badge warning"}
+                title={runtimeStatusDetail(endpoint)}
+              >
+                {endpoint.enabled ? runtimeStatusDisplayLabel(endpoint) : "已停用"}
+              </span>
+              <span className="detail-table-text endpoint-headers-cell">
+                {formatCustomHeaders(endpoint.custom_headers)}
+              </span>
             </div>
           ))}
         </div>
@@ -1014,84 +961,122 @@ export function ProviderDetailPage() {
         <div className="model-capability-table provider-model-table provider-detail-model-table">
           <div className="model-capability-header">
             <span>模型</span>
-            <span>协议类型</span>
+            <span title="可调度且可见此模型的账户数 / Provider 账户总数">可用账户</span>
+            <span title="存在成功或失败观测的路由数 / 可见账户与已启用 Endpoint 的组合数">
+              已验证路由
+            </span>
             <span>启用</span>
-            <span>调度状态</span>
+            <span>路由状态</span>
             <span>Streaming</span>
             <span>Tools</span>
             <span>JSON</span>
           </div>
-          {provider.models.map((model) => (
-            <div className="model-capability-row" key={model.model_key}>
-              <div className="model-name-cell">
-                <strong title={model.model_name}>{model.model_name}</strong>
-              </div>
-              <span className="detail-table-text endpoint-protocol-cell">{providerModelProtocolLabel(provider, model)}</span>
-              <div className="detail-table-text provider-model-enabled-cell">
-                <SwitchControl
-                  checked={model.enabled !== false}
+          {provider.models.map((model) => {
+            const summary = modelRouteSummary(provider, model);
+            const routeStatus = modelRouteStatus(provider, model);
+            const RouteStatusIcon =
+              routeStatus.state === "available"
+                ? CircleCheck
+                : routeStatus.state === "partial"
+                  ? CircleAlert
+                  : CircleX;
+            return (
+              <div className="model-capability-row" key={model.model_key}>
+                <div className="model-name-cell">
+                  <strong title={model.model_name}>{model.model_name}</strong>
+                </div>
+                <span className="detail-table-text endpoint-protocol-cell">
+                  {summary.availableAccounts}/{summary.accounts}
+                </span>
+                <span className="detail-table-text endpoint-protocol-cell">
+                  {summary.verified}/{summary.combinations}
+                </span>
+                <div className="detail-table-text provider-model-enabled-cell">
+                  <SwitchControl
+                    checked={model.enabled !== false}
+                    disabled={modelMutation.isPending}
+                    label={`${model.model_name} 启用开关`}
+                    onChange={(checked) =>
+                      modelMutation.mutate({
+                        model_key: model.model_key,
+                        enabled: checked
+                      })
+                    }
+                  />
+                </div>
+                <div className="runtime-status-cell">
+                  <span
+                    className={`provider-model-route-status ${routeStatus.state}`}
+                    title={routeStatus.tooltip}
+                    aria-label={routeStatus.tooltip}
+                  >
+                    <RouteStatusIcon size={14} strokeWidth={2.5} aria-hidden="true" />
+                    {routeStatus.state === "available"
+                      ? "可用"
+                      : routeStatus.state === "partial"
+                        ? "部分可用/待验证"
+                        : "不可用"}
+                  </span>
+                </div>
+                <CapabilityToggle
+                  checked={model.supports_streaming}
                   disabled={modelMutation.isPending}
-                  label={`${model.model_name} 启用开关`}
+                  label="Streaming"
                   onChange={(checked) =>
                     modelMutation.mutate({
                       model_key: model.model_key,
-                      enabled: checked
+                      supports_streaming: checked
+                    })
+                  }
+                />
+                <CapabilityToggle
+                  checked={model.supports_tools}
+                  disabled={modelMutation.isPending}
+                  label="Tools"
+                  onChange={(checked) =>
+                    modelMutation.mutate({
+                      model_key: model.model_key,
+                      supports_tools: checked
+                    })
+                  }
+                />
+                <CapabilityToggle
+                  checked={model.supports_json_mode}
+                  disabled={modelMutation.isPending}
+                  label="JSON"
+                  onChange={(checked) =>
+                    modelMutation.mutate({
+                      model_key: model.model_key,
+                      supports_json_mode: checked
                     })
                   }
                 />
               </div>
-              <div className="runtime-status-cell">
-                <span className={runtimeStatusBadgeClass(model)} title={runtimeStatusDetail(model)}>
-                  {runtimeStatusDisplayLabel(model)}
-                </span>
-                {isManualRecoveryRequired(model) ? (
-                  <button
-                    type="button"
-                    className="runtime-recover-action"
-                    disabled={modelMutation.isPending}
-                    onClick={() => modelMutation.mutate({ model_key: model.model_key, enabled: true })}
-                  >
-                    恢复调度
-                  </button>
-                ) : null}
-              </div>
-              <CapabilityToggle
-                checked={model.supports_streaming}
-                disabled={modelMutation.isPending}
-                label="Streaming"
-                onChange={(checked) =>
-                  modelMutation.mutate({
-                    model_key: model.model_key,
-                    supports_streaming: checked
-                  })
-                }
-              />
-              <CapabilityToggle
-                checked={model.supports_tools}
-                disabled={modelMutation.isPending}
-                label="Tools"
-                onChange={(checked) =>
-                  modelMutation.mutate({
-                    model_key: model.model_key,
-                    supports_tools: checked
-                  })
-                }
-              />
-              <CapabilityToggle
-                checked={model.supports_json_mode}
-                disabled={modelMutation.isPending}
-                label="JSON"
-                onChange={(checked) =>
-                  modelMutation.mutate({
-                    model_key: model.model_key,
-                    supports_json_mode: checked
-                  })
-                }
-              />
-            </div>
-          ))}
+            );
+          })}
         </div>
+        <ProviderConnectivityMatrix
+          token={token}
+          provider={provider}
+          onTest={setTestSelection}
+          onChanged={() => {
+            void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
+            void queryClient.invalidateQueries({ queryKey: providerQueryKey(token, providerKey) });
+          }}
+        />
       </div>
+      {testSelection ? (
+        <ProviderModelTestDialog
+          token={token}
+          provider={provider}
+          initialSelection={testSelection}
+          onChanged={() => {
+            void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
+            void queryClient.invalidateQueries({ queryKey: providerQueryKey(token, providerKey) });
+          }}
+          onClose={() => setTestSelection(null)}
+        />
+      ) : null}
     </section>
   );
 }
@@ -1177,17 +1162,23 @@ function ProviderFormPage(props: {
 
   const [templates, setTemplates] = useState<ProviderTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [providerKeyManuallyEdited, setProviderKeyManuallyEdited] = useState(false);
   const [mergeDialog, setMergeDialog] = useState<{
     open: boolean;
-    matches: Array<{
+    candidates: ProviderMergeCandidate[];
+    selectedProviderKey: string | null;
+    keyConflict: {
       provider_key: string;
       display_name: string;
-      endpoint_key: string;
-      protocol: string;
-      base_url: string;
-    }>;
+    } | null;
     pendingValues: ProviderFormData | null;
-  }>({ open: false, matches: [], pendingValues: null });
+  }>({
+    open: false,
+    candidates: [],
+    selectedProviderKey: null,
+    keyConflict: null,
+    pendingValues: null
+  });
 
   const form = useForm<ProviderFormData>({
     resolver: zodResolver(providerFormSchema),
@@ -1196,25 +1187,25 @@ function ProviderFormPage(props: {
       display_name: "",
       endpoints: [
         {
-          endpoint_key: "default",
-          protocol: "openai",
+          protocol: "openai-responses",
           base_url: "",
           custom_headers: []
         }
       ],
+      models: [],
       website_url: "",
+      model_catalog_url: "",
       accounts: [
         {
-          account_key: "default",
-          endpoint_key: "",
+          account_key: "account-1",
           api_key: "",
           expires_at: "",
           remaining_usd: "",
+          remark: "",
           enabled: true
         }
       ],
       provider_kind: "custom",
-      model_availability_scope: "per_account",
       priority: "0",
       template_id: ""
     }
@@ -1231,13 +1222,21 @@ function ProviderFormPage(props: {
     control: form.control,
     name: "accounts"
   });
+  const {
+    fields: modelFields,
+    append: appendModel,
+    remove: removeModel
+  } = useFieldArray({
+    control: form.control,
+    name: "models"
+  });
 
   useEffect(() => {
     const nextEndpoints = props.provider?.endpoints.length
       ? providerEndpointsToForm(props.provider.endpoints)
       : [
           {
-            protocol: "openai" as const,
+            protocol: "openai-responses" as const,
             base_url: "",
             custom_headers: []
           }
@@ -1247,34 +1246,69 @@ function ProviderFormPage(props: {
       provider_key: props.provider?.provider_key ?? "",
       display_name: props.provider?.display_name ?? "",
       endpoints: nextEndpoints,
+      models: [],
       website_url: props.provider?.website_url ?? "",
+      model_catalog_url: props.provider?.model_catalog_url ?? "",
       accounts: props.provider?.accounts?.length
         ? props.provider.accounts.map((account) => ({
             account_key: account.account_key,
-            endpoint_key: account.endpoint_key ?? "",
             api_key: "",
             expires_at: toDatetimeLocal(account.expires_at),
             remaining_usd: account.quota?.remaining_usd?.toString() ?? "",
+            remark: account.remark ?? "",
             enabled: account.enabled
           }))
         : [
             {
-              account_key: "default",
-              endpoint_key: "",
+              account_key: "account-1",
               api_key: "",
               expires_at: "",
               remaining_usd: "",
+              remark: "",
               enabled: true
             }
           ],
       provider_kind: props.provider?.provider_kind ?? "custom",
-      model_availability_scope: props.provider?.model_availability_scope ?? "per_account",
       priority: String(props.provider?.priority ?? 0),
       template_id: ""
     });
     setSelectedTemplateId("");
+    setProviderKeyManuallyEdited(isEditing);
     setMessage(null);
-  }, [form, props.provider]);
+  }, [form, isEditing, props.provider]);
+
+  const watchedDisplayName = form.watch("display_name");
+  const watchedBaseUrl = form.watch("endpoints.0.base_url");
+  useEffect(() => {
+    if (isEditing || providerKeyManuallyEdited || selectedTemplateId) {
+      return;
+    }
+    if (!watchedDisplayName.trim() && !watchedBaseUrl.trim()) {
+      form.setValue("provider_key", "");
+      return;
+    }
+    let cancelled = false;
+    void suggestProviderKey({
+      displayName: watchedDisplayName,
+      baseUrl: watchedBaseUrl
+    }).then((providerKey) => {
+      if (!cancelled) {
+        form.setValue("provider_key", providerKey, {
+          shouldValidate: true
+        });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    form,
+    isEditing,
+    providerKeyManuallyEdited,
+    selectedTemplateId,
+    watchedBaseUrl,
+    watchedDisplayName
+  ]);
 
   useEffect(() => {
     if (isEditing) {
@@ -1304,25 +1338,32 @@ function ProviderFormPage(props: {
       return {
         protocol: endpoint.protocol,
         base_url: endpoint.base_url.trim(),
-        custom_headers: customHeaders,
-        ...(endpoint.endpoint_key?.trim() && endpoint.protocol !== "all"
-          ? { endpoint_key: endpoint.endpoint_key.trim() }
-          : {})
+        custom_headers: customHeaders
       };
     });
     const normalizedAccounts = values.accounts.map((account) => ({
       account_key: account.account_key.trim(),
-      endpoint_key: account.endpoint_key || undefined,
       api_key: account.api_key.trim(),
       expires_at: account.expires_at ? new Date(account.expires_at).toISOString() : null,
       quota: account.remaining_usd
         ? { remaining_usd: Number(account.remaining_usd), source: "manual" as const }
         : undefined,
+      remark: account.remark.trim() || null,
       enabled: account.enabled
     }));
+    const normalizedModels = values.models
+      .filter((model) => model.model_name.trim())
+      .map((model) => ({
+        model_name: model.model_name.trim(),
+        provider_model_id: model.provider_model_id.trim() || undefined,
+        context_window: model.context_window ? Number(model.context_window) : undefined,
+        supports_streaming: model.supports_streaming,
+        supports_tools: model.supports_tools,
+        supports_json_mode: model.supports_json_mode
+      }));
 
     if (!isEditing && normalizedAccounts.some((account) => !account.account_key || !account.api_key)) {
-      throw new Error("请填写每个 Account 的 Account Key 和 API Key");
+      throw new Error("请填写每个 API Key");
     }
 
     const normalized: CreateProviderPayload = {
@@ -1330,12 +1371,13 @@ function ProviderFormPage(props: {
       display_name: values.display_name.trim(),
       endpoints: normalizedEndpoints,
       website_url: values.website_url?.trim() ?? "",
+      model_catalog_url: values.model_catalog_url?.trim() ?? "",
       api_key: normalizedAccounts[0]?.api_key ?? "",
       accounts: normalizedAccounts,
       provider_kind: values.provider_kind,
-      model_availability_scope: values.model_availability_scope,
       priority: values.priority === "" ? 0 : Number(values.priority),
-      template_id: values.template_id || undefined
+      template_id: values.template_id || undefined,
+      models: normalizedModels
     };
 
     if (isEditing && props.provider) {
@@ -1343,22 +1385,20 @@ function ProviderFormPage(props: {
         display_name: normalized.display_name,
         endpoints: normalized.endpoints,
         website_url: normalized.website_url,
+        model_catalog_url: normalized.model_catalog_url,
         provider_kind: normalized.provider_kind,
-        model_availability_scope: normalized.model_availability_scope,
-        priority: normalized.priority
+        priority: normalized.priority,
+        models: normalized.models
       };
       const updated = await updateProvider(props.token, props.provider.provider_key, payload);
       const existingAccounts = new Set((props.provider.accounts ?? []).map((account) => account.account_key));
       for (const account of normalizedAccounts) {
-        if (!account.account_key) {
-          throw new Error("请填写 Account Key");
-        }
         if (existingAccounts.has(account.account_key)) {
           await updateProviderAccount(props.token, props.provider.provider_key, account.account_key, {
-            endpoint_key: account.endpoint_key ?? null,
             api_key: account.api_key || undefined,
             expires_at: account.expires_at,
             quota: account.quota,
+            remark: account.remark,
             enabled: account.enabled
           });
         } else {
@@ -1367,17 +1407,12 @@ function ProviderFormPage(props: {
           }
           await createProviderAccount(props.token, props.provider.provider_key, {
             account_key: account.account_key,
-            endpoint_key: account.endpoint_key,
             api_key: account.api_key,
             expires_at: account.expires_at,
             quota: account.quota,
+            remark: account.remark,
             enabled: account.enabled
           });
-        }
-      }
-      for (const existingAccount of props.provider.accounts ?? []) {
-        if (!normalizedAccounts.some((account) => account.account_key === existingAccount.account_key)) {
-          await deleteProviderAccount(props.token, props.provider.provider_key, existingAccount.account_key);
         }
       }
       for (const existingAccount of props.provider.accounts ?? []) {
@@ -1388,19 +1423,36 @@ function ProviderFormPage(props: {
       return updated;
     }
 
-    if (!options?.skipMergeCheck && normalized.endpoints[0]) {
-      const first = normalized.endpoints[0];
+    if (!options?.skipMergeCheck && normalized.endpoints.length > 0) {
       const merge = await mergeCheckProvider(props.token, {
-        protocol: first.protocol === "all" ? "openai" : first.protocol,
-        base_url: first.base_url
+        provider_key: normalized.provider_key,
+        endpoints: normalized.endpoints.map((endpoint) => ({
+          protocol: endpoint.protocol,
+          base_url: endpoint.base_url
+        }))
       });
-      if (merge.matches.length > 0) {
+      if (merge.candidates.length > 0) {
+        const firstMergeable = merge.candidates.find(
+          (candidate) => candidate.relation !== "conflict"
+        );
         setMergeDialog({
           open: true,
-          matches: merge.matches,
+          candidates: merge.candidates,
+          selectedProviderKey: firstMergeable?.provider_key ?? null,
+          keyConflict: merge.key_conflict,
           pendingValues: values
         });
         return null;
+      }
+      if (merge.key_conflict) {
+        const conflictMessage =
+          `Provider Key 已被 “${merge.key_conflict.display_name}” 使用`;
+        form.setError("provider_key", {
+          type: "manual",
+          message: `${conflictMessage}，当前 Base URL / 协议不同，不能合并`
+        });
+        form.setFocus("provider_key");
+        throw new Error(conflictMessage);
       }
     }
 
@@ -1413,15 +1465,17 @@ function ProviderFormPage(props: {
       if (!result) {
         return;
       }
-      setMessage({
-        text: "Provider 已保存，可用模型已更新",
-        mode: "success"
-      });
+      setMessage(result.latest_sync?.status === "error"
+        ? {
+            text: `Provider 已保存，但模型发现失败：${result.latest_sync.error_message ?? "请检查模型目录 URL"}`,
+            mode: "error"
+          }
+        : { text: "Provider 已保存，可用模型已更新", mode: "success" });
       props.onDone();
     },
     onError: (error) => {
       setMessage({
-        text: error instanceof Error ? error.message : "保存失败���",
+        text: error instanceof Error ? error.message : "保存失败",
         mode: "error"
       });
     }
@@ -1434,11 +1488,19 @@ function ProviderFormPage(props: {
       if (!result) {
         return;
       }
-      setMergeDialog({ open: false, matches: [], pendingValues: null });
-      setMessage({
-        text: "Provider 已保存，可用模型已更新",
-        mode: "success"
+      setMergeDialog({
+        open: false,
+        candidates: [],
+        selectedProviderKey: null,
+        keyConflict: null,
+        pendingValues: null
       });
+      setMessage(result.latest_sync?.status === "error"
+        ? {
+            text: `Provider 已保存，但模型发现失败：${result.latest_sync.error_message ?? "请检查模型目录 URL"}`,
+            mode: "error"
+          }
+        : { text: "Provider 已保存，可用模型已更新", mode: "success" });
       props.onDone();
     },
     onError: (error) => {
@@ -1449,22 +1511,87 @@ function ProviderFormPage(props: {
     }
   });
 
+  const formSyncMutation = useMutation({
+    mutationFn: async () => {
+      if (!props.provider) {
+        throw new Error("Provider 尚未创建");
+      }
+      return syncProvider(props.token, props.provider.provider_key);
+    },
+    onSuccess: (result) => {
+      setMessage(result.latest_sync?.status === "error"
+        ? {
+            text: `模型发现失败：${result.latest_sync.error_message ?? "请检查模型目录 URL"}`,
+            mode: "error"
+          }
+        : { text: "模型已同步", mode: "success" });
+      props.onDone();
+    },
+    onError: (error) => {
+      setMessage({
+        text: error instanceof Error ? error.message : "同步失败",
+        mode: "error"
+      });
+    }
+  });
+
   const mergeAccountMutation = useMutation({
     mutationFn: async () => {
       const values = mergeDialog.pendingValues;
-      const target = mergeDialog.matches[0];
-      if (!values || !target || !values.api_key) {
+      const target = mergeDialog.candidates.find(
+        (candidate) => candidate.provider_key === mergeDialog.selectedProviderKey
+      );
+      const account = values?.accounts[0];
+      if (!values || !target || !account?.api_key) {
         throw new Error("缺少合并所需信息");
       }
+      if (target.relation === "conflict") {
+        throw new Error("Endpoint 配置存在冲突，不能直接合并");
+      }
+
+      for (const missingEndpoint of target.candidate_only_endpoints) {
+        const sourceEndpoint = values.endpoints.find(
+          (endpoint) =>
+            endpoint.protocol === missingEndpoint.protocol
+        );
+        const customHeaders = sourceEndpoint?.custom_headers?.reduce<Record<string, string>>(
+          (result, header) => {
+            const key = header.key.trim();
+            if (key) {
+              result[key] = header.value.trim();
+            }
+            return result;
+          },
+          {}
+        );
+        await createProviderEndpoint(props.token, target.provider_key, {
+          protocol: missingEndpoint.protocol,
+          base_url: missingEndpoint.base_url,
+          custom_headers:
+            customHeaders && Object.keys(customHeaders).length > 0 ? customHeaders : undefined
+        });
+      }
+
       return createProviderAccount(props.token, target.provider_key, {
-        account_key: `key-${Date.now().toString(36)}`,
-        endpoint_key: target.endpoint_key,
-        api_key: values.api_key
+        account_key: `account-${Date.now().toString(36)}`,
+        api_key: account.api_key.trim(),
+        expires_at: account.expires_at ? new Date(account.expires_at).toISOString() : null,
+        quota: account.remaining_usd
+          ? { remaining_usd: Number(account.remaining_usd), source: "manual" as const }
+          : undefined,
+        remark: account.remark.trim() || null,
+        enabled: account.enabled
       });
     },
     onSuccess: () => {
-      setMergeDialog({ open: false, matches: [], pendingValues: null });
-      setMessage({ text: "已合并到已有 Provider 并添加 API Key", mode: "success" });
+      setMergeDialog({
+        open: false,
+        candidates: [],
+        selectedProviderKey: null,
+        keyConflict: null,
+        pendingValues: null
+      });
+      setMessage({ text: "已合并 Endpoint 并添加 API Key", mode: "success" });
       props.onDone();
     },
     onError: (error) => {
@@ -1477,6 +1604,16 @@ function ProviderFormPage(props: {
 
   const errors = form.formState.errors;
   const endpointsError = form.formState.errors.endpoints;
+  const modelsError = form.formState.errors.models;
+  const conflictingCandidates = mergeDialog.candidates.filter(
+    (candidate) => candidate.relation === "conflict"
+  );
+  const mergeableCandidates = mergeDialog.candidates.filter(
+    (candidate) => candidate.relation !== "conflict"
+  );
+  const selectedMergeCandidate = mergeableCandidates.find(
+    (candidate) => candidate.provider_key === mergeDialog.selectedProviderKey
+  );
 
   return (
     <section className="page-panel form-page">
@@ -1506,18 +1643,18 @@ function ProviderFormPage(props: {
                 const template = templates.find((item) => item.template_id === templateId);
                 if (!template) {
                   form.setValue("template_id", "");
+                  setProviderKeyManuallyEdited(false);
                   return;
                 }
                 form.setValue("template_id", template.template_id);
                 form.setValue("provider_key", template.suggested_provider_key);
+                setProviderKeyManuallyEdited(true);
                 form.setValue("display_name", template.display_name);
                 form.setValue("website_url", template.website_url ?? "");
                 form.setValue("provider_kind", template.provider_kind);
-                form.setValue("model_availability_scope", template.model_availability_scope);
                 form.setValue(
                   "endpoints",
                   template.endpoints.map((endpoint) => ({
-                    endpoint_key: endpoint.endpoint_key,
                     protocol: endpoint.protocol,
                     base_url: endpoint.base_url,
                     custom_headers: endpoint.custom_headers
@@ -1540,18 +1677,24 @@ function ProviderFormPage(props: {
 
         <label className="field">
           <span>
-            Provider Key <RequiredMark />
-          </span>
-          <input {...form.register("provider_key")} readOnly={isEditing} placeholder="my-provider" />
-          {errors.provider_key ? <small>{errors.provider_key.message}</small> : null}
-        </label>
-
-        <label className="field">
-          <span>
             Display Name <RequiredMark />
           </span>
           <input {...form.register("display_name")} placeholder="My Provider" />
           {errors.display_name ? <small>{errors.display_name.message}</small> : null}
+        </label>
+
+        <label className="field">
+          <span>
+            Provider Key <RequiredMark />
+          </span>
+          <input
+            {...form.register("provider_key", {
+              onChange: () => setProviderKeyManuallyEdited(true)
+            })}
+            readOnly={isEditing}
+            placeholder="my-provider"
+          />
+          {errors.provider_key ? <small>{errors.provider_key.message}</small> : null}
         </label>
 
         <label className="field">
@@ -1561,19 +1704,20 @@ function ProviderFormPage(props: {
         </label>
 
         <label className="field">
+          <span>模型目录 URL</span>
+          <input
+            {...form.register("model_catalog_url")}
+            placeholder="留空时从推理 Endpoint 推导"
+          />
+          {errors.model_catalog_url ? <small>{errors.model_catalog_url.message}</small> : null}
+        </label>
+
+        <label className="field">
           <span>Provider 类型</span>
           <select {...form.register("provider_kind")}>
             <option value="official">官方 (official)</option>
             <option value="relay">中转站 (relay)</option>
             <option value="custom">自定义 (custom)</option>
-          </select>
-        </label>
-
-        <label className="field">
-          <span>模型可用性范围</span>
-          <select {...form.register("model_availability_scope")}>
-            <option value="shared_by_provider">按 Provider 共享</option>
-            <option value="per_account">按 Account 独立</option>
           </select>
         </label>
 
@@ -1600,7 +1744,7 @@ function ProviderFormPage(props: {
               className="ghost-action small-action"
               onClick={() =>
                 append({
-                  protocol: "openai",
+                  protocol: "openai-responses",
                   base_url: "",
                   custom_headers: []
                 })
@@ -1621,9 +1765,9 @@ function ProviderFormPage(props: {
                   <label className="field">
                     <span>协议类型</span>
                     <select {...form.register(`endpoints.${index}.protocol`)}>
-                      <option value="openai">OpenAI</option>
-                      <option value="anthropic">Anthropic</option>
-                      <option value="all">OpenAI + Anthropic</option>
+                      <option value="openai-responses">OpenAI Responses</option>
+                      <option value="openai-chat-completions">OpenAI Chat Completions</option>
+                      <option value="anthropic-messages">Anthropic Messages</option>
                     </select>
                     {endpointErrors?.protocol ? <small>{endpointErrors.protocol.message}</small> : null}
                   </label>
@@ -1632,7 +1776,7 @@ function ProviderFormPage(props: {
                     <span>Base URL</span>
                     <input
                       {...form.register(`endpoints.${index}.base_url`)}
-                      placeholder={protocol === "anthropic" ? "https://api.anthropic.com/v1" : "https://example.com/v1"}
+                      placeholder={protocol === "anthropic-messages" ? "https://api.anthropic.com/v1" : "https://example.com/v1"}
                     />
                     {endpointErrors?.base_url ? <small>{endpointErrors.base_url.message}</small> : null}
                   </label>
@@ -1658,52 +1802,119 @@ function ProviderFormPage(props: {
           {!Array.isArray(endpointsError) && endpointsError?.message ? <small>{endpointsError.message}</small> : null}
         </div>
 
+        <div className="field model-group">
+          <div className="field-group-header">
+            <span>模型</span>
+            <div className="inline-actions">
+              {isEditing ? (
+                <button
+                  type="button"
+                  className="ghost-action small-action"
+                  disabled={formSyncMutation.isPending}
+                  onClick={() => formSyncMutation.mutate()}
+                >
+                  <RefreshCw size={14} />
+                  {formSyncMutation.isPending ? "同步中..." : "同步模型"}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="ghost-action small-action"
+                onClick={() =>
+                  appendModel({
+                    model_name: "",
+                    provider_model_id: "",
+                    context_window: "",
+                    supports_streaming: true,
+                    supports_tools: false,
+                    supports_json_mode: false
+                  })
+                }
+              >
+                <Plus size={14} />
+                手动添加
+              </button>
+            </div>
+          </div>
+
+          {modelFields.length > 0 ? (
+            <div className="model-editor">
+              {modelFields.map((field, index) => (
+                <div className="model-editor-row" key={field.id}>
+                  <label className="field">
+                    <span>模型名</span>
+                    <input {...form.register(`models.${index}.model_name`)} placeholder="Deepseek-v4-flash" />
+                  </label>
+                  <label className="field">
+                    <span>上游模型 ID</span>
+                    <input {...form.register(`models.${index}.provider_model_id`)} placeholder="默认同模型名" />
+                  </label>
+                  <label className="field">
+                    <span>上下文长度</span>
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      inputMode="numeric"
+                      {...form.register(`models.${index}.context_window`)}
+                      placeholder="可选"
+                    />
+                  </label>
+                  <label className="capability-toggle">
+                    <input type="checkbox" {...form.register(`models.${index}.supports_streaming`)} />
+                    <span>流式</span>
+                  </label>
+                  <label className="capability-toggle">
+                    <input type="checkbox" {...form.register(`models.${index}.supports_tools`)} />
+                    <span>Tools</span>
+                  </label>
+                  <label className="capability-toggle">
+                    <input type="checkbox" {...form.register(`models.${index}.supports_json_mode`)} />
+                    <span>JSON</span>
+                  </label>
+                  <button
+                    type="button"
+                    className="ghost-action small-action"
+                    onClick={() => removeModel(index)}
+                  >
+                    <Trash2 size={14} />
+                    删除
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="muted compact-note">未手动指定模型，保存时仅使用自动同步结果。</p>
+          )}
+          {!Array.isArray(modelsError) && modelsError?.message ? <small>{modelsError.message}</small> : null}
+        </div>
+
         <div className="field account-group">
           <div className="field-group-header">
             <span>
-              Accounts / API Keys <RequiredMark />
+              API Keys <RequiredMark />
             </span>
             <button
               type="button"
               className="ghost-action small-action"
               onClick={() =>
                 appendAccount({
-                  account_key: `key-${accountFields.length + 1}`,
-                  endpoint_key: "",
+                  account_key: nextGeneratedAccountKey(form.getValues("accounts")),
                   api_key: "",
                   expires_at: "",
                   remaining_usd: "",
+                  remark: "",
                   enabled: true
                 })
               }
             >
               <Plus size={14} />
-              添加 Account
+              添加 API Key
             </button>
           </div>
           <div className="account-editor">
             {accountFields.map((field, index) => (
               <div className="account-editor-row" key={field.id}>
-                <label className="field">
-                  <span>Account Key</span>
-                  <input {...form.register(`accounts.${index}.account_key`)} placeholder={`key-${index + 1}`} />
-                </label>
-                <label className="field">
-                  <span>绑定协议</span>
-                  <select {...form.register(`accounts.${index}.endpoint_key`)}>
-                    <option value="">全部协议</option>
-                    {form.watch("endpoints").flatMap((endpoint, endpointIndex) =>
-                      expandFormEndpointProtocols(endpoint).map((protocol) => (
-                        <option
-                          key={`${endpointIndex}-${protocol}`}
-                          value={endpoint.protocol === "all" ? protocol : endpoint.endpoint_key ?? protocol}
-                        >
-                          {protocolDisplayLabel(protocol)}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                </label>
                 <label className="field">
                   <span>API Key {isEditing ? "（留空不修改）" : ""}</span>
                   <input
@@ -1734,6 +1945,10 @@ function ProviderFormPage(props: {
                   <span>剩余额度 USD</span>
                   <input {...form.register(`accounts.${index}.remaining_usd`)} placeholder="可选" />
                 </label>
+                <label className="field">
+                  <span>备注</span>
+                  <input {...form.register(`accounts.${index}.remark`)} placeholder="可选" />
+                </label>
                 <label className="capability-toggle">
                   <input type="checkbox" {...form.register(`accounts.${index}.enabled`)} />
                   <span>启用</span>
@@ -1763,38 +1978,179 @@ function ProviderFormPage(props: {
 
       <AppDialog
         open={mergeDialog.open}
-        tone="info"
-        title="检测到可合并的 Provider"
+        tone={mergeableCandidates.length > 0 ? "info" : "error"}
+        title={mergeableCandidates.length > 0 ? "检测到可合并的 Provider" : "Endpoint 配置冲突"}
         confirmLabel="关闭"
-        onClose={() => setMergeDialog({ open: false, matches: [], pendingValues: null })}
+        onClose={() =>
+          setMergeDialog({
+            open: false,
+            candidates: [],
+            selectedProviderKey: null,
+            keyConflict: null,
+            pendingValues: null
+          })
+        }
       >
-        <p>
-          已有 Provider “{mergeDialog.matches[0]?.display_name}” 使用了相同 base_url / 协议。
-        </p>
-        <p className="muted">
-          {mergeDialog.matches[0]?.endpoint_key}: {mergeDialog.matches[0]?.base_url}
-        </p>
+        {mergeableCandidates.length > 0 ? (
+          <>
+            <p>以下 Provider 的 Endpoint 集合相同，或与当前配置存在包含关系：</p>
+            {mergeableCandidates.map((candidate) => (
+              <div key={candidate.provider_key}>
+                <label className="checkbox-row">
+                  <input
+                    type="radio"
+                    name="merge-provider"
+                    checked={mergeDialog.selectedProviderKey === candidate.provider_key}
+                    onChange={() =>
+                      setMergeDialog((current) => ({
+                        ...current,
+                        selectedProviderKey: candidate.provider_key
+                      }))
+                    }
+                  />
+                  <span>
+                    {candidate.display_name} ({candidate.provider_key})
+                    {candidate.relation === "exact"
+                      ? " · Endpoint 完全一致"
+                      : candidate.relation === "candidate_subset"
+                        ? " · 当前 Endpoint 是已有配置的子集"
+                        : " · 已有 Endpoint 是当前配置的子集"}
+                  </span>
+                </label>
+                {candidate.existing_only_endpoints.map((endpoint) => (
+                  <p key={`existing-${endpoint.protocol}`} className="muted">
+                    合并后沿用已有 {endpoint.protocol}: {endpoint.base_url}
+                  </p>
+                ))}
+                {candidate.candidate_only_endpoints.map((endpoint) => (
+                  <p key={`candidate-${endpoint.protocol}`} className="muted">
+                    合并时新增 {endpoint.protocol}: {endpoint.base_url}
+                  </p>
+                ))}
+              </div>
+            ))}
+          </>
+        ) : null}
+        {conflictingCandidates.map((candidate) => (
+          <div key={candidate.provider_key}>
+            <p className="status error">
+              Provider “{candidate.display_name}” 仅部分 Endpoint 匹配，不能直接合并。
+            </p>
+            {candidate.matching_endpoints.map((endpoint) => (
+              <p key={`match-${endpoint.protocol}`} className="muted">
+                已匹配 {endpoint.protocol}: {endpoint.base_url}
+              </p>
+            ))}
+            {candidate.conflicting_endpoints.map((endpoint) => (
+              <p key={`conflict-${endpoint.protocol}`} className="status error">
+                {endpoint.protocol} 冲突：已有 {endpoint.existing_base_url}；当前{" "}
+                {endpoint.candidate_base_url}
+              </p>
+            ))}
+          </div>
+        ))}
+        {mergeDialog.keyConflict ? (
+          <p className="status error">
+            Provider Key “{mergeDialog.keyConflict.provider_key}” 已被
+            “{mergeDialog.keyConflict.display_name}” 使用；如果不合并，需要先修改 Provider Key。
+          </p>
+        ) : null}
         <div className="form-actions" style={{ marginTop: 12 }}>
-          <button
-            className="primary-action"
-            type="button"
-            disabled={mergeAccountMutation.isPending}
-            onClick={() => mergeAccountMutation.mutate()}
-          >
-            合并并添加 API Key
-          </button>
-          <button
-            className="ghost-action"
-            type="button"
-            disabled={forceCreateMutation.isPending || !mergeDialog.pendingValues}
-            onClick={() => {
-              if (mergeDialog.pendingValues) {
-                forceCreateMutation.mutate(mergeDialog.pendingValues);
-              }
-            }}
-          >
-            仍然新建
-          </button>
+          {selectedMergeCandidate ? (
+            <button
+              className="primary-action"
+              type="button"
+              disabled={mergeAccountMutation.isPending}
+              onClick={() => mergeAccountMutation.mutate()}
+            >
+              合并并添加 API Key
+            </button>
+          ) : null}
+          {conflictingCandidates.length > 0 ? (
+            <button
+              className="ghost-action"
+              type="button"
+              onClick={() => {
+                const conflict = conflictingCandidates[0]?.conflicting_endpoints[0];
+                const endpointIndex = mergeDialog.pendingValues?.endpoints.findIndex(
+                  (endpoint) =>
+                    endpoint.protocol === conflict?.protocol
+                ) ?? 0;
+                setMergeDialog({
+                  open: false,
+                  candidates: [],
+                  selectedProviderKey: null,
+                  keyConflict: null,
+                  pendingValues: null
+                });
+                form.setFocus(`endpoints.${Math.max(endpointIndex, 0)}.base_url`);
+              }}
+            >
+              修改 Endpoint
+            </button>
+          ) : null}
+          {conflictingCandidates.length > 0 ? (
+            <button
+              className="ghost-action"
+              type="button"
+              disabled={forceCreateMutation.isPending || !mergeDialog.pendingValues}
+              onClick={() => {
+                const values = mergeDialog.pendingValues;
+                if (values) {
+                  if (mergeDialog.keyConflict) {
+                    const providerKey = `${values.provider_key}-${Date.now().toString(36)}`;
+                    form.setValue("provider_key", providerKey, { shouldValidate: true });
+                    setProviderKeyManuallyEdited(true);
+                    forceCreateMutation.mutate({ ...values, provider_key: providerKey });
+                  } else {
+                    forceCreateMutation.mutate(values);
+                  }
+                }
+              }}
+            >
+              {mergeDialog.keyConflict
+                ? "使用新的 Provider Key 创建"
+                : "作为独立 Provider 创建"}
+            </button>
+          ) : mergeDialog.keyConflict ? (
+            <button
+              className="ghost-action"
+              type="button"
+              onClick={() => {
+                const conflict = mergeDialog.keyConflict;
+                if (!conflict) {
+                  return;
+                }
+                setMergeDialog({
+                  open: false,
+                  candidates: [],
+                  selectedProviderKey: null,
+                  keyConflict: null,
+                  pendingValues: null
+                });
+                form.setError("provider_key", {
+                  type: "manual",
+                  message: `Provider Key 已被 “${conflict.display_name}” 使用`
+                });
+                form.setFocus("provider_key");
+              }}
+            >
+              修改 Provider Key
+            </button>
+          ) : (
+            <button
+              className="ghost-action"
+              type="button"
+              disabled={forceCreateMutation.isPending || !mergeDialog.pendingValues}
+              onClick={() => {
+                if (mergeDialog.pendingValues) {
+                  forceCreateMutation.mutate(mergeDialog.pendingValues);
+                }
+              }}
+            >
+              仍然新建
+            </button>
+          )}
         </div>
       </AppDialog>
     </section>
@@ -1876,33 +2232,65 @@ function ProviderList(props: {
 function ProviderModelTestDialog(props: {
   token: string;
   provider: ProviderDetails;
+  initialSelection?: {
+    accountKey: string;
+    modelKey: string;
+    endpointKey: string;
+  };
   onChanged: () => void;
   onClose: () => void;
 }) {
   const accounts = props.provider.accounts ?? [];
-  const [accountKey, setAccountKey] = useState(accounts[0]?.account_key ?? "");
+  const [accountKey, setAccountKey] = useState(
+    props.initialSelection?.accountKey ?? accounts[0]?.account_key ?? ""
+  );
   const selectedAccount = accounts.find((account) => account.account_key === accountKey);
-  const models =
-    props.provider.model_availability_scope === "per_account"
-      ? selectedAccount?.models ?? []
-      : props.provider.models;
-  const [modelKey, setModelKey] = useState(models[0]?.model_key ?? "");
+  const models = selectedAccount?.models ?? [];
+  const endpoints = props.provider.endpoints;
+  const defaultEndpointKey =
+    endpoints.find((endpoint) => endpoint.enabled)?.endpoint_key ??
+    endpoints[0]?.endpoint_key ??
+    "";
+  const [modelKey, setModelKey] = useState(
+    props.initialSelection?.modelKey ?? models[0]?.model_key ?? ""
+  );
   const [prompt, setPrompt] = useState("Reply with OK.");
-  const [endpointKey, setEndpointKey] = useState("");
+  const [endpointKey, setEndpointKey] = useState(
+    props.initialSelection?.endpointKey ?? defaultEndpointKey
+  );
   const [temporaryHeaders, setTemporaryHeaders] = useState<Array<{ key: string; value: string }>>([]);
   const [result, setResult] = useState<ProviderModelTestResult | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
+  const [clearedObservationKey, setClearedObservationKey] = useState<string | null>(null);
+  const observationKey = `${accountKey}|${endpointKey}|${modelKey}`;
+  const observation = clearedObservationKey === observationKey
+    ? undefined
+    : (props.provider.account_endpoint_models ?? []).find((item) =>
+        item.account_key === accountKey &&
+        item.endpoint_key === endpointKey &&
+        item.model_key === modelKey
+      );
+  const observationErrorMessage = runtimeObservationErrorMessage(observation);
 
   useEffect(() => {
-    if (!models.some((model) => model.model_key === modelKey)) {
-      setModelKey(models[0]?.model_key ?? "");
+    const nextSelection = normalizeProviderModelTestSelection({
+      modelKey,
+      modelKeys: models.map((model) => model.model_key),
+      endpointKey,
+      endpointKeys: endpoints.map((endpoint) => endpoint.endpoint_key),
+      defaultEndpointKey
+    });
+    if (nextSelection.changed) {
+      setResult(null);
+      setRequestError(null);
     }
-    if (!endpointKey || !props.provider.endpoints.some((endpoint) => endpoint.endpoint_key === endpointKey)) {
-      setEndpointKey(props.provider.endpoints[0]?.endpoint_key ?? "");
+    if (nextSelection.modelKey !== modelKey) {
+      setModelKey(nextSelection.modelKey);
     }
-    setResult(null);
-    setRequestError(null);
-  }, [accountKey, modelKey, models, endpointKey, props.provider.endpoints]);
+    if (nextSelection.endpointKey !== endpointKey) {
+      setEndpointKey(nextSelection.endpointKey);
+    }
+  }, [modelKey, models, endpointKey, endpoints, defaultEndpointKey]);
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -1910,7 +2298,7 @@ function ProviderModelTestDialog(props: {
         account_key: accountKey,
         model_key: modelKey,
         prompt: prompt.trim(),
-        endpoint_key: endpointKey || undefined,
+        endpoint_key: endpointKey,
         temporary_headers: Object.fromEntries(
           temporaryHeaders
             .map((pair) => [pair.key.trim().toLowerCase(), pair.value] as const)
@@ -1927,7 +2315,23 @@ function ProviderModelTestDialog(props: {
       setRequestError(error instanceof Error ? error.message : "测试请求失败");
     }
   });
-
+  const clearMutation = useMutation({
+    mutationFn: () =>
+      clearProviderAccountEndpointModelStatus(props.token, props.provider.provider_key, {
+        account_key: accountKey,
+        endpoint_key: endpointKey,
+        model_key: modelKey
+      }),
+    onSuccess: () => {
+      setClearedObservationKey(observationKey);
+      setResult(null);
+      setRequestError(null);
+      props.onChanged();
+    },
+    onError: (error) => {
+      setRequestError(error instanceof Error ? error.message : "清除状态失败");
+    }
+  });
   return (
     <AppDialog
       open
@@ -1942,7 +2346,11 @@ function ProviderModelTestDialog(props: {
           <select
             value={accountKey}
             disabled={mutation.isPending}
-            onChange={(event) => setAccountKey(event.target.value)}
+            onChange={(event) => {
+              setAccountKey(event.target.value);
+              setResult(null);
+              setRequestError(null);
+            }}
           >
             {accounts.map((account) => (
               <option key={account.account_key} value={account.account_key}>
@@ -1980,13 +2388,35 @@ function ProviderModelTestDialog(props: {
               setRequestError(null);
             }}
           >
-            {props.provider.endpoints.map((endpoint) => (
+            {endpoints.map((endpoint) => (
               <option key={endpoint.endpoint_key} value={endpoint.endpoint_key}>
-                {endpoint.endpoint_key} · {endpoint.protocol} · {endpoint.base_url}
+                {endpointProtocolLabel(endpoint.protocol)} · {endpoint.base_url}
+                {endpoint.enabled ? "" : " · 已停用"}
               </option>
             ))}
           </select>
         </label>
+        <div className="field">
+          <span>当前观测</span>
+          <div className="inline-actions">
+            <strong>
+              {runtimeObservationDisplayLabel(observation)}
+            </strong>
+            {observation &&
+            (observation.runtime_status !== "normal" || observation.last_error_at) ? (
+              <button
+                type="button"
+                className="ghost-action small-action"
+                disabled={clearMutation.isPending}
+                onClick={() => clearMutation.mutate()}
+              >
+                <Trash2 size={14} />
+                清除状态
+              </button>
+            ) : null}
+          </div>
+          {observationErrorMessage ? <small>{observationErrorMessage}</small> : null}
+        </div>
         <div className="field">
           <div className="field-group-header">
             <span>临时 Headers（仅本次测试）</span>
@@ -2035,7 +2465,7 @@ function ProviderModelTestDialog(props: {
         <button
           className="primary-action"
           type="button"
-          disabled={mutation.isPending || !accountKey || !modelKey || !prompt.trim()}
+          disabled={mutation.isPending || !accountKey || !modelKey || !endpointKey || !prompt.trim()}
           onClick={() => mutation.mutate()}
         >
           <FlaskConical size={16} />
@@ -2047,7 +2477,7 @@ function ProviderModelTestDialog(props: {
           <div className={`provider-test-result ${result.success ? "success" : "error"}`}>
             <strong>{result.success ? "模型可用" : "模型不可用"}</strong>
             <span>
-              {result.protocol === "responses" ? "Responses" : "Chat Completions"}
+              {protocolDisplayLabel(result.protocol)}
               {" · "}
               {result.latency_ms} ms
               {result.upstream_status ? ` · HTTP ${result.upstream_status}` : ""}
@@ -2061,6 +2491,169 @@ function ProviderModelTestDialog(props: {
         ) : null}
       </div>
     </AppDialog>
+  );
+}
+
+function ProviderConnectivityMatrix(props: {
+  token: string;
+  provider: ProviderDetails;
+  onTest: (selection: {
+    accountKey: string;
+    modelKey: string;
+    endpointKey: string;
+  }) => void;
+  onChanged: () => void;
+}) {
+  const clearMutation = useMutation({
+    mutationFn: (input: { accountKey: string; modelKey: string; endpointKey: string }) =>
+      clearProviderAccountEndpointModelStatus(props.token, props.provider.provider_key, {
+        account_key: input.accountKey,
+        model_key: input.modelKey,
+        endpoint_key: input.endpointKey
+      }),
+    onSuccess: props.onChanged
+  });
+  const accessMutation = useMutation({
+    mutationFn: (input: { accountKey: string; endpointKey: string; enabled: boolean }) =>
+      updateProviderAccountEndpoint(props.token, props.provider.provider_key,
+        input.accountKey, input.endpointKey, input.enabled),
+    onSuccess: props.onChanged
+  });
+  const clearAccessMutation = useMutation({
+    mutationFn: (input: { accountKey: string; endpointKey: string }) =>
+      clearProviderAccountEndpointStatus(props.token, props.provider.provider_key,
+        input.accountKey, input.endpointKey),
+    onSuccess: props.onChanged
+  });
+  const accounts = props.provider.accounts ?? [];
+  const endpoints = props.provider.endpoints;
+
+  return (
+    <div className="provider-connectivity">
+      <h3>协议连通性</h3>
+      <div
+        className="connectivity-grid"
+        style={{ gridTemplateColumns: `minmax(120px, 1fr) repeat(${endpoints.length}, minmax(180px, 1fr))` }}
+      >
+        <strong>Account</strong>
+        {endpoints.map((endpoint) => (
+          <strong key={endpoint.endpoint_key}>{endpointProtocolLabel(endpoint.protocol)}</strong>
+        ))}
+        {accounts.flatMap((account) => [
+          <span key={`${account.account_key}-access-label`}>{account.account_key}</span>,
+          ...endpoints.map((endpoint) => {
+            const relation = (props.provider.account_endpoints ?? []).find((item) =>
+              item.account_key === account.account_key && item.endpoint_key === endpoint.endpoint_key
+            );
+            const testModel = account.models?.find((model) => model.enabled !== false);
+            const enabled = relation?.enabled ?? true;
+            return (
+              <div className="connectivity-cell" key={`${account.account_key}-${endpoint.endpoint_key}-access`}>
+                <div className="inline-actions">
+                  <SwitchControl
+                    checked={enabled}
+                    disabled={accessMutation.isPending}
+                    label={`${account.account_key} ${endpointProtocolLabel(endpoint.protocol)} 启用开关`}
+                    onChange={(next) => accessMutation.mutate({
+                      accountKey: account.account_key,
+                      endpointKey: endpoint.endpoint_key,
+                      enabled: next
+                    })}
+                  />
+                  <span className={runtimeStatusBadgeClass(relation ?? { runtime_status: "unknown" })}
+                    title={relation ? runtimeStatusDetail(relation) : "未验证（可尝试）"}>
+                    {relation ? runtimeStatusDisplayLabel(relation) : "未验证"}
+                  </span>
+                </div>
+                <div className="inline-actions">
+                  <button type="button" className="ghost-action small-action"
+                    disabled={!testModel || !enabled}
+                    onClick={() => testModel && props.onTest({ accountKey: account.account_key,
+                      modelKey: testModel.model_key, endpointKey: endpoint.endpoint_key })}>
+                    <FlaskConical size={14} /> 测试
+                  </button>
+                  {relation && (relation.runtime_status !== "unknown" || relation.last_error_at || relation.last_success_at) ? (
+                    <button type="button" className="ghost-action small-action"
+                      disabled={clearAccessMutation.isPending}
+                      onClick={() => clearAccessMutation.mutate({ accountKey: account.account_key,
+                        endpointKey: endpoint.endpoint_key })}>
+                      <Trash2 size={14} /> 清除状态
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            );
+          })
+        ])}
+      </div>
+      {props.provider.models.map((model) => (
+        <details key={model.model_key}>
+          <summary>{model.model_name}</summary>
+          <div
+            className="connectivity-grid"
+            style={{ gridTemplateColumns: `minmax(120px, 1fr) repeat(${endpoints.length}, minmax(180px, 1fr))` }}
+          >
+            <strong>Account</strong>
+            {endpoints.map((endpoint) => (
+              <strong key={endpoint.endpoint_key}>{endpoint.protocol}</strong>
+            ))}
+            {accounts.flatMap((account) => {
+              const visible = account.models?.some((item) => item.model_key === model.model_key);
+              return [
+                <span key={`${account.account_key}-label`}>{account.account_key}</span>,
+                ...endpoints.map((endpoint) => {
+                  const observation = (props.provider.account_endpoint_models ?? []).find((item) =>
+                    item.account_key === account.account_key &&
+                    item.endpoint_key === endpoint.endpoint_key &&
+                    item.model_key === model.model_key
+                  );
+                  return (
+                    <div
+                      className="connectivity-cell"
+                      key={`${account.account_key}-${endpoint.endpoint_key}`}
+                    >
+                      <span>{visible ? runtimeObservationDisplayLabel(observation) : "不可见"}</span>
+                      {visible ? (
+                        <div className="inline-actions">
+                          <button
+                            type="button"
+                            className="ghost-action small-action"
+                            onClick={() => props.onTest({
+                              accountKey: account.account_key,
+                              modelKey: model.model_key,
+                              endpointKey: endpoint.endpoint_key
+                            })}
+                          >
+                            <FlaskConical size={14} />
+                            重新测试
+                          </button>
+                          {observation &&
+                          (observation.runtime_status !== "normal" || observation.last_error_at) ? (
+                            <button
+                              type="button"
+                              className="ghost-action small-action"
+                              disabled={clearMutation.isPending}
+                              onClick={() => clearMutation.mutate({
+                                accountKey: account.account_key,
+                                modelKey: model.model_key,
+                                endpointKey: endpoint.endpoint_key
+                              })}
+                            >
+                              <Trash2 size={14} />
+                              清除
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })
+              ];
+            })}
+          </div>
+        </details>
+      ))}
+    </div>
   );
 }
 
@@ -2098,21 +2691,7 @@ function ProviderCard(props: {
     setPriority(String(props.provider.priority ?? 0));
   }, [props.provider.priority]);
   const accounts = props.provider.accounts ?? [];
-  const isPerAccountModels = props.provider.model_availability_scope !== "shared_by_provider";
   const visibleModelLimit = 12;
-  const modelEndpoint = (model: ProviderModel) =>
-    props.provider.endpoints.find((item) => item.endpoint_key === model.endpoint_key);
-  const modelEndpointLabel = (model: ProviderModel) => {
-    return modelEndpoint(model)?.protocol ?? model.endpoint_key;
-  };
-  const modelItemTitle = (model: ProviderModel, modelAvailable: boolean, unavailableReason: string) => {
-    const availability = modelAvailable ? "可用" : unavailableReason || "不可用";
-    const endpoint = modelEndpoint(model);
-    if (!endpoint) {
-      return `${availability}\nEndpoint: ${model.endpoint_key}`;
-    }
-    return `${availability}\nEndpoint: ${endpoint.endpoint_key}\nProtocol: ${endpoint.protocol}\nBase URL: ${endpoint.base_url}`;
-  };
   const renderModelList = (
     models: ProviderModel[],
     account?: NonNullable<ProviderDetails["accounts"]>[number]
@@ -2123,29 +2702,27 @@ function ProviderCard(props: {
       <ul className="model-list">
         {visibleModels.length > 0 ? (
           visibleModels.map((model) => {
-            const modelAvailable = account
-              ? isProviderAvailable(props.provider) &&
-                isAccountSchedulable(account) &&
-                isProviderModelAvailable(model)
-              : isProviderModelSchedulable(props.provider, model);
-            const unavailableReason = account
-              ? !isProviderAvailable(props.provider)
-                ? !props.provider.enabled
-                  ? "Provider 已停用"
-                  : "没有可调度的 API Key"
-                : !isAccountSchedulable(account)
-                  ? runtimeStatusDetail(account) || "Key 不可调度"
-                  : providerModelUnavailableReason(props.provider, model)
-              : providerModelUnavailableReason(props.provider, model);
+            const routeStatus = modelRouteStatus(props.provider, model, account);
+            const RouteStatusIcon =
+              routeStatus.state === "available"
+                ? CircleCheck
+                : routeStatus.state === "partial"
+                  ? CircleAlert
+                  : CircleX;
 
             return (
               <li
                 key={model.model_key}
-                className={modelAvailable ? "available" : "unavailable"}
-                title={modelItemTitle(model, modelAvailable, unavailableReason)}
+                className={routeStatus.state}
               >
                 <span className="model-chip-name">{model.model_name}</span>
-                <span className="model-chip-endpoint">{modelEndpointLabel(model)}</span>
+                <span
+                  className="model-chip-endpoint model-chip-route-status"
+                  title={routeStatus.tooltip}
+                  aria-label={routeStatus.tooltip}
+                >
+                  <RouteStatusIcon size={14} strokeWidth={2.5} aria-hidden="true" />
+                </span>
               </li>
             );
           })
@@ -2323,38 +2900,20 @@ function ProviderCard(props: {
       </div>
 
       <div className="provider-key-models">
-        {isPerAccountModels ? (
-          accounts.length > 0 ? (
-            accounts.map((account) => (
-              <div className="provider-key-model-group" key={account.account_key}>
-                {renderAccountRow(account)}
-                {renderModelList(account.models ?? [], account)}
-              </div>
-            ))
-          ) : (
-            <div className="provider-key-model-group">
-              <div className="provider-key-row">
-                <div className="provider-key-title">
-                  <strong>default</strong>
-                  <code>{props.provider.key_hint ?? "hidden"}</code>
-                </div>
-              </div>
-              {renderModelList(props.provider.models)}
+        {accounts.length > 0 ? (
+          accounts.map((account) => (
+            <div className="provider-key-model-group" key={account.account_key}>
+              {renderAccountRow(account)}
+              {renderModelList(account.models ?? [], account)}
             </div>
-          )
+          ))
         ) : (
           <div className="provider-key-model-group">
-            <div className="provider-key-rows">
-              {accounts.length > 0 ? (
-                accounts.map(renderAccountRow)
-              ) : (
-                <div className="provider-key-row">
-                  <div className="provider-key-title">
-                    <strong>default</strong>
-                    <code>{props.provider.key_hint ?? "hidden"}</code>
-                  </div>
-                </div>
-              )}
+            <div className="provider-key-row">
+              <div className="provider-key-title">
+                <strong>default</strong>
+                <code>{props.provider.key_hint ?? "hidden"}</code>
+              </div>
             </div>
             {renderModelList(props.provider.models)}
           </div>
@@ -2395,8 +2954,13 @@ function ProviderAccountsPanel(props: {
   const syncMutation = useMutation({
     mutationFn: async (accountKey: string) =>
       syncProviderAccount(props.token, props.provider.provider_key, accountKey),
-    onSuccess: () => {
-      setMessage({ text: "Account 模型已同步", mode: "success" });
+    onSuccess: (result) => {
+      setMessage(result.latest_sync?.status === "error"
+        ? {
+            text: `Account 模型发现失败：${result.latest_sync.error_message ?? "请检查模型目录 URL"}`,
+            mode: "error"
+          }
+        : { text: "Account 模型已同步", mode: "success" });
       props.onChanged();
     },
     onError: (error) => {
@@ -2408,23 +2972,22 @@ function ProviderAccountsPanel(props: {
   });
 
   return (
-    <div className="panel detail-card">
-      <h3>Accounts / API Keys</h3>
+    <>
+      <h3>API Keys</h3>
       <div className="model-capability-table provider-model-table provider-accounts-table">
         <div className="model-capability-header">
-          <span>Account</span>
+          <span>API Key</span>
           <span>启用</span>
           <span>调度状态</span>
           <span>过期时间</span>
           <span>额度</span>
+          <span>备注</span>
           <span>操作</span>
         </div>
         {accounts.map((account) => (
           <div className="model-capability-row" key={account.account_key}>
             <div className="model-name-cell">
-              <span className="detail-table-text">{account.account_key}</span>
               <span className="detail-table-text">{account.key_hint ?? "hidden"}</span>
-              <span className="detail-table-text">{account.endpoint_key ?? "全部协议"}</span>
             </div>
             <div className="detail-table-text provider-model-enabled-cell">
               <SwitchControl
@@ -2447,42 +3010,36 @@ function ProviderAccountsPanel(props: {
             </span>
             <span className="detail-table-text">{account.expires_at ? formatDateTime(account.expires_at) : "未设置"}</span>
             <span className="detail-table-text">{formatQuotaSummary(account.quota)}</span>
-            <div className="page-actions">
-              {isManualRecoveryRequired(account) ? (
-                <button
-                  type="button"
-                  className="ghost-action small-action"
-                  disabled={toggleMutation.isPending}
-                  onClick={() => toggleMutation.mutate({ account_key: account.account_key, enabled: true })}
-                >
-                  <RotateCcw size={14} />
-                  恢复调度
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="ghost-action small-action"
-                disabled={syncMutation.isPending}
-                onClick={() => syncMutation.mutate(account.account_key)}
-              >
-                <RefreshCw size={14} />
-                同步模型
-              </button>
-              <button
-                type="button"
-                className="ghost-action small-action"
-                disabled={deleteMutation.isPending || accounts.length <= 1}
-                onClick={() => deleteMutation.mutate(account.account_key)}
-              >
-                <Trash2 size={14} />
-                删除
-              </button>
-            </div>
+            <span className="detail-table-text">{account.remark?.trim() || "未填写"}</span>
+            <select
+              className="account-action-select"
+              aria-label={`${account.account_key} 操作`}
+              disabled={toggleMutation.isPending || syncMutation.isPending || deleteMutation.isPending}
+              defaultValue=""
+              onChange={(event) => {
+                const action = event.currentTarget.value;
+                event.currentTarget.value = "";
+                if (action === "recover") {
+                  toggleMutation.mutate({ account_key: account.account_key, enabled: true });
+                }
+                if (action === "sync") {
+                  syncMutation.mutate(account.account_key);
+                }
+                if (action === "delete") {
+                  deleteMutation.mutate(account.account_key);
+                }
+              }}
+            >
+              <option value="" disabled>选择操作</option>
+              {isManualRecoveryRequired(account) ? <option value="recover">恢复调度</option> : null}
+              <option value="sync">同步模型</option>
+              <option value="delete" disabled={accounts.length <= 1}>删除</option>
+            </select>
           </div>
         ))}
       </div>
       {message ? <p className={`status ${message.mode ?? ""}`}>{message.text}</p> : null}
-    </div>
+    </>
   );
 }
 

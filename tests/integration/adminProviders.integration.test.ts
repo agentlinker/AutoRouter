@@ -8,10 +8,12 @@ import { loadConfig } from "../../src/config/loadConfig.js";
 import { createDatabaseClient } from "../../src/db/client.js";
 import { ProviderModelDiscoveryService } from "../../src/discovery/providerModelDiscovery.js";
 import { AdapterRegistry } from "../../src/providers/registry.js";
+import { AppSettingsRepository } from "../../src/repositories/appSettingsRepository.js";
 import { ManagedProviderRepository } from "../../src/repositories/managedProviderRepository.js";
 import { RouteTraceRepository } from "../../src/repositories/routeTraceRepository.js";
 import { StickySessionStore } from "../../src/routing/stickySession.js";
 import { RuntimeManager } from "../../src/runtime/runtimeManager.js";
+import { RuntimeStatusService } from "../../src/runtime/runtimeStatusService.js";
 import { SecretCipher } from "../../src/security/secretCipher.js";
 import { createServer } from "../../src/server/createServer.js";
 import { TraceStore } from "../../src/trace/traceStore.js";
@@ -104,7 +106,7 @@ describe("admin providers integration", () => {
           {
             endpoint: {
               endpointKey: "default",
-              protocol: "openai",
+              protocol: "openai-responses",
               baseUrl: `https://${provider.providerKey}.example.com/v1`
             },
             models: [
@@ -176,6 +178,503 @@ describe("admin providers integration", () => {
     await server.close();
   });
 
+  it("generates provider keys from display names and rejects conflicts", async () => {
+    const pool = mockAgent.get("https://api.example.com");
+
+    pool
+      .intercept({
+        path: "/v1/models",
+        method: "GET"
+      })
+      .reply(200, {
+        object: "list",
+        data: [
+          {
+            id: "first-model",
+            object: "model",
+            context_window: 64000
+          }
+        ]
+      });
+
+    const config = loadConfig({
+      override: {
+        server: {
+          host: "127.0.0.1",
+          port: 8811,
+          request_timeout_ms: 120000,
+          gateway_token_env: "AUTO_ROUTER_TOKEN",
+          admin_token_env: "AUTO_ROUTER_ADMIN_TOKEN"
+        },
+        database: {
+          path: join(tempDir, "autorouter-generated-key.db")
+        },
+        trace: {
+          directory: join(tempDir, "traces-generated-key"),
+          log_prompts: false
+        },
+        routes: {},
+        providers: {},
+        endpoints: {},
+        accounts: {},
+        models: {},
+        policies: {}
+      }
+    });
+
+    const databaseClient = createDatabaseClient(config.database.path);
+    const repository = new ManagedProviderRepository(databaseClient.db);
+    const routeTraceRepository = new RouteTraceRepository(databaseClient.db);
+    const adapters = new AdapterRegistry();
+    const stickySessions = new StickySessionStore();
+    const traceStore = new TraceStore(routeTraceRepository);
+    const secretCipher = new SecretCipher(process.env.AUTO_ROUTER_MASTER_KEY);
+    const runtimeManager = new RuntimeManager({
+      baseConfig: config,
+      managedProviderRepository: repository,
+      secretCipher,
+      adapters,
+      stickySessions,
+      traceStore,
+      logger: createLogger()
+    });
+    const discoveryService = new ProviderModelDiscoveryService();
+
+    const server = await createServer(runtimeManager, {
+      managedProviderRepository: repository,
+      discoveryService,
+      secretCipher
+    });
+
+    const firstResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        display_name: "小米模型服务",
+        base_url: "https://api.example.com/v1",
+        api_key: "first-secret"
+      }
+    });
+
+    const secondResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        display_name: "小米模型服务",
+        base_url: "https://api.example.com/v1",
+        api_key: "second-secret"
+      }
+    });
+    const existingSubsetCheck = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers/merge-check",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        provider_key: "xiao-mi-mo-xing-fu-wu",
+        endpoints: [
+          {
+            protocol: "openai-responses",
+            base_url: "https://api.example.com"
+          },
+          {
+            protocol: "anthropic-messages",
+            base_url: "https://api.example.com/anthropic"
+          }
+        ]
+      }
+    });
+    const addAnthropicEndpointResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers/xiao-mi-mo-xing-fu-wu/endpoints",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        protocol: "anthropic-messages",
+        base_url: "https://api.example.com/anthropic"
+      }
+    });
+    const exactEndpointCheck = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers/merge-check",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        provider_key: "xiao-mi-mo-xing-fu-wu",
+        endpoints: [
+          {
+            protocol: "openai-responses",
+            base_url: "https://api.example.com"
+          },
+          {
+            protocol: "anthropic-messages",
+            base_url: "https://api.example.com/anthropic"
+          }
+        ]
+      }
+    });
+    const sameEndpointCheck = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers/merge-check",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        provider_key: "xiao-mi-mo-xing-fu-wu",
+        endpoints: [
+          {
+            protocol: "openai-responses",
+            base_url: "https://api.example.com"
+          }
+        ]
+      }
+    });
+    const conflictingEndpointCheck = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers/merge-check",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        provider_key: "xiao-mi-mo-xing-fu-wu",
+        endpoints: [
+          {
+            protocol: "openai-responses",
+            base_url: "https://api.example.com/v1"
+          },
+          {
+            protocol: "anthropic-messages",
+            base_url: "https://other.example.com/anthropic"
+          }
+        ]
+      }
+    });
+    const differentEndpointCheck = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers/merge-check",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        provider_key: "xiao-mi-mo-xing-fu-wu",
+        endpoints: [
+          {
+            protocol: "openai-responses",
+            base_url: "https://other.example.com/v1"
+          }
+        ]
+      }
+    });
+
+    expect(firstResponse.statusCode).toBe(201);
+    expect(firstResponse.json().provider_key).toBe("xiao-mi-mo-xing-fu-wu");
+    expect(secondResponse.statusCode).toBe(409);
+    expect(secondResponse.json().error.code).toBe("provider_key_conflict");
+    expect(existingSubsetCheck.statusCode).toBe(200);
+    expect(existingSubsetCheck.json().candidates).toEqual([
+      expect.objectContaining({
+        provider_key: "xiao-mi-mo-xing-fu-wu",
+        relation: "existing_subset",
+        candidate_only_endpoints: [
+          {
+            protocol: "anthropic-messages",
+            base_url: "https://api.example.com/anthropic"
+          }
+        ]
+      })
+    ]);
+    expect(addAnthropicEndpointResponse.statusCode).toBe(201);
+    expect(exactEndpointCheck.statusCode).toBe(200);
+    expect(exactEndpointCheck.json().candidates).toEqual([
+      expect.objectContaining({
+        provider_key: "xiao-mi-mo-xing-fu-wu",
+        relation: "exact",
+        matching_endpoints: expect.arrayContaining([
+          expect.objectContaining({ protocol: "openai-responses" }),
+          expect.objectContaining({ protocol: "anthropic-messages" })
+        ])
+      })
+    ]);
+    expect(sameEndpointCheck.statusCode).toBe(200);
+    expect(sameEndpointCheck.json().candidates).toEqual([
+      expect.objectContaining({
+        provider_key: "xiao-mi-mo-xing-fu-wu",
+        relation: "candidate_subset",
+        matching_endpoints: [
+          expect.objectContaining({ protocol: "openai-responses" })
+        ],
+        existing_only_endpoints: [
+          expect.objectContaining({ protocol: "anthropic-messages" })
+        ]
+      })
+    ]);
+    expect(sameEndpointCheck.json().key_conflict).toEqual({
+      provider_key: "xiao-mi-mo-xing-fu-wu",
+      display_name: "小米模型服务"
+    });
+    expect(conflictingEndpointCheck.statusCode).toBe(200);
+    expect(conflictingEndpointCheck.json().candidates).toEqual([
+      expect.objectContaining({
+        provider_key: "xiao-mi-mo-xing-fu-wu",
+        relation: "conflict",
+        conflicting_endpoints: [
+          {
+            protocol: "anthropic-messages",
+            candidate_base_url: "https://other.example.com/anthropic",
+            existing_base_url: "https://api.example.com/anthropic"
+          }
+        ]
+      })
+    ]);
+    expect(differentEndpointCheck.statusCode).toBe(200);
+    expect(differentEndpointCheck.json().candidates).toEqual([]);
+    expect(differentEndpointCheck.json().key_conflict).toEqual({
+      provider_key: "xiao-mi-mo-xing-fu-wu",
+      display_name: "小米模型服务"
+    });
+    expect(repository.getProviderDetails("xiao-mi-mo-xing-fu-wu")).not.toBeNull();
+
+    await server.close();
+  });
+
+  it("creates a provider with manual models when discovery is unsupported", async () => {
+    const pool = mockAgent.get("https://manual-models.example.com");
+    pool
+      .intercept({
+        path: "/v1/models",
+        method: "GET"
+      })
+      .reply(400, {
+        error: {
+          message: "missing required parameter: model"
+        }
+      });
+
+    const config = loadConfig({
+      override: {
+        server: {
+          host: "127.0.0.1",
+          port: 8811,
+          request_timeout_ms: 120000,
+          gateway_token_env: "AUTO_ROUTER_TOKEN",
+          admin_token_env: "AUTO_ROUTER_ADMIN_TOKEN"
+        },
+        database: {
+          path: join(tempDir, "autorouter-manual-models.db")
+        },
+        trace: {
+          directory: join(tempDir, "traces-manual-models"),
+          log_prompts: false
+        },
+        routes: {},
+        providers: {},
+        endpoints: {},
+        accounts: {},
+        models: {},
+        policies: {}
+      }
+    });
+
+    const databaseClient = createDatabaseClient(config.database.path);
+    const repository = new ManagedProviderRepository(databaseClient.db);
+    const routeTraceRepository = new RouteTraceRepository(databaseClient.db);
+    const adapters = new AdapterRegistry();
+    const stickySessions = new StickySessionStore();
+    const traceStore = new TraceStore(routeTraceRepository);
+    const secretCipher = new SecretCipher(process.env.AUTO_ROUTER_MASTER_KEY);
+    const runtimeManager = new RuntimeManager({
+      baseConfig: config,
+      managedProviderRepository: repository,
+      secretCipher,
+      adapters,
+      stickySessions,
+      traceStore,
+      logger: createLogger()
+    });
+    const discoveryService = new ProviderModelDiscoveryService();
+
+    const server = await createServer(runtimeManager, {
+      managedProviderRepository: repository,
+      discoveryService,
+      secretCipher
+    });
+
+    const createResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        provider_key: "manual-provider",
+        display_name: "Manual Provider",
+        endpoints: [
+          {
+            protocol: "openai-responses",
+            base_url: "https://manual-models.example.com/v1"
+          }
+        ],
+        api_key: "manual-secret",
+        models: [
+          {
+            model_name: "Deepseek-v4-flash",
+            supports_streaming: true,
+            supports_tools: false,
+            supports_json_mode: false
+          }
+        ]
+      }
+    });
+
+    expect(createResponse.statusCode).toBe(201);
+    expect(createResponse.json().models).toEqual([
+      expect.objectContaining({
+        model_key: "manual-provider/Deepseek-v4-flash",
+        provider_model_id: "Deepseek-v4-flash",
+        model_name: "Deepseek-v4-flash",
+        supports_streaming: true
+      })
+    ]);
+    expect(createResponse.json().accounts[0].models).toHaveLength(1);
+
+    const modelsResponse = await server.inject({
+      method: "GET",
+      url: "/v1/models",
+      headers: {
+        authorization: "Bearer gateway-token"
+      }
+    });
+
+    expect(modelsResponse.statusCode).toBe(200);
+    expect(modelsResponse.json().data.map((item: { id: string }) => item.id)).toContain(
+      "Deepseek-v4-flash"
+    );
+
+    await server.close();
+  });
+
+  it("updates an existing provider with manual models", async () => {
+    const pool = mockAgent.get("https://manual-update.example.com");
+    pool
+      .intercept({
+        path: "/v1/models",
+        method: "GET"
+      })
+      .reply(200, {
+        object: "list",
+        data: [
+          {
+            id: "discovered-model",
+            object: "model"
+          }
+        ]
+      })
+      .times(2);
+
+    const config = loadConfig({
+      override: {
+        server: {
+          host: "127.0.0.1",
+          port: 8811,
+          request_timeout_ms: 120000,
+          gateway_token_env: "AUTO_ROUTER_TOKEN",
+          admin_token_env: "AUTO_ROUTER_ADMIN_TOKEN"
+        },
+        database: {
+          path: join(tempDir, "autorouter-manual-update.db")
+        },
+        trace: {
+          directory: join(tempDir, "traces-manual-update"),
+          log_prompts: false
+        },
+        routes: {},
+        providers: {},
+        endpoints: {},
+        accounts: {},
+        models: {},
+        policies: {}
+      }
+    });
+
+    const databaseClient = createDatabaseClient(config.database.path);
+    const repository = new ManagedProviderRepository(databaseClient.db);
+    const routeTraceRepository = new RouteTraceRepository(databaseClient.db);
+    const adapters = new AdapterRegistry();
+    const stickySessions = new StickySessionStore();
+    const traceStore = new TraceStore(routeTraceRepository);
+    const secretCipher = new SecretCipher(process.env.AUTO_ROUTER_MASTER_KEY);
+    const runtimeManager = new RuntimeManager({
+      baseConfig: config,
+      managedProviderRepository: repository,
+      secretCipher,
+      adapters,
+      stickySessions,
+      traceStore,
+      logger: createLogger()
+    });
+    const discoveryService = new ProviderModelDiscoveryService();
+
+    const server = await createServer(runtimeManager, {
+      managedProviderRepository: repository,
+      discoveryService,
+      secretCipher
+    });
+
+    const createResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        provider_key: "manual-update",
+        display_name: "Manual Update",
+        endpoints: [
+          {
+            protocol: "openai-responses",
+            base_url: "https://manual-update.example.com/v1"
+          }
+        ],
+        api_key: "manual-secret"
+      }
+    });
+    expect(createResponse.statusCode).toBe(201);
+
+    const patchResponse = await server.inject({
+      method: "PATCH",
+      url: "/admin/api/providers/manual-update",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        models: [
+          {
+            model_name: "Deepseek-v4-flash",
+            supports_streaming: true
+          }
+        ]
+      }
+    });
+
+    expect(patchResponse.statusCode).toBe(200);
+    expect(patchResponse.json().models.map((model: { model_key: string }) => model.model_key).sort()).toEqual([
+      "manual-update/Deepseek-v4-flash",
+      "manual-update/discovered-model",
+    ]);
+    expect(patchResponse.json().accounts[0].models).toHaveLength(2);
+
+    await server.close();
+  });
+
   it("creates a managed provider, reloads runtime, and serves bare model requests", async () => {
     const pool = mockAgent.get("https://managed.example.com");
 
@@ -195,7 +694,8 @@ describe("admin providers integration", () => {
             supports_json_mode: true
           }
         ]
-      });
+      })
+      .times(2);
 
     pool
       .intercept({
@@ -234,7 +734,8 @@ describe("admin providers integration", () => {
         object: "response",
         status: "completed",
         output: []
-      });
+      })
+      .times(2);
 
     pool
       .intercept({
@@ -250,7 +751,8 @@ describe("admin providers integration", () => {
             context_window: 128000
           }
         ]
-      });
+      })
+      .times(2);
 
     const config = loadConfig({
       override: {
@@ -281,6 +783,10 @@ describe("admin providers integration", () => {
 
     const databaseClient = createDatabaseClient(config.database.path);
     const repository = new ManagedProviderRepository(databaseClient.db);
+    const runtimeStatusService = new RuntimeStatusService(
+      repository,
+      new AppSettingsRepository(databaseClient.db)
+    );
     const routeTraceRepository = new RouteTraceRepository(databaseClient.db);
     const adapters = new AdapterRegistry();
     const stickySessions = new StickySessionStore();
@@ -300,7 +806,8 @@ describe("admin providers integration", () => {
     const server = await createServer(runtimeManager, {
       managedProviderRepository: repository,
       discoveryService,
-      secretCipher
+      secretCipher,
+      runtimeStatusService
     });
 
     const adminPageResponse = await server.inject({
@@ -329,22 +836,21 @@ describe("admin providers integration", () => {
       payload: {
         provider_key: "managed",
         display_name: "Managed Provider",
-        base_url: "https://managed.example.com/v1",
-        website_url: "https://managed.example.com",
+        base_url: "\n https://managed.example.com/v1\t",
+        website_url: "\u200Bhttps://managed.example.com \n",
         priority: 3,
         api_key: "managed-secret",
         accounts: [
           {
             account_key: "primary",
-            endpoint_key: "default",
             api_key: "managed-secret",
             expires_at: "2030-01-02T03:04:05.000Z",
             quota: { remaining_usd: 12, source: "manual" },
+            remark: "主用 Key",
             enabled: true
           },
           {
             account_key: "backup",
-            endpoint_key: "default",
             api_key: "backup-secret",
             quota: { remaining_usd: 4, source: "manual" },
             enabled: true
@@ -359,23 +865,44 @@ describe("admin providers integration", () => {
       expect.arrayContaining([
         expect.objectContaining({
           account_key: "primary",
-          endpoint_key: "openai",
           expires_at: "2030-01-02T03:04:05.000Z",
-          quota: expect.objectContaining({ remaining_usd: 12 })
+          quota: expect.objectContaining({ remaining_usd: 12 }),
+          remark: "主用 Key"
         }),
         expect.objectContaining({
           account_key: "backup",
-          endpoint_key: "openai",
           quota: expect.objectContaining({ remaining_usd: 4 })
         })
       ])
     );
+    expect(createResponse.json().accounts[0]).not.toHaveProperty("endpoint_key");
     expect(createResponse.json().models).toHaveLength(1);
     expect(createResponse.json().models[0].model_name).toBe("managed-model");
     expect(createResponse.json()).not.toHaveProperty("runtime_status");
     expect(createResponse.json()).not.toHaveProperty("status_reason");
 
-    const testModelResponse = await server.inject({
+    const updateAccountResponse = await server.inject({
+      method: "PATCH",
+      url: "/admin/api/providers/managed/accounts/backup",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        remark: "备用 Key"
+      }
+    });
+
+    expect(updateAccountResponse.statusCode).toBe(200);
+    expect(updateAccountResponse.json().accounts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          account_key: "backup",
+          remark: "备用 Key"
+        })
+      ])
+    );
+
+    const missingEndpointResponse = await server.inject({
       method: "POST",
       url: "/admin/api/providers/managed/test-model",
       headers: {
@@ -387,6 +914,21 @@ describe("admin providers integration", () => {
         prompt: "Return exactly TEST_OK."
       }
     });
+    expect(missingEndpointResponse.statusCode).toBe(400);
+
+    const testModelResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers/managed/test-model",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        account_key: "primary",
+        model_key: createResponse.json().models[0].model_key,
+        endpoint_key: "openai-responses",
+        prompt: "Return exactly TEST_OK."
+      }
+    });
 
     expect(testModelResponse.statusCode).toBe(200);
     expect(testModelResponse.json()).toMatchObject({
@@ -395,12 +937,44 @@ describe("admin providers integration", () => {
       account_key: "primary",
       model_name: "managed-model",
       prompt: "Return exactly TEST_OK.",
-      protocol: "responses",
+      protocol: "openai-responses",
       upstream_status: 200,
       error_code: null,
       error_message: null
     });
     expect(testModelResponse.json().latency_ms).toBeGreaterThanOrEqual(0);
+
+    const testedProviderResponse = await server.inject({
+      method: "GET",
+      url: "/admin/api/providers/managed",
+      headers: {
+        authorization: "Bearer admin-token"
+      }
+    });
+    expect(testedProviderResponse.json().account_endpoint_models).toEqual([
+      expect.objectContaining({
+        account_key: "primary",
+        endpoint_key: "openai-responses",
+        model_key: createResponse.json().models[0].model_key,
+        runtime_status: "normal",
+        last_success_at: expect.any(String)
+      })
+    ]);
+
+    const clearObservationResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers/managed/account-endpoint-models/clear-status",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        account_key: "primary",
+        endpoint_key: "openai-responses",
+        model_key: createResponse.json().models[0].model_key
+      }
+    });
+    expect(clearObservationResponse.statusCode).toBe(200);
+    expect(clearObservationResponse.json().account_endpoint_models).toEqual([]);
 
     const modelsResponse = await server.inject({
       method: "GET",
@@ -413,23 +987,23 @@ describe("admin providers integration", () => {
     expect(modelsResponse.statusCode).toBe(200);
     const listedModels = modelsResponse.json().data.map((item: { id: string }) => item.id);
     expect(listedModels).toContain("managed-model");
-    expect(listedModels).toContain("managed/openai/managed-model");
+    expect(listedModels).toContain("managed/openai-responses/managed-model");
 
-    const chatResponse = await server.inject({
+    const responsesResponse = await server.inject({
       method: "POST",
-      url: "/v1/chat/completions",
+      url: "/v1/responses",
       headers: {
         authorization: "Bearer gateway-token"
       },
       payload: {
         model: "managed-model",
-        messages: [{ role: "user", content: "hello" }]
+        input: "hello"
       }
     });
 
-    expect(chatResponse.statusCode).toBe(200);
-    expect(chatResponse.json().choices[0].message.content).toBe("managed ok");
-    expect(chatResponse.headers["x-autorouter-normalized-model"]).toBe("auto/managed-model");
+    expect(responsesResponse.statusCode).toBe(200);
+    expect(responsesResponse.json().object).toBe("response");
+    expect(responsesResponse.headers["x-autorouter-normalized-model"]).toBe("auto/managed-model");
 
     const providerResponse = await server.inject({
       method: "GET",
@@ -453,8 +1027,8 @@ describe("admin providers integration", () => {
       payload: {
         display_name: "Managed Provider Edited",
         priority: 8,
-        base_url: "https://managed.example.com/v2",
-        website_url: "https://managed.example.com/docs"
+        base_url: "\nhttps://managed.example.com/v2 \t",
+        website_url: "\u200B https://managed.example.com/docs\n"
       }
     });
 
@@ -464,8 +1038,29 @@ describe("admin providers integration", () => {
     expect(editResponse.json().base_url).toBe("https://managed.example.com/v2");
     expect(editResponse.json().website_url).toBe("https://managed.example.com/docs");
     expect(editResponse.json().models).toHaveLength(1);
-    expect(editResponse.json().models[0].model_name).toBe("managed-model-v2");
+    expect(editResponse.json().models[0].model_name).toBe("managed-model");
     expect(editResponse.json().models[0].supports_tools).toBe(true);
+
+    const syncResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers/managed/sync-models",
+      headers: {
+        authorization: "Bearer admin-token"
+      }
+    });
+    expect(syncResponse.statusCode).toBe(200);
+    expect(syncResponse.json().models).toEqual(expect.arrayContaining([
+      expect.objectContaining({ model_key: "managed/managed-model" }),
+      expect.objectContaining({
+        model_key: "managed/managed-model-v2",
+        model_name: "managed-model-v2"
+      })
+    ]));
+    for (const account of syncResponse.json().accounts) {
+      expect(account.models).toEqual([
+        expect.objectContaining({ model_key: "managed/managed-model-v2" })
+      ]);
+    }
 
     const negativePriorityResponse = await server.inject({
       method: "PATCH",
@@ -496,7 +1091,7 @@ describe("admin providers integration", () => {
 
     pool
       .intercept({
-        path: "/anthropic/messages",
+        path: "/anthropic/v1/messages",
         method: "POST"
       })
       .reply(200, {
@@ -524,8 +1119,7 @@ describe("admin providers integration", () => {
         authorization: "Bearer admin-token"
       },
       payload: {
-        endpoint_key: "anthropic",
-        protocol: "anthropic",
+        protocol: "anthropic-messages",
         base_url: "https://managed.example.com/anthropic"
       }
     });
@@ -534,24 +1128,16 @@ describe("admin providers integration", () => {
     expect(createEndpointResponse.json().endpoints).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          endpoint_key: "openai",
-          protocol: "openai"
+          endpoint_key: "openai-responses",
+          protocol: "openai-responses"
         }),
         expect.objectContaining({
-          endpoint_key: "anthropic",
-          protocol: "anthropic",
+          endpoint_key: "anthropic-messages",
+          protocol: "anthropic-messages",
         })
       ])
     );
-    expect(createEndpointResponse.json().models).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          model_key: "managed/anthropic/claude-managed",
-          endpoint_key: "anthropic",
-          model_name: "claude-managed"
-        })
-      ])
-    );
+    expect(createEndpointResponse.json().models).toEqual(syncResponse.json().models);
 
     const multiProtocolModelsResponse = await server.inject({
       method: "GET",
@@ -562,22 +1148,23 @@ describe("admin providers integration", () => {
     });
     expect(multiProtocolModelsResponse.statusCode).toBe(200);
     const multiProtocolModels = multiProtocolModelsResponse.json().data.map((item: { id: string }) => item.id);
-    expect(multiProtocolModels).toContain("managed/anthropic/claude-managed");
+    expect(multiProtocolModels).toContain("managed/anthropic-messages/managed-model-v2");
 
-    const anthropicChatResponse = await server.inject({
+    const anthropicMessagesResponse = await server.inject({
       method: "POST",
-      url: "/v1/chat/completions",
+      url: "/v1/messages",
       headers: {
         authorization: "Bearer gateway-token"
       },
       payload: {
-        model: "managed/anthropic/claude-managed",
+        model: "managed/anthropic-messages/managed-model-v2",
+        max_tokens: 32,
         messages: [{ role: "user", content: "hello" }]
       }
     });
 
-    expect(anthropicChatResponse.statusCode).toBe(200);
-    expect(anthropicChatResponse.json().choices[0].message.content).toBe("anthropic managed ok");
+    expect(anthropicMessagesResponse.statusCode).toBe(200);
+    expect(anthropicMessagesResponse.json().content[0].text).toBe("anthropic managed ok");
 
     const modelCapabilityResponse = await server.inject({
       method: "PATCH",
@@ -586,7 +1173,7 @@ describe("admin providers integration", () => {
         authorization: "Bearer admin-token"
       },
       payload: {
-        model_key: "managed/openai/managed-model-v2",
+        model_key: "managed/managed-model-v2",
         supports_tools: false,
         supports_json_mode: true
       }
@@ -594,7 +1181,7 @@ describe("admin providers integration", () => {
 
     expect(modelCapabilityResponse.statusCode).toBe(200);
     const editedModel = modelCapabilityResponse.json().models.find(
-      (model: { model_key: string }) => model.model_key === "managed/openai/managed-model-v2"
+      (model: { model_key: string }) => model.model_key === "managed/managed-model-v2"
     );
     expect(editedModel.supports_tools).toBe(false);
     expect(editedModel.supports_json_mode).toBe(true);
@@ -646,10 +1233,52 @@ describe("admin providers integration", () => {
     expect(settingsResponse.statusCode).toBe(200);
     expect(settingsResponse.json().data.length).toBeGreaterThan(0);
 
+    pool
+      .intercept({
+        path: "/v2/models",
+        method: "GET",
+        headers: {
+          authorization: "Bearer late-secret"
+        }
+      })
+      .reply(200, {
+        object: "list",
+        data: [
+          {
+            id: "late-account-model",
+            object: "model"
+          }
+        ]
+      });
+
+    const createAccountResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers/managed/accounts",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        account_key: "late",
+        api_key: "late-secret",
+        enabled: true
+      }
+    });
+    expect(createAccountResponse.statusCode).toBe(201);
+    expect(
+      createAccountResponse.json().accounts.find(
+        (account: { account_key: string }) => account.account_key === "late"
+      )?.models
+    ).toEqual([
+      expect.objectContaining({
+        model_key: "managed/late-account-model",
+        model_name: "late-account-model"
+      })
+    ]);
+
     await server.close();
   });
 
-  it("falls back to chat completions when provider model test finds unsupported responses", async () => {
+  it("does not fall back to Chat Completions when a Responses model test fails", async () => {
     const pool = mockAgent.get("https://admin-responses-fallback.example.com");
     pool
       .intercept({ path: "/v1/responses", method: "POST" })
@@ -658,25 +1287,6 @@ describe("admin providers integration", () => {
           message: "not implemented"
         }
       });
-    pool
-      .intercept({ path: "/v1/chat/completions", method: "POST" })
-      .reply(200, {
-        id: "chatcmpl_admin_responses_fallback",
-        object: "chat.completion",
-        created: Math.floor(Date.now() / 1000),
-        model: "fallback-model",
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: "assistant",
-              content: "admin fallback ok"
-            },
-            finish_reason: "stop"
-          }
-        ]
-      });
-
     const config = loadConfig({
       override: {
         server: {
@@ -731,7 +1341,7 @@ describe("admin providers integration", () => {
         {
           endpoint: {
             endpointKey: "default",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://admin-responses-fallback.example.com/v1"
           },
           models: [
@@ -763,28 +1373,28 @@ describe("admin providers integration", () => {
       payload: {
         account_key: "default",
         model_key: "fallback-model",
+        endpoint_key: "default",
         prompt: "Return ok"
       }
     });
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
-      success: true,
+      success: false,
       provider_key: "responses-fallback",
       account_key: "default",
       model_key: "fallback-model",
       model_name: "fallback-model",
-      protocol: "chat_completions",
-      upstream_status: 200,
-      error_code: null,
-      error_message: null,
-      response_body: "admin fallback ok"
+      protocol: "openai-responses",
+      upstream_status: 500,
+      error_code: "provider_error",
+      error_message: "not implemented"
     });
 
     await server.close();
   });
 
-  it("rejects provider creation when model discovery fails for every endpoint", async () => {
+  it("creates a provider with an actionable warning when model discovery fails", async () => {
     const pool = mockAgent.get("https://discovery-fails.example.com");
 
     pool
@@ -859,10 +1469,17 @@ describe("admin providers integration", () => {
       }
     });
 
-    expect(createResponse.statusCode).toBe(403);
-    expect(createResponse.json().error.code).toBe("provider_discovery_failed");
-    expect(createResponse.json().error.message).toContain("Provider model discovery failed");
-    expect(repository.getProviderDetails("discovery-fails")).toBeNull();
+    expect(createResponse.statusCode).toBe(201);
+    expect(createResponse.json().models).toEqual([]);
+    expect(createResponse.json().latest_sync).toMatchObject({
+      status: "error",
+      account_key: "default",
+      catalog_url: null
+    });
+    expect(createResponse.json().latest_sync.error_message).toContain(
+      "Provider model discovery failed"
+    );
+    expect(repository.getProviderDetails("discovery-fails")).not.toBeNull();
 
     await server.close();
   });
@@ -922,7 +1539,7 @@ describe("admin providers integration", () => {
         {
           endpoint: {
             endpointKey: "default",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://existing.example.com/v1"
           },
           models: [
@@ -957,8 +1574,7 @@ describe("admin providers integration", () => {
         api_key: "secret",
         endpoints: [
           {
-            endpoint_key: "default",
-            protocol: "openai",
+            protocol: "openai-responses",
             base_url: "https://reserved-create.example.com/v1",
             custom_headers: {
               authorization: "Bearer should-not-persist"
@@ -981,8 +1597,7 @@ describe("admin providers integration", () => {
       payload: {
         endpoints: [
           {
-            endpoint_key: "default",
-            protocol: "openai",
+            protocol: "openai-responses",
             base_url: "https://existing.example.com/v2",
             custom_headers: {
               "x-api-key": "should-not-persist"
@@ -1003,8 +1618,7 @@ describe("admin providers integration", () => {
         authorization: "Bearer admin-token"
       },
       payload: {
-        endpoint_key: "blocked",
-        protocol: "openai",
+        protocol: "openai-responses",
         base_url: "https://blocked.example.com/v1",
         custom_headers: {
           Authorization: "Bearer should-not-persist"
@@ -1147,13 +1761,11 @@ describe("admin providers integration", () => {
         display_name: "Multi Provider",
         endpoints: [
           {
-            endpoint_key: "default",
-            protocol: "openai",
+            protocol: "openai-responses",
             base_url: "https://multi.example.com/v1"
           },
           {
-            endpoint_key: "anthropic",
-            protocol: "anthropic",
+            protocol: "anthropic-messages",
             base_url: "https://multi.example.com/anthropic"
           }
         ],
@@ -1164,18 +1776,11 @@ describe("admin providers integration", () => {
 
     expect(createResponse.statusCode).toBe(201);
     expect(createResponse.json().endpoints).toHaveLength(2);
-    expect(createResponse.json().models).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          model_key: "multi/openai-model",
-          endpoint_key: "default"
-        }),
-        expect.objectContaining({
-          model_key: "multi/anthropic/anthropic-model",
-          endpoint_key: "anthropic"
-        })
-      ])
-    );
+    expect(createResponse.json().models).toEqual([
+      expect.objectContaining({
+        model_key: "multi/openai-model"
+      })
+    ]);
 
     const patchResponse = await server.inject({
       method: "PATCH",
@@ -1187,8 +1792,7 @@ describe("admin providers integration", () => {
         display_name: "Multi Provider Edited",
         endpoints: [
           {
-            endpoint_key: "default",
-            protocol: "openai",
+            protocol: "openai-responses",
             base_url: "https://multi.example.com/v2"
           }
         ]
@@ -1200,12 +1804,12 @@ describe("admin providers integration", () => {
     expect(patchResponse.json().endpoints).toHaveLength(1);
     expect(patchResponse.json().endpoints[0].base_url).toBe("https://multi.example.com/v2");
     expect(patchResponse.json().models).toHaveLength(1);
-    expect(patchResponse.json().models[0].model_key).toBe("multi/openai-model-v2");
+    expect(patchResponse.json().models[0].model_key).toBe("multi/openai-model");
 
     await server.close();
   });
 
-  it("expands all protocol providers into bundled openai and anthropic endpoints", async () => {
+  it("rejects the aggregate all protocol without persisting a provider", async () => {
     const pool = mockAgent.get("https://bundle.example.com");
 
     pool
@@ -1271,27 +1875,8 @@ describe("admin providers integration", () => {
       }
     });
 
-    expect(createResponse.statusCode).toBe(201);
-    expect(createResponse.json().endpoints).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          endpoint_key: "openai",
-          protocol: "openai",
-          protocol_bundle_key: "all"
-        }),
-        expect.objectContaining({
-          endpoint_key: "anthropic",
-          protocol: "anthropic",
-          protocol_bundle_key: "all"
-        })
-      ])
-    );
-    expect(createResponse.json().models).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ endpoint_key: "openai", model_name: "shared-model" }),
-        expect.objectContaining({ endpoint_key: "anthropic", model_name: "claude-shared" })
-      ])
-    );
+    expect(createResponse.statusCode).toBe(400);
+    expect(repository.getProviderDetails("bundle")).toBeNull();
 
     await server.close();
   });
@@ -1367,6 +1952,26 @@ describe("admin providers integration", () => {
       secretCipher
     });
 
+    const customEndpointKeyResponse = await server.inject({
+      method: "POST",
+      url: "/admin/api/providers",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        provider_key: "custom-endpoint-key",
+        display_name: "Custom Endpoint Key",
+        endpoints: [{
+          endpoint_key: "custom",
+          protocol: "openai-responses",
+          base_url: "https://shared-models.example.com/v1"
+        }],
+        api_key: "shared-secret"
+      }
+    });
+    expect(customEndpointKeyResponse.statusCode).toBe(400);
+    expect(repository.getProviderDetails("custom-endpoint-key")).toBeNull();
+
     const createResponse = await server.inject({
       method: "POST",
       url: "/admin/api/providers",
@@ -1378,13 +1983,11 @@ describe("admin providers integration", () => {
         display_name: "Shared Models",
         endpoints: [
           {
-            endpoint_key: "default",
-            protocol: "openai",
+            protocol: "openai-responses",
             base_url: "https://shared-models.example.com/v1"
           },
           {
-            endpoint_key: "alt",
-            protocol: "openai",
+            protocol: "openai-responses",
             base_url: "https://shared-models.example.com/alt"
           }
         ],
@@ -1498,7 +2101,7 @@ describe("admin providers integration", () => {
       payload: {
         provider_key: "anthropic-create",
         display_name: "Anthropic Create",
-        protocol: "anthropic",
+        protocol: "anthropic-messages",
         base_url: "https://anthropic-create.example.com/v1",
         website_url: "https://anthropic-create.example.com",
         api_key: "anthropic-secret"
@@ -1509,13 +2112,13 @@ describe("admin providers integration", () => {
     expect(createResponse.json().endpoints).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          endpoint_key: "anthropic",
-          protocol: "anthropic",
+          endpoint_key: "anthropic-messages",
+          protocol: "anthropic-messages",
           base_url: "https://anthropic-create.example.com/v1"
         })
       ])
     );
-    expect(createResponse.json().models[0].model_key).toBe("anthropic-create/anthropic/claude-create");
+    expect(createResponse.json().models[0].model_key).toBe("anthropic-create/claude-create");
 
     const modelsResponse = await server.inject({
       method: "GET",
@@ -1529,20 +2132,40 @@ describe("admin providers integration", () => {
       "claude-create"
     );
 
-    const chatResponse = await server.inject({
+    const messagesResponse = await server.inject({
       method: "POST",
-      url: "/v1/chat/completions",
+      url: "/v1/messages",
       headers: {
         authorization: "Bearer gateway-token"
       },
       payload: {
         model: "anthropic-create/claude-create",
+        max_tokens: 32,
         messages: [{ role: "user", content: "hello" }]
       }
     });
 
-    expect(chatResponse.statusCode).toBe(200);
-    expect(chatResponse.json().choices[0].message.content).toBe("anthropic create ok");
+    expect(messagesResponse.statusCode).toBe(200);
+    expect(messagesResponse.json().content[0].text).toBe("anthropic create ok");
+
+    const protocolChangeResponse = await server.inject({
+      method: "PATCH",
+      url: "/admin/api/providers/anthropic-create/endpoints/anthropic-messages",
+      headers: {
+        authorization: "Bearer admin-token"
+      },
+      payload: {
+        protocol: "openai-responses"
+      }
+    });
+    expect(protocolChangeResponse.statusCode).toBe(200);
+    expect(protocolChangeResponse.json().endpoints).toEqual([
+      expect.objectContaining({
+        endpoint_key: "openai-responses",
+        protocol: "openai-responses"
+      })
+    ]);
+    expect(repository.getProviderEndpoint("anthropic-create", "anthropic-messages")).toBeNull();
 
     await server.close();
   });
@@ -1607,7 +2230,7 @@ describe("admin providers integration", () => {
       payload: {
         provider_key: "relay-dual",
         display_name: "Relay Dual",
-        protocol: "openai",
+        protocol: "openai-responses",
         base_url: "https://relay-dual.example.com/v1",
         api_key: "relay-secret"
       }
@@ -1620,8 +2243,7 @@ describe("admin providers integration", () => {
       url: "/admin/api/providers/relay-dual/endpoints",
       headers: { authorization: "Bearer admin-token" },
       payload: {
-        endpoint_key: "anthropic",
-        protocol: "anthropic",
+        protocol: "anthropic-messages",
         base_url: "https://relay-dual.example.com/v1"
       }
     });
@@ -1630,26 +2252,25 @@ describe("admin providers integration", () => {
     expect(addAnthropicResponse.json().endpoints).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          endpoint_key: "openai",
-          protocol: "openai",
+          endpoint_key: "openai-responses",
+          protocol: "openai-responses",
           base_url: "https://relay-dual.example.com/v1"
         }),
         expect.objectContaining({
-          endpoint_key: "anthropic",
-          protocol: "anthropic",
+          endpoint_key: "anthropic-messages",
+          protocol: "anthropic-messages",
           base_url: "https://relay-dual.example.com/v1"
         })
       ])
     );
 
-    // 同 key 才冲突
+    // 同协议只能存在一个 Endpoint
     const duplicateResponse = await server.inject({
       method: "POST",
       url: "/admin/api/providers/relay-dual/endpoints",
       headers: { authorization: "Bearer admin-token" },
       payload: {
-        endpoint_key: "anthropic",
-        protocol: "anthropic",
+        protocol: "anthropic-messages",
         base_url: "https://relay-dual.example.com/v1"
       }
     });

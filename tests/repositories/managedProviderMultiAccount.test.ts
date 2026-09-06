@@ -52,8 +52,7 @@ describe("managed provider multi-account", () => {
         providerKey: "demo",
         displayName: "Demo",
         baseUrl: "https://demo.example.com/v1",
-        providerKind: "official",
-        modelAvailabilityScope: "shared_by_provider"
+        providerKind: "official"
       },
       encryptedApiKey: cipher.encrypt("key-1"),
       apiKeyHint: "...y-1",
@@ -61,7 +60,7 @@ describe("managed provider multi-account", () => {
         {
           endpoint: {
             endpointKey: "openai",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://demo.example.com/v1"
           },
           models: [
@@ -78,7 +77,7 @@ describe("managed provider multi-account", () => {
         {
           endpoint: {
             endpointKey: "anthropic",
-            protocol: "anthropic",
+            protocol: "anthropic-messages",
             baseUrl: "https://demo.example.com/anthropic"
           },
           models: []
@@ -88,7 +87,6 @@ describe("managed provider multi-account", () => {
 
     const created = repo.createAccount("demo", {
       accountKey: "backup",
-      endpointKey: "openai",
       encryptedApiKey: cipher.encrypt("key-2"),
       apiKeyHint: "...y-2"
     });
@@ -100,7 +98,9 @@ describe("managed provider multi-account", () => {
 
     const bundles = repo.listEnabledProviderBundles();
     expect(bundles.some((item) => item.credential.accountKey === "default")).toBe(true);
-    expect(bundles.some((item) => item.credential.accountKey === "backup")).toBe(true);
+    expect(
+      bundles.some((item) => item.credential.accountKey === "backup" && item.models.length > 0)
+    ).toBe(false);
 
     repo.markAccountAuthFailed("demo", "backup", "Invalid API key");
     expect(repo.getAccount("demo", "backup")?.runtimeStatus).toBe("disabled");
@@ -133,7 +133,7 @@ describe("managed provider multi-account", () => {
     expect(backup?.available).toBe(true);
   });
 
-  it("suggests merge for same base_url + protocol", () => {
+  it("classifies provider endpoint set merge candidates", () => {
     const config = loadConfig({
       override: {
         database: { path: join(tempDir, "autorouter.db") },
@@ -161,23 +161,105 @@ describe("managed provider multi-account", () => {
         {
           endpoint: {
             endpointKey: "openai",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://open.bigmodel.cn/api/paas/v4/"
+          },
+          models: []
+        },
+        {
+          endpoint: {
+            endpointKey: "anthropic",
+            protocol: "anthropic-messages",
+            baseUrl: "https://open.bigmodel.cn/api/anthropic"
           },
           models: []
         }
       ]
     });
 
-    const matches = repo.findProvidersByEndpoint({
-      protocol: "openai",
-      baseUrl: "https://open.bigmodel.cn/api/paas/v4"
+    repo.createProviderWithEndpointBundles({
+      provider: {
+        providerKey: "openai-only",
+        displayName: "OpenAI Only",
+        baseUrl: "https://api.example.com/v1"
+      },
+      encryptedApiKey: cipher.encrypt("secret"),
+      endpointBundles: [
+        {
+          endpoint: {
+            endpointKey: "openai",
+            protocol: "openai-responses",
+            baseUrl: "https://api.example.com/v1"
+          },
+          models: []
+        }
+      ]
     });
-    expect(matches).toHaveLength(1);
-    expect(matches[0]?.provider.providerKey).toBe("bigmodel");
+
+    const exact = repo.findProvidersByEndpointSet([
+      { protocol: "openai-responses", baseUrl: "https://open.bigmodel.cn/api/paas/v4/v1" },
+      { protocol: "anthropic-messages", baseUrl: "https://open.bigmodel.cn/api/anthropic" }
+    ]);
+    expect(exact).toEqual([
+      expect.objectContaining({
+        provider: expect.objectContaining({ providerKey: "bigmodel" }),
+        relation: "exact",
+        matchingEndpoints: expect.arrayContaining([
+          expect.objectContaining({ protocol: "openai-responses" }),
+          expect.objectContaining({ protocol: "anthropic-messages" })
+        ]),
+        conflictingEndpoints: [],
+        candidateOnlyEndpoints: [],
+        existingOnlyEndpoints: []
+      })
+    ]);
+
+    const candidateSubset = repo.findProvidersByEndpointSet([
+      { protocol: "openai-responses", baseUrl: "https://open.bigmodel.cn/api/paas/v4" }
+    ]);
+    expect(candidateSubset[0]).toEqual(expect.objectContaining({
+      relation: "candidate_subset",
+      existingOnlyEndpoints: [
+        expect.objectContaining({ protocol: "anthropic-messages" })
+      ]
+    }));
+
+    const existingSubset = repo.findProvidersByEndpointSet([
+      { protocol: "openai-responses", baseUrl: "https://api.example.com" },
+      { protocol: "anthropic-messages", baseUrl: "https://api.example.com/anthropic" }
+    ]);
+    expect(existingSubset[0]).toEqual(expect.objectContaining({
+      provider: expect.objectContaining({ providerKey: "openai-only" }),
+      relation: "existing_subset",
+      candidateOnlyEndpoints: [
+        {
+          protocol: "anthropic-messages",
+          baseUrl: "https://api.example.com/anthropic"
+        }
+      ]
+    }));
+
+    const conflict = repo.findProvidersByEndpointSet([
+      { protocol: "openai-responses", baseUrl: "https://open.bigmodel.cn/api/paas/v4" },
+      { protocol: "anthropic-messages", baseUrl: "https://different.example.com/anthropic" }
+    ]);
+    expect(conflict[0]).toEqual(expect.objectContaining({
+      relation: "conflict",
+      conflictingEndpoints: [
+        {
+          protocol: "anthropic-messages",
+          candidateBaseUrl: "https://different.example.com/anthropic",
+          existingBaseUrl: "https://open.bigmodel.cn/api/anthropic"
+        }
+      ]
+    }));
+
+    expect(repo.findProvidersByEndpointSet([
+      { protocol: "openai-responses", baseUrl: "https://unrelated.example.com/v1" }
+    ])).toEqual([]);
   });
 
-  it("per_account isolates models so one key does not inherit another key discovery", () => {
+  it("isolates models so one key does not inherit another key discovery", () => {
     const config = loadConfig({
       override: {
         database: { path: join(tempDir, "autorouter.db") },
@@ -199,8 +281,7 @@ describe("managed provider multi-account", () => {
         providerKey: "relay",
         displayName: "Relay",
         baseUrl: "https://relay.example.com/v1",
-        providerKind: "relay",
-        modelAvailabilityScope: "per_account"
+        providerKind: "relay"
       },
       encryptedApiKey: cipher.encrypt("key-a"),
       apiKeyHint: "...y-a",
@@ -208,7 +289,7 @@ describe("managed provider multi-account", () => {
         {
           endpoint: {
             endpointKey: "openai",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://relay.example.com/v1"
           },
           models: [
@@ -232,7 +313,6 @@ describe("managed provider multi-account", () => {
     });
 
     repo.syncProviderModels("relay", {
-      endpointKey: "openai",
       accountKey: "key-b",
       status: "success",
       models: [
@@ -290,6 +370,86 @@ describe("managed provider multi-account", () => {
     expect(candidatesB.some((item) => item.account.endsWith("/default"))).toBe(false);
   });
 
+  it("keeps provider-level manual models visible across account creation and sync", () => {
+    const config = loadConfig({
+      override: {
+        database: { path: join(tempDir, "autorouter.db") },
+        trace: { directory: join(tempDir, "traces"), log_prompts: false },
+        routes: {},
+        providers: {},
+        endpoints: {},
+        accounts: {},
+        models: {},
+        policies: {}
+      }
+    });
+    const db = createDatabaseClient(config.database.path);
+    const repo = new ManagedProviderRepository(db.db);
+    const cipher = new SecretCipher(process.env.AUTO_ROUTER_MASTER_KEY);
+
+    repo.createProviderWithEndpointBundles({
+      provider: {
+        providerKey: "manual",
+        displayName: "Manual",
+        baseUrl: "https://manual.example.com/v1"
+      },
+      encryptedApiKey: cipher.encrypt("key-a"),
+      endpointBundles: [
+        {
+          endpoint: {
+            endpointKey: "openai",
+            protocol: "openai-responses",
+            baseUrl: "https://manual.example.com/v1"
+          },
+          models: []
+        }
+      ]
+    });
+    repo.upsertManualModel("manual", {
+      model: {
+        modelKey: "manual/custom-model",
+        providerModelId: "custom-model",
+        modelName: "custom-model",
+        supportsStreaming: true,
+        supportsTools: false,
+        supportsJsonMode: false,
+        rawMetadataJson: JSON.stringify({ source: "manual" })
+      }
+    });
+
+    repo.createAccount("manual", {
+      accountKey: "backup",
+      encryptedApiKey: cipher.encrypt("key-b")
+    });
+    repo.syncProviderModels("manual", {
+      accountKey: "default",
+      status: "success",
+      models: [
+        {
+          modelKey: "manual/discovered-model",
+          providerModelId: "discovered-model",
+          modelName: "discovered-model",
+          supportsStreaming: true,
+          supportsTools: false,
+          supportsJsonMode: false
+        }
+      ]
+    });
+
+    const details = repo.getProviderDetails("manual");
+    const accountModels = new Map(
+      details?.accounts.map((account) => [
+        account.accountKey,
+        details.accountModels
+          .find((item) => item.accountId === account.id)
+          ?.models.map((model) => model.modelName)
+          .sort() ?? []
+      ])
+    );
+    expect(accountModels.get("default")).toEqual(["custom-model", "discovered-model"]);
+    expect(accountModels.get("backup")).toEqual(["custom-model"]);
+  });
+
   it("elevates provider priority above the current maximum", () => {
     const config = loadConfig({
       override: {
@@ -319,7 +479,7 @@ describe("managed provider multi-account", () => {
         {
           endpoint: {
             endpointKey: "openai",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://alpha.example.com/v1"
           },
           models: []
@@ -339,7 +499,7 @@ describe("managed provider multi-account", () => {
         {
           endpoint: {
             endpointKey: "openai",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://beta.example.com/v1"
           },
           models: []
@@ -395,15 +555,14 @@ describe("managed provider multi-account", () => {
         providerKey: "large-catalog",
         displayName: "Large Catalog",
         baseUrl: "https://old.example.com/v1",
-        providerKind: "relay",
-        modelAvailabilityScope: "per_account"
+        providerKind: "relay"
       },
       encryptedApiKey: cipher.encrypt("large-key"),
       endpointBundles: [
         {
           endpoint: {
             endpointKey: "openai",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://old.example.com/v1"
           },
           models: []
@@ -426,14 +585,13 @@ describe("managed provider multi-account", () => {
         providerKey: "large-catalog",
         displayName: "Large Catalog",
         baseUrl: "https://new.example.com/v1",
-        providerKind: "relay",
-        modelAvailabilityScope: "per_account"
+        providerKind: "relay"
       },
       endpointBundles: [
         {
           endpoint: {
             endpointKey: "openai",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://new.example.com/v1"
           },
           models

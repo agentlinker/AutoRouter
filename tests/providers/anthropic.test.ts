@@ -7,7 +7,7 @@ function createRouteTarget(baseUrl: string) {
   return {
     platform: {
       id: "anthropic",
-      protocol: "anthropic"
+      protocol: "anthropic-messages"
     },
     provider: {
       id: "anthropic-direct",
@@ -54,7 +54,7 @@ function createRouteTarget(baseUrl: string) {
 }
 
 describe("AnthropicAdapter", () => {
-  it("translates anthropic messages response into OpenAI-like chat completion", async () => {
+  it("preserves the native Messages response and observes usage without converting it", async () => {
     const mockAgent = new MockAgent();
     mockAgent.disableNetConnect();
     setGlobalDispatcher(mockAgent);
@@ -76,7 +76,7 @@ describe("AnthropicAdapter", () => {
       });
 
     const adapter = new AnthropicAdapter();
-    const response = await adapter.chatCompletion(
+    const response = await adapter.messageCompletion(
       {
         model: "auto",
         messages: [{ role: "user", content: "hello" }],
@@ -89,14 +89,130 @@ describe("AnthropicAdapter", () => {
     );
 
     expect(response.status).toBe(200);
-    expect((response.body as { choices: Array<{ message: { content: string } }> }).choices[0].message.content).toBe(
-      "hello from anthropic"
-    );
+    expect(response.body).toMatchObject({ content: [{ type: "text", text: "hello from anthropic" }] });
+    expect(response.body).not.toHaveProperty("choices");
+    expect(JSON.parse(response.raw!)).toEqual(response.body);
+    expect(response.usage).toEqual({ prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
 
     await mockAgent.close();
   });
 
-  it("translates streamed anthropic events into OpenAI chat completion chunks", async () => {
+  it("preserves HTML 403 responses as endpoint access blocks", async () => {
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+
+    mockAgent
+      .get("https://anthropic-blocked.example.com")
+      .intercept({
+        path: "/v1/messages",
+        method: "POST"
+      })
+      .reply(403, "<!DOCTYPE html><title>Attention Required!</title>", {
+        headers: { "content-type": "text/html; charset=UTF-8" }
+      });
+
+    const adapter = new AnthropicAdapter();
+
+    await expect(
+      adapter.messageCompletion(
+        {
+          model: "auto",
+          messages: [{ role: "user", content: "hello" }],
+          stream: false,
+          tools: [],
+          metadata: {},
+          context_tokens_est: 10
+        },
+        createRouteTarget("https://anthropic-blocked.example.com/v1")
+      )
+    ).rejects.toMatchObject({
+      statusCode: 403,
+      code: "provider_access_blocked",
+      retryable: true,
+      message: expect.stringContaining("returned HTML with status 403")
+    });
+
+    await mockAgent.close();
+  });
+
+  it("keeps JSON 403 responses classified as API key failures", async () => {
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+
+    mockAgent
+      .get("https://anthropic-auth.example.com")
+      .intercept({
+        path: "/v1/messages",
+        method: "POST"
+      })
+      .reply(403, {
+        error: {
+          message: "invalid x-api-key"
+        }
+      });
+
+    const adapter = new AnthropicAdapter();
+
+    await expect(
+      adapter.messageCompletion(
+        {
+          model: "auto",
+          messages: [{ role: "user", content: "hello" }],
+          stream: false,
+          tools: [],
+          metadata: {},
+          context_tokens_est: 10
+        },
+        createRouteTarget("https://anthropic-auth.example.com/v1")
+      )
+    ).rejects.toMatchObject({
+      statusCode: 403,
+      code: "provider_auth_failed",
+      retryable: false,
+      message: "invalid x-api-key"
+    });
+
+    await mockAgent.close();
+  });
+
+  it("preserves streamed HTML 403 responses as endpoint access blocks", async () => {
+    const mockAgent = new MockAgent();
+    mockAgent.disableNetConnect();
+    setGlobalDispatcher(mockAgent);
+
+    mockAgent
+      .get("https://anthropic-stream-blocked.example.com")
+      .intercept({
+        path: "/v1/messages",
+        method: "POST"
+      })
+      .reply(403, "<!DOCTYPE html><title>Attention Required!</title>", {
+        headers: { "content-type": "text/html; charset=UTF-8" }
+      });
+
+    const adapter = new AnthropicAdapter();
+    const iterator = adapter.streamMessage(
+      {
+        model: "auto",
+        max_tokens: 8,
+        messages: [{ role: "user", content: "hello" }],
+        stream: true
+      },
+      createRouteTarget("https://anthropic-stream-blocked.example.com/v1")
+    );
+
+    await expect(iterator[Symbol.asyncIterator]().next()).rejects.toMatchObject({
+      statusCode: 403,
+      code: "provider_access_blocked",
+      retryable: true
+    });
+
+    await mockAgent.close();
+  });
+
+  it("preserves streamed Anthropic events byte for byte", async () => {
     const mockAgent = new MockAgent();
     mockAgent.disableNetConnect();
     setGlobalDispatcher(mockAgent);
@@ -120,7 +236,7 @@ describe("AnthropicAdapter", () => {
 
     const adapter = new AnthropicAdapter();
     const chunks: string[] = [];
-    for await (const chunk of adapter.streamChatCompletion!(
+    for await (const chunk of adapter.streamMessage(
       {
         model: "auto",
         messages: [{ role: "user", content: "hello" }],
@@ -135,24 +251,7 @@ describe("AnthropicAdapter", () => {
     }
 
     const raw = chunks.join("");
-    // 关键断言：客户端拿到的是 OpenAI 格式，而不是 Anthropic 原始事件
-    expect(raw).toContain('"object":"chat.completion.chunk"');
-    expect(raw).not.toContain("content_block_delta");
-    expect(raw).not.toContain("message_start");
-    expect(raw.endsWith("data: [DONE]\n\n")).toBe(true);
-
-    const events = raw
-      .split("\n\n")
-      .map((segment) => segment.replace(/^data: /, "").trim())
-      .filter((payload) => payload.length > 0 && payload !== "[DONE]")
-      .map((payload) => JSON.parse(payload) as {
-        choices: Array<{ delta: { content?: string }; finish_reason: string | null }>;
-        usage?: { total_tokens?: number };
-      });
-
-    expect(events.map((event) => event.choices[0].delta.content ?? "").join("")).toBe("hi");
-    expect(events.at(-1)?.choices[0].finish_reason).toBe("stop");
-    expect(events.at(-1)?.usage?.total_tokens).toBe(9);
+    expect(raw).toBe(upstream);
 
     await mockAgent.close();
   });

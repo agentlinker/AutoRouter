@@ -5,6 +5,7 @@ import type { AdapterRegistry } from "../providers/registry.js";
 import type { StickySessionStore } from "../routing/stickySession.js";
 import type {
   AccountRuntimeState,
+  AccountEndpointRuntimeState,
   EndpointRuntimeState,
   ModelRuntimeStatusState,
   PlatformRuntimeState,
@@ -23,6 +24,7 @@ export interface RuntimeSnapshot {
   providers: ProviderRuntimeState[];
   endpoints: EndpointRuntimeState[];
   accounts: AccountRuntimeState[];
+  accountEndpoints: AccountEndpointRuntimeState[];
   modelStatuses: Record<string, ModelRuntimeStatusState>;
   runtimeStatusSettings: RuntimeStatusSettings;
   priceTable: PriceTable;

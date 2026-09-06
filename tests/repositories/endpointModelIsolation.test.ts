@@ -14,12 +14,7 @@ import { RouteTraceRepository } from "../../src/repositories/routeTraceRepositor
 import { SecretCipher } from "../../src/security/secretCipher.js";
 import { createLogger } from "../../src/utils/logger.js";
 
-/**
- * 回归用例：endpoint 没有自己的模型时，不得借用同 provider 其它 endpoint 的模型。
- * 否则会造出「anthropic endpoint + openai 模型」这类不存在的候选，被路由选中后
- * 打到根本没有该模型的协议面上。
- */
-describe("endpoint model isolation", () => {
+describe("provider model catalog sharing", () => {
   let tempDir: string;
 
   beforeEach(() => {
@@ -57,19 +52,16 @@ describe("endpoint model isolation", () => {
     };
   }
 
-  /** openai endpoint 有模型、anthropic endpoint 发现为空的 provider */
-  function seedLopsidedProvider(
+  function seedSharedCatalogProvider(
     repo: ManagedProviderRepository,
-    cipher: SecretCipher,
-    scope: "per_account" | "shared_by_provider"
+    cipher: SecretCipher
   ) {
     repo.createProviderWithEndpointBundles({
       provider: {
         providerKey: "relay",
         displayName: "Relay",
         baseUrl: "https://relay.example.com/v1",
-        providerKind: "relay",
-        modelAvailabilityScope: scope
+        providerKind: "relay"
       },
       encryptedApiKey: cipher.encrypt("key-a"),
       apiKeyHint: "...y-a",
@@ -77,13 +69,13 @@ describe("endpoint model isolation", () => {
         {
           endpoint: {
             endpointKey: "openai",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://relay.example.com/v1"
           },
           models: [
             {
-              modelKey: "relay/openai/glm-5.2",
-              providerModelId: "openai:glm-5.2",
+              modelKey: "relay/glm-5.2",
+              providerModelId: "glm-5.2",
               modelName: "glm-5.2",
               supportsStreaming: true,
               supportsTools: true,
@@ -92,10 +84,9 @@ describe("endpoint model isolation", () => {
           ]
         },
         {
-          // 上游 anthropic 面没有 /models 接口，发现结果为空
           endpoint: {
             endpointKey: "anthropic",
-            protocol: "anthropic",
+            protocol: "anthropic-messages",
             baseUrl: "https://relay.example.com"
           },
           models: []
@@ -104,25 +95,28 @@ describe("endpoint model isolation", () => {
     });
   }
 
-  it("keeps an empty endpoint empty instead of borrowing sibling endpoint models", () => {
+  it("shares an account-visible provider model with every enabled endpoint", () => {
     const { repo, cipher } = createRepo();
-    seedLopsidedProvider(repo, cipher, "per_account");
+    seedSharedCatalogProvider(repo, cipher);
 
     const bundles = repo.listEnabledProviderBundles();
-    const anthropicBundles = bundles.filter(
-      (bundle) => bundle.endpoint.endpointKey === "anthropic"
-    );
-    const openaiBundles = bundles.filter((bundle) => bundle.endpoint.endpointKey === "openai");
-
-    expect(openaiBundles.flatMap((bundle) => bundle.models.map((model) => model.modelName))).toEqual([
-      "glm-5.2"
+    expect(
+      bundles
+        .map((bundle) => ({
+          endpointKey: bundle.endpoint.endpointKey,
+          models: bundle.models.map((model) => model.modelName)
+        }))
+        .sort((left, right) => left.endpointKey.localeCompare(right.endpointKey))
+    ).toEqual([
+      { endpointKey: "anthropic", models: ["glm-5.2"] },
+      { endpointKey: "openai", models: ["glm-5.2"] }
     ]);
-    expect(anthropicBundles.flatMap((bundle) => bundle.models)).toEqual([]);
   });
 
-  it("does not project phantom candidates onto the model-less endpoint", () => {
+  it("projects the shared model as a candidate on both protocols", () => {
     const { config, db, repo, cipher } = createRepo();
-    seedLopsidedProvider(repo, cipher, "per_account");
+    seedSharedCatalogProvider(repo, cipher);
+    repo.markAccountEndpointSuccess("relay", "default", "anthropic", true);
 
     const projector = new RuntimeConfigProjector({
       baseConfig: config,
@@ -135,38 +129,43 @@ describe("endpoint model isolation", () => {
     });
     const snapshot = projector.project();
 
-    const modelIds = Object.keys(snapshot.config.models).filter((id) => id.startsWith("relay/"));
-    expect(modelIds).toEqual(["relay/openai/glm-5.2"]);
-    // 幻影 key 的特征：anthropic 路径下挂着带 openai: 前缀的上游模型 id
-    expect(modelIds.some((id) => id.includes("/anthropic/"))).toBe(false);
-  });
+    expect(snapshot.accounts).toHaveLength(1);
+    expect(snapshot.accounts[0]).toMatchObject({
+      id: "relay/default",
+      provider_key: "relay",
+      account_key: "default"
+    });
+    expect(snapshot.accountEndpoints).toEqual([
+      expect.objectContaining({
+        account_id: "relay/default",
+        endpoint_id: "relay/anthropic",
+        runtime_status: "normal"
+      })
+    ]);
 
-  it("applies the same isolation under shared_by_provider scope", () => {
-    const { repo, cipher } = createRepo();
-    seedLopsidedProvider(repo, cipher, "shared_by_provider");
-
-    const bundles = repo.listEnabledProviderBundles();
-    const anthropicBundles = bundles.filter(
-      (bundle) => bundle.endpoint.endpointKey === "anthropic"
+    const candidates = snapshot.modelCatalog.getCandidates("glm-5.2");
+    expect(candidates.map((candidate) => candidate.endpoint).sort()).toEqual([
+      "relay/anthropic",
+      "relay/openai"
+    ]);
+    expect(new Set(candidates.map((candidate) => candidate.account))).toEqual(
+      new Set(["relay/openai/default", "relay/anthropic/default"])
     );
-
-    expect(anthropicBundles.length).toBeGreaterThan(0);
-    expect(anthropicBundles.flatMap((bundle) => bundle.models)).toEqual([]);
   });
 
-  it("still serves models once the endpoint syncs its own", () => {
+  it("updates one account catalog without assigning models to an endpoint", () => {
     const { repo, cipher } = createRepo();
-    seedLopsidedProvider(repo, cipher, "per_account");
+    seedSharedCatalogProvider(repo, cipher);
 
     repo.syncProviderModels("relay", {
-      endpointKey: "anthropic",
       accountKey: "default",
+      catalogUrl: "https://relay.example.com/v1/models",
       status: "success",
       models: [
         {
-          modelKey: "relay/anthropic/glm-5.2",
-          providerModelId: "anthropic:glm-5.2",
-          modelName: "glm-5.2",
+          modelKey: "relay/glm-5.3",
+          providerModelId: "glm-5.3",
+          modelName: "glm-5.3",
           supportsStreaming: true,
           supportsTools: true,
           supportsJsonMode: false
@@ -174,11 +173,83 @@ describe("endpoint model isolation", () => {
       ]
     });
 
-    const anthropicModels = repo
+    const modelsByEndpoint = repo
       .listEnabledProviderBundles()
-      .filter((bundle) => bundle.endpoint.endpointKey === "anthropic")
-      .flatMap((bundle) => bundle.models.map((model) => model.providerModelId));
+      .map((bundle) => ({
+        endpointKey: bundle.endpoint.endpointKey,
+        models: bundle.models.map((model) => model.providerModelId)
+      }))
+      .sort((left, right) => left.endpointKey.localeCompare(right.endpointKey));
 
-    expect(anthropicModels).toEqual(["anthropic:glm-5.2"]);
+    expect(modelsByEndpoint).toEqual([
+      { endpointKey: "anthropic", models: ["glm-5.3"] },
+      { endpointKey: "openai", models: ["glm-5.3"] }
+    ]);
+  });
+
+  it("blocks only the observed account-endpoint-model combination", () => {
+    const { repo, cipher } = createRepo();
+    seedSharedCatalogProvider(repo, cipher);
+
+    const observation = repo.applyAccountEndpointModelFailure(
+      "relay",
+      "default",
+      "anthropic",
+      "relay/glm-5.2",
+      {
+        runtimeStatus: "abnormal",
+        reason: "model_unavailable_permanent",
+        cooldownUntil: null,
+        code: "provider_invalid_model",
+        message: "model is not available on this protocol"
+      }
+    );
+
+    expect(observation?.runtimeStatus).toBe("abnormal");
+    expect(
+      repo.listEnabledProviderBundles()
+        .map((bundle) => ({
+          endpointKey: bundle.endpoint.endpointKey,
+          models: bundle.models.map((model) => model.modelName)
+        }))
+        .sort((left, right) => left.endpointKey.localeCompare(right.endpointKey))
+    ).toEqual([
+      { endpointKey: "anthropic", models: [] },
+      { endpointKey: "openai", models: ["glm-5.2"] }
+    ]);
+    expect(
+      repo.getAccountEndpointModel("relay", "default", "openai", "relay/glm-5.2")
+    ).toBeNull();
+  });
+
+  it("clears an observation back to unknown without changing account visibility", () => {
+    const { repo, cipher } = createRepo();
+    seedSharedCatalogProvider(repo, cipher);
+
+    repo.applyAccountEndpointModelFailure(
+      "relay",
+      "default",
+      "anthropic",
+      "relay/glm-5.2",
+      {
+        runtimeStatus: "cooling_down",
+        reason: "model_unavailable",
+        cooldownUntil: new Date(Date.now() + 60_000).toISOString(),
+        code: "provider_invalid_model",
+        message: "temporary model failure"
+      }
+    );
+
+    expect(
+      repo.clearAccountEndpointModelStatus("relay", "default", "anthropic", "relay/glm-5.2")
+    ).toBe(true);
+    expect(
+      repo.getAccountEndpointModel("relay", "default", "anthropic", "relay/glm-5.2")
+    ).toBeNull();
+    expect(
+      repo.listEnabledProviderBundles()
+        .map((bundle) => bundle.endpoint.endpointKey)
+        .sort()
+    ).toEqual(["anthropic", "openai"]);
   });
 });

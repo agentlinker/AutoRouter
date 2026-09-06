@@ -12,7 +12,7 @@ function buildBaseConfig() {
   return {
     platforms: {
       openai: {
-        protocol: "openai"
+        protocol: "openai-chat-completions"
       }
     },
     providers: {
@@ -99,7 +99,7 @@ describe("selectRoute", () => {
       false,
       false,
       10,
-      "normal"
+      "normal", null, {}, "openai-chat-completions"
     );
 
     expect(route.selected.platform.id).toBe("openai");
@@ -118,7 +118,7 @@ describe("selectRoute", () => {
       override: {
         platforms: {
           openai: {
-            protocol: "openai"
+            protocol: "openai-chat-completions"
           }
         },
         providers: {
@@ -188,7 +188,7 @@ describe("selectRoute", () => {
         false,
         false,
         10,
-        "normal"
+        "normal", null, {}, "openai-chat-completions"
       )
     ).toThrow(HttpError);
 
@@ -207,7 +207,7 @@ describe("selectRoute", () => {
             trust_level: "medium",
             privacy_level: "normal",
             usage_trust: "medium",
-            protocol: "openai",
+            protocol: "openai-chat-completions",
             adapter: "openai_compatible",
             base_url: "https://primary.example.com/v1",
             accounts: [{ id: "main", credential_env: "PRIMARY_API_KEY" }],
@@ -218,7 +218,7 @@ describe("selectRoute", () => {
             trust_level: "medium",
             privacy_level: "normal",
             usage_trust: "medium",
-            protocol: "openai",
+            protocol: "openai-chat-completions",
             adapter: "openai_compatible",
             base_url: "https://fallback.example.com/v1",
             accounts: [{ id: "main", credential_env: "FALLBACK_API_KEY" }],
@@ -264,7 +264,7 @@ describe("selectRoute", () => {
       false,
       false,
       10,
-      "normal"
+      "normal", null, {}, "openai-chat-completions"
     );
 
     expect(route.selected.provider.id).toBe("fallback");
@@ -291,7 +291,7 @@ describe("selectRoute", () => {
             trust_level: "high",
             privacy_level: "normal",
             usage_trust: "high",
-            protocol: "openai",
+            protocol: "openai-chat-completions",
             adapter: "openai_compatible",
             base_url: "https://premium.example.com/v1",
             accounts: [{ id: "main", credential_env: "PRIMARY_API_KEY" }],
@@ -302,7 +302,7 @@ describe("selectRoute", () => {
             trust_level: "low",
             privacy_level: "normal",
             usage_trust: "low",
-            protocol: "openai",
+            protocol: "openai-chat-completions",
             adapter: "openai_compatible",
             base_url: "https://favored.example.com/v1",
             accounts: [{ id: "main", credential_env: "FALLBACK_API_KEY" }],
@@ -347,7 +347,7 @@ describe("selectRoute", () => {
       false,
       false,
       10,
-      "normal"
+      "normal", null, {}, "openai-chat-completions"
     );
 
     expect(route.selected.provider.id).toBe("favored");
@@ -367,7 +367,7 @@ describe("selectRoute", () => {
             trust_level: "high",
             privacy_level: "normal",
             usage_trust: "high",
-            protocol: "openai",
+            protocol: "openai-chat-completions",
             adapter: "openai_compatible",
             base_url: "https://premium.example.com/v1",
             capabilities: {
@@ -400,7 +400,7 @@ describe("selectRoute", () => {
             trust_level: "medium",
             privacy_level: "normal",
             usage_trust: "medium",
-            protocol: "openai",
+            protocol: "openai-chat-completions",
             adapter: "openai_compatible",
             base_url: "https://budget.example.com/v1",
             capabilities: {
@@ -523,7 +523,7 @@ describe("selectRoute", () => {
       false,
       false,
       1000,
-      "normal"
+      "normal", null, {}, "openai-chat-completions"
     );
     const codingRoute = selectRoute(
       config,
@@ -537,7 +537,7 @@ describe("selectRoute", () => {
       true,
       false,
       1000,
-      "normal"
+      "normal", null, {}, "openai-chat-completions"
     );
 
     expect(cheapRoute.selected.provider.id).toBe("budget");
@@ -584,7 +584,7 @@ describe("selectRoute", () => {
         false,
         false,
         5000,
-        "normal"
+        "normal", null, {}, "openai-chat-completions"
       );
       throw new Error("expected selectRoute to throw");
     } catch (error) {
@@ -623,7 +623,7 @@ describe("selectRoute", () => {
         false,
         false,
         10,
-        "normal"
+        "normal", null, {}, "openai-chat-completions"
       );
       throw new Error("expected selectRoute to throw");
     } catch (error) {
@@ -662,7 +662,7 @@ describe("selectRoute", () => {
       false,
       false,
       10,
-      "normal"
+      "normal", null, {}, "openai-chat-completions"
     );
 
     expect(route.selected.modelId).toBe("sonnet-via-openrouter");
@@ -695,7 +695,7 @@ describe("selectRoute", () => {
       false,
       false,
       10,
-      "normal"
+      "normal", null, {}, "openai-chat-completions"
     );
 
     expect(route.requestedContextWindow).toBeUndefined();
@@ -720,7 +720,7 @@ describe("selectRoute", () => {
             trust_level: "high",
             privacy_level: "normal",
             usage_trust: "high",
-            protocol: "openai",
+            protocol: "openai-chat-completions",
             adapter: "openai_compatible",
             base_url: "https://flaky.example.com/v1",
             accounts: [{ id: "main", credential_env: "PRIMARY_API_KEY" }],
@@ -731,7 +731,7 @@ describe("selectRoute", () => {
             trust_level: "high",
             privacy_level: "normal",
             usage_trust: "high",
-            protocol: "openai",
+            protocol: "openai-chat-completions",
             adapter: "openai_compatible",
             base_url: "https://steady.example.com/v1",
             accounts: [{ id: "main", credential_env: "FALLBACK_API_KEY" }],
@@ -777,7 +777,7 @@ describe("selectRoute", () => {
     ] as const;
 
     // 基线：两者同分，按候选顺序 flaky 在前
-    const baseline = selectRoute(...args, {});
+    const baseline = selectRoute(...args, {}, "openai-chat-completions");
     expect(baseline.selected.provider.id).toBe("flaky");
 
     // flaky-model 累积错误但仍为 normal（未熔断），应被降权到 steady 之后
@@ -790,7 +790,7 @@ describe("selectRoute", () => {
         rate_limit_strike: 0,
         recent_error_count: 8
       }
-    });
+    }, "openai-chat-completions");
     expect(withModelErrors.selected.provider.id).toBe("steady");
 
     const flakyScore = withModelErrors.candidates.find(

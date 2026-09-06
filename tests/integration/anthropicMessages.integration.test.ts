@@ -36,8 +36,8 @@ describe("Anthropic Messages compatibility", () => {
     const config = loadConfig({
       override: {
         platforms: {
-          openai: {
-            protocol: "openai"
+          anthropic: {
+            protocol: "anthropic-messages"
           }
         },
         providers: {
@@ -49,10 +49,9 @@ describe("Anthropic Messages compatibility", () => {
           }
         },
         endpoints: {
-          "demo-openai": {
+          "demo-anthropic": {
             provider: "demo",
-            platform: "openai",
-            adapter: "openai_compatible",
+            platform: "anthropic",
             base_url: "https://upstream.example.com/v1",
             capabilities: {
               streaming: true,
@@ -63,14 +62,14 @@ describe("Anthropic Messages compatibility", () => {
         },
         accounts: {
           "demo-account": {
-            endpoint: "demo-openai",
+            endpoint: "demo-anthropic",
             account_type: "api_key",
             credential_env: "UPSTREAM_API_KEY"
           }
         },
         models: {
           "demo-claude-opus-5": {
-            endpoint: "demo-openai",
+            endpoint: "demo-anthropic",
             model_name: "claude-opus-5",
             context_window: 1_000_000,
             capabilities: {
@@ -108,8 +107,8 @@ describe("Anthropic Messages compatibility", () => {
     const config = loadConfig({
       override: {
         platforms: {
-          openai: { protocol: "openai" },
-          anthropic: { protocol: "anthropic" }
+          openai: { protocol: "openai-chat-completions" },
+          anthropic: { protocol: "anthropic-messages" }
         },
         providers: {
           relay: {
@@ -186,28 +185,37 @@ describe("Anthropic Messages compatibility", () => {
     mockAgent
       .get("https://upstream.example.com")
       .intercept({
-        path: "/v1/chat/completions",
+        path: "/v1/messages",
         method: "POST"
       })
       .reply(200, {
-        id: "chatcmpl_anthropic_compat",
+        id: "msg_anthropic_compat",
+        type: "message",
+        role: "assistant",
         model: "claude-opus-5",
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: "assistant",
-              content: "OK"
-            },
-            finish_reason: "stop"
-          }
-        ],
+        content: [{ type: "text", text: "OK" }],
+        stop_reason: "end_turn",
         usage: {
-          prompt_tokens: 12,
-          completion_tokens: 1,
-          total_tokens: 13
+          input_tokens: 12,
+          output_tokens: 1
         }
       });
+  }
+
+  function mockStreamResponse() {
+    const upstreamSse =
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_anthropic_compat","usage":{"input_tokens":12,"output_tokens":0}}}\n\n' +
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}\n\n' +
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n' +
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n';
+
+    mockAgent
+      .get("https://upstream.example.com")
+      .intercept({
+        path: "/v1/messages",
+        method: "POST"
+      })
+      .reply(200, upstreamSse, { headers: { "content-type": "text/event-stream" } });
   }
 
   it("accepts x-api-key and returns an Anthropic message", async () => {
@@ -245,7 +253,7 @@ describe("Anthropic Messages compatibility", () => {
   });
 
   it("wraps the routed result as Anthropic SSE when stream is requested", async () => {
-    mockTextResponse();
+    mockStreamResponse();
     const { gateway } = await createGateway();
     const response = await gateway.inject({
       method: "POST",
@@ -272,7 +280,7 @@ describe("Anthropic Messages compatibility", () => {
   });
 
   it("records anthropic inbound traces with the client's real stream intent", async () => {
-    mockTextResponse();
+    mockStreamResponse();
     const { gateway, state } = await createGateway();
     const response = await gateway.inject({
       method: "POST",
@@ -305,7 +313,7 @@ describe("Anthropic Messages compatibility", () => {
     // usage 记账走通（inject 时代同样能记，但这里确认迁移后没丢）
     expect(trace?.execution.input_tokens).toBe(12);
     expect(trace?.execution.output_tokens).toBe(1);
-    expect(trace?.selected?.endpoint).toBe("demo-openai");
+    expect(trace?.selected?.endpoint).toBe("demo-anthropic");
 
     await gateway.close();
   });
@@ -349,7 +357,6 @@ describe("Anthropic Messages compatibility", () => {
 
     const trace = state.traceStore.latest();
     expect(trace?.policy_hits).toContain("anthropic_native");
-    expect(trace?.policy_hits).not.toContain("protocol_mismatch");
     expect(trace?.selected?.endpoint).toBe("relay-anthropic");
     // usage 从 Anthropic 形状只读提取
     expect(trace?.execution.input_tokens).toBe(18);
@@ -400,34 +407,105 @@ describe("Anthropic Messages compatibility", () => {
     // 流式 usage 由旁路从 Anthropic 事件里读出
     expect(trace?.execution.input_tokens).toBe(14);
     expect(trace?.execution.output_tokens).toBe(6);
+    expect(trace?.attempts?.[0]).toEqual(expect.objectContaining({
+      actual_upstream_url: "https://relay.example.com/v1/messages",
+      stream_completed: true,
+      stream_terminal_event: "message_stop"
+    }));
 
     await gateway.close();
   });
 
-  it("flags protocol_mismatch when only an openai endpoint exists", async () => {
-    mockTextResponse();
-    const { gateway, state } = await createGateway();
-    const response = await gateway.inject({
+  it("marks a native anthropic stream without message_stop as failed", async () => {
+    const incompleteSse =
+      'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_partial"}}\n\n' +
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}\n\n';
+
+    mockAgent
+      .get("https://relay.example.com")
+      .intercept({ path: "/v1/messages", method: "POST" })
+      .reply(200, incompleteSse, { headers: { "content-type": "text/event-stream" } });
+
+    const { gateway, state } = await createDualProtocolGateway();
+    await gateway.inject({
       method: "POST",
       url: "/v1/messages",
-      headers: { "x-api-key": "test-token" },
+      headers: { "x-api-key": "test-token", "anthropic-version": "2023-06-01" },
       payload: {
         model: "claude-opus-5[1m]",
         max_tokens: 32,
-        messages: [{ role: "user", content: "Reply exactly OK" }]
+        stream: true,
+        messages: [{ role: "user", content: "reply" }]
       }
     });
 
-    expect(response.statusCode).toBe(200);
-
-    // 没有 anthropic endpoint 时仍然可用，只是走转换路径并留下观测标记
     const trace = state.traceStore.latest();
-    expect(trace?.policy_hits).toContain("protocol_mismatch");
-    expect(trace?.policy_hits).not.toContain("anthropic_native");
-    expect(trace?.selected?.endpoint).toBe("demo-openai");
+    expect(trace?.execution).toEqual(expect.objectContaining({
+      status: "failed",
+      error: "Anthropic stream ended without message_stop"
+    }));
+    expect(trace?.attempts?.[0]).toEqual(expect.objectContaining({
+      actual_upstream_url: "https://relay.example.com/v1/messages",
+      status: "failed",
+      stream_completed: false,
+      stream_terminal_event: "content_block_delta"
+    }));
 
     await gateway.close();
   });
+
+  it("does not fall back from Messages to Chat Completions", async () => {
+    mockAgent
+      .get("https://relay.example.com")
+      .intercept({ path: "/v1/messages", method: "POST" })
+      .reply(429, {
+        type: "error",
+        error: {
+          type: "rate_limit_error",
+          message: "rate limited"
+        }
+      });
+
+    const { gateway, state } = await createDualProtocolGateway();
+    const response = await gateway.inject({
+      method: "POST",
+      url: "/v1/messages",
+      headers: { "x-api-key": "test-token", "anthropic-version": "2023-06-01" },
+      payload: {
+        model: "claude-opus-5[1m]",
+        max_tokens: 32,
+        stream: true,
+        messages: [{ role: "user", content: "Reply exactly fallback ok" }]
+      }
+    });
+
+    expect(response.statusCode).toBe(429);
+
+    const trace = state.traceStore.latest();
+    expect(trace?.attempts).toEqual([
+      expect.objectContaining({
+        endpoint: "relay-anthropic",
+        status: "failed",
+        error: "rate limited",
+        retryable: true,
+        actual_upstream_url: "https://relay.example.com/v1/messages",
+        stream_completed: false,
+        required_protocol: "anthropic-messages",
+        actual_protocol: "anthropic-messages",
+        operation: "messages",
+        failure_kind: "rate-limit",
+        failure_scope: "account-endpoint-model",
+        failure_confidence: "http-status",
+        status_code: 429,
+        provider_type: "rate_limit_error"
+      })
+    ]);
+    expect(trace?.selected).toBeNull();
+    expect(trace?.execution.status).toBe("failed");
+
+    await gateway.close();
+  });
+
 
   it("preserves route selection details when no candidate is eligible", async () => {
     const { gateway } = await createGateway();

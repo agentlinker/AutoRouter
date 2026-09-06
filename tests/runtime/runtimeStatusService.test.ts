@@ -10,6 +10,7 @@ import { AdapterRegistry } from "../../src/providers/registry.js";
 import { AppSettingsRepository } from "../../src/repositories/appSettingsRepository.js";
 import { ManagedProviderRepository } from "../../src/repositories/managedProviderRepository.js";
 import { RouteTraceRepository } from "../../src/repositories/routeTraceRepository.js";
+import { selectRoute } from "../../src/routing/routeEngine.js";
 import { StickySessionStore } from "../../src/routing/stickySession.js";
 import { RuntimeManager } from "../../src/runtime/runtimeManager.js";
 import { RuntimeStatusService } from "../../src/runtime/runtimeStatusService.js";
@@ -56,7 +57,7 @@ function createHarness(tempDir: string) {
       {
         endpoint: {
           endpointKey: "openai",
-          protocol: "openai",
+          protocol: "openai-chat-completions",
           baseUrl: "https://demo.example.com/v1",
           supportsStreaming: true,
           supportsTools: true,
@@ -64,7 +65,7 @@ function createHarness(tempDir: string) {
         },
         models: [
           {
-            modelKey: "demo-model",
+            modelKey: "demo/demo-model",
             providerModelId: "demo-model",
             modelName: "demo-model",
             contextWindow: 128000,
@@ -113,15 +114,20 @@ describe("RuntimeStatusService", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("persists account auth failures without disabling the whole provider", () => {
+  it("disables the Account only for explicit invalid-key evidence", () => {
     const harness = createHarness(tempDir);
 
     harness.service.recordFailure({
       snapshot: harness.runtimeManager.getSnapshot(),
       providerKey: "demo",
-      modelKey: "demo-model",
-      accountId: "demo/openai/default",
-      error: new HttpError(401, "provider_auth_failed", "Invalid API key")
+      modelKey: "demo/demo-model",
+      accountKey: "default",
+      endpointKey: "openai",
+      error: new HttpError(401, "provider_auth_failed", "Invalid API key", false, {
+        provider_code: "invalid_api_key",
+        protocol: "openai-chat-completions",
+        operation: "chat-completions"
+      })
     });
 
     let details = harness.managedProviders.getProviderDetails("demo");
@@ -141,52 +147,215 @@ describe("RuntimeStatusService", () => {
     expect(details?.accounts[0]?.statusMessage).toBeNull();
   });
 
-  it("persists model rate limits with backoff and recovers when model is enabled", () => {
+  it("keeps a generic 403 on Account-Endpoint without changing Account or Endpoint", () => {
     const harness = createHarness(tempDir);
 
     harness.service.recordFailure({
       snapshot: harness.runtimeManager.getSnapshot(),
       providerKey: "demo",
-      modelKey: "demo-model",
+      modelKey: "demo/demo-model",
+      accountKey: "default",
+      endpointKey: "openai",
+      error: new HttpError(
+        403,
+        "provider_access_blocked",
+        "Provider request returned HTML with status 403",
+        true
+      )
+    });
+
+    const details = harness.managedProviders.getProviderDetails("demo");
+    expect(details?.accounts[0]?.runtimeStatus).toBe("normal");
+    expect(details?.endpoints[0]?.runtimeStatus).toBe("normal");
+    expect(harness.managedProviders.getAccountEndpoint("demo", "default", "openai"))
+      .toMatchObject({
+        runtimeStatus: "disabled",
+        statusReason: "access_denied",
+        lastErrorCode: "provider_access_blocked"
+      });
+    expect(harness.runtimeManager.getSnapshot().accounts[0]?.available).toBe(true);
+    expect(harness.runtimeManager.getSnapshot().accountEndpoints).toEqual([
+      expect.objectContaining({
+        account_id: "demo/default",
+        endpoint_id: "demo/openai",
+        runtime_status: "disabled"
+      })
+    ]);
+  });
+
+  it.each([401, 403])("isolates generic Messages %s from the Account's OpenAI protocol surfaces", (status) => {
+    const harness = createHarness(tempDir);
+    harness.managedProviders.createProviderEndpoint("demo", {
+      endpointKey: "openai-responses",
+      protocol: "openai-responses",
+      baseUrl: "https://demo.example.com/v1"
+    });
+    harness.managedProviders.createProviderEndpoint("demo", {
+      endpointKey: "anthropic-messages",
+      protocol: "anthropic-messages",
+      baseUrl: "https://demo.example.com/anthropic"
+    });
+    harness.runtimeManager.reload();
+
+    harness.service.recordFailure({
+      snapshot: harness.runtimeManager.getSnapshot(),
+      providerKey: "demo",
+      modelKey: "demo/demo-model",
+      accountKey: "default",
+      endpointKey: "anthropic-messages",
+      error: new HttpError(status, "provider_auth_failed", "group cannot dispatch messages", false, {
+        protocol: "anthropic-messages",
+        operation: "messages"
+      })
+    });
+
+    expect(harness.managedProviders.getAccount("demo", "default")?.runtimeStatus).toBe("normal");
+    expect(harness.managedProviders.getAccountEndpoint("demo", "default", "anthropic-messages"))
+      .toMatchObject({ runtimeStatus: "disabled" });
+    expect(harness.managedProviders.listEnabledProviderBundles().map((bundle) => bundle.endpoint.protocol).sort())
+      .toEqual(["openai-chat-completions", "openai-responses"]);
+  });
+
+  it("persists combination rate limits and does not fake recovery when the provider model is enabled", () => {
+    const harness = createHarness(tempDir);
+
+    harness.service.recordFailure({
+      snapshot: harness.runtimeManager.getSnapshot(),
+      providerKey: "demo",
+      modelKey: "demo/demo-model",
+      accountKey: "default",
+      endpointKey: "openai",
       error: new HttpError(429, "provider_rate_limited", "Too many requests")
     });
 
-    let model = harness.managedProviders.getAccountModel("demo", "default", "demo-model");
+    let model = harness.managedProviders.getAccountEndpointModel(
+      "demo",
+      "default",
+      "openai",
+      "demo/demo-model"
+    );
     expect(model?.runtimeStatus).toBe("rate_limited");
     expect(model?.rateLimitStrike).toBe(1);
     expect(model?.statusCooldownUntil).toBeTruthy();
     expect(
       harness.runtimeManager.getSnapshot().modelStatuses[
-        "account:demo/openai/default|model:demo-model"
+        "account:demo/default|model:demo/demo-model"
       ]?.runtime_status
     ).toBe("rate_limited");
 
-    harness.managedProviders.setModelEnabled("demo", "demo-model", true);
-    model = harness.managedProviders.getAccountModel("demo", "default", "demo-model");
-    expect(model?.runtimeStatus).toBe("normal");
-    expect(model?.rateLimitStrike).toBe(0);
+    harness.managedProviders.setModelEnabled("demo", "demo/demo-model", true);
+    model = harness.managedProviders.getAccountEndpointModel(
+      "demo",
+      "default",
+      "openai",
+      "demo/demo-model"
+    );
+    expect(model?.runtimeStatus).toBe("rate_limited");
+    expect(model?.rateLimitStrike).toBe(1);
   });
 
   it("keeps repeated upstream 5xx scoped to the account-model", () => {
     const harness = createHarness(tempDir);
     harness.appSettings.setRuntimeStatusSettings({ error_threshold: 2 });
+    const snapshot = harness.runtimeManager.getSnapshot();
+    const selectDemoRoute = () =>
+      selectRoute(
+        snapshot.config,
+        snapshot.modelCatalog,
+        snapshot.priceTable,
+        snapshot.platforms,
+        snapshot.providers,
+        snapshot.endpoints,
+        snapshot.accounts,
+        "demo-model",
+        false,
+        false,
+        10,
+        "normal",
+        null,
+        snapshot.modelStatuses, "openai-chat-completions"
+      );
+
+    expect(selectDemoRoute().selected.endpoint.id).toBe("demo/openai");
 
     for (let index = 0; index < 2; index += 1) {
       harness.service.recordFailure({
-        snapshot: harness.runtimeManager.getSnapshot(),
+        snapshot,
         providerKey: "demo",
-        modelKey: "demo-model",
+        modelKey: "demo/demo-model",
+        accountKey: "default",
+        endpointKey: "openai",
         error: new HttpError(500, "provider_error", "Upstream failed")
       });
     }
 
-    const model = harness.managedProviders.getAccountModel("demo", "default", "demo-model");
+    const model = harness.managedProviders.getAccountEndpointModel(
+      "demo",
+      "default",
+      "openai",
+      "demo/demo-model"
+    );
     expect(model?.runtimeStatus).toBe("cooling_down");
     expect(model?.recentErrorCount).toBe(2);
     expect(model?.statusReason).toBe("upstream_error_cooldown");
     expect(harness.managedProviders.getAccount("demo", "default")?.runtimeStatus).toBe("normal");
     expect(
-      harness.managedProviders.getModelByProviderAndKey("demo", "demo-model")?.runtimeStatus
+      harness.managedProviders.getModelByProviderAndKey("demo", "demo/demo-model")?.runtimeStatus
     ).toBe("normal");
+    expect(selectDemoRoute).toThrowError(expect.objectContaining({
+      statusCode: 503,
+      code: "endpoint_unavailable"
+    }));
+
+    harness.service.recordSuccess({
+      snapshot,
+      providerKey: "demo",
+      modelKey: "demo/demo-model",
+      accountKey: "default",
+      endpointKey: "openai"
+    });
+    expect(selectDemoRoute().selected.endpoint.id).toBe("demo/openai");
+  });
+
+  it("does not fall back to provider-model status when the account cannot use the model", () => {
+    const harness = createHarness(tempDir);
+    harness.managedProviders.syncProviderModels("demo", {
+      accountKey: "default",
+      status: "success",
+      models: []
+    });
+
+    harness.service.recordFailure({
+      snapshot: harness.runtimeManager.getSnapshot(),
+      providerKey: "demo",
+      modelKey: "demo/demo-model",
+      accountKey: "default",
+      endpointKey: "openai",
+      error: new HttpError(400, "request_invalid", "Rejected request")
+    });
+    harness.service.recordSuccess({
+      snapshot: harness.runtimeManager.getSnapshot(),
+      providerKey: "demo",
+      modelKey: "demo/demo-model",
+      accountKey: "default",
+      endpointKey: "openai"
+    });
+
+    expect(
+      harness.managedProviders.getAccountEndpointModel(
+        "demo",
+        "default",
+        "openai",
+        "demo/demo-model"
+      )
+    ).toBeNull();
+    expect(
+      harness.managedProviders.getModelByProviderAndKey("demo", "demo/demo-model")
+    ).toMatchObject({
+      runtimeStatus: "normal",
+      lastErrorAt: null,
+      lastErrorCode: null,
+      lastErrorMessage: null
+    });
   });
 });

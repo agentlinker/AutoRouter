@@ -13,7 +13,7 @@ function buildCatalog(aliases: string[]): ModelCatalog {
 
   const config = loadConfig({
     override: {
-      platforms: { openai: { protocol: "openai" } },
+      platforms: { openai: { protocol: "openai-chat-completions" } },
       providers: {
         relay: {
           display_name: "Relay",

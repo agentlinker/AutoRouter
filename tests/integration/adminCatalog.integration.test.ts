@@ -86,7 +86,7 @@ describe("admin catalog integration", () => {
         {
           endpoint: {
             endpointKey: "default",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://catalog.example.com/v1",
             enabled: true
           },

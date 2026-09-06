@@ -7,7 +7,6 @@ function managedModel(input: Partial<ManagedModelRow>): ManagedModelRow {
   return {
     id: 1,
     providerId: 1,
-    endpointId: 1,
     logicalModelId: 1,
     modelKey: "provider/model",
     providerModelId: "model",

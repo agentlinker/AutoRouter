@@ -299,6 +299,8 @@ function TraceDetailPanel(props: {
           <dd>{props.trace.requested_model}</dd>
           <dt>归一化模型</dt>
           <dd>{props.trace.normalized_model}</dd>
+          <dt>要求协议</dt>
+          <dd>{props.trace.required_protocol ?? "未记录"}</dd>
           <dt>选中 Provider</dt>
           <dd>{props.trace.selected_provider ?? "未命中"}</dd>
           <dt>选中 Endpoint</dt>
@@ -330,8 +332,12 @@ function TraceDetailPanel(props: {
                 <th>API Key</th>
                 <th>模型</th>
                 <th>Endpoint</th>
+                <th>协议</th>
                 <th>状态</th>
                 <th>原因</th>
+                <th>失败归因</th>
+                <th>实际上游 URL</th>
+                <th>流完整性</th>
                 <th>首字耗时</th>
                 <th>当次耗时</th>
                 <th>Score</th>
@@ -349,6 +355,7 @@ function TraceDetailPanel(props: {
                       {item.model_id ? <span className="table-subtext"><code>{item.model_id}</code></span> : null}
                     </td>
                     <td><code>{item.endpoint}</code></td>
+                    <td>{item.actual_protocol ?? item.required_protocol ?? "—"}</td>
                     <td>
                       <span className={routeOutcomeBadgeClass(item.status)}>
                         {routeOutcomeStatusLabel(item.status)}
@@ -357,6 +364,25 @@ function TraceDetailPanel(props: {
                     <td className="route-outcome-reason">
                       {item.reason ? item.reason : "—"}
                     </td>
+                    <td>
+                      {item.failure_kind
+                        ? [
+                            `${item.failure_kind} · ${item.failure_scope ?? "unknown"} · ${item.failure_confidence ?? "unknown"}`,
+                            item.status_code ? `HTTP ${item.status_code}` : null,
+                            item.provider_code ?? item.provider_type
+                          ].filter(Boolean).join(" · ")
+                        : "—"}
+                    </td>
+                    <td>
+                      {item.actual_upstream_url ? <code>{item.actual_upstream_url}</code> : "—"}
+                    </td>
+                    <td>
+                      {item.stream_completed === null
+                        ? "—"
+                        : item.stream_completed
+                          ? `完整 · ${item.stream_terminal_event ?? "终止事件"}`
+                          : `未完成 · ${item.stream_terminal_event ?? "无终止事件"}`}
+                    </td>
                     <td>{item.status === "success" || item.status === "failed" ? formatLatency(item.first_token_ms) : "—"}</td>
                     <td>{item.status === "success" || item.status === "failed" ? formatLatency(item.latency_ms) : "—"}</td>
                     <td>{item.score === null || item.score === undefined ? "—" : item.score.toFixed(2)}</td>
@@ -364,7 +390,7 @@ function TraceDetailPanel(props: {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={10} className="muted">没有路由候选记录。</td>
+                  <td colSpan={14} className="muted">没有路由候选记录。</td>
                 </tr>
               )}
             </tbody>

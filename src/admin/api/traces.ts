@@ -20,6 +20,18 @@ export interface TraceAttempt extends TraceCandidate {
   retryable: boolean;
   latency_ms: number | null;
   first_token_ms: number | null;
+  actual_upstream_url: string | null;
+  stream_completed: boolean | null;
+  stream_terminal_event: string | null;
+  required_protocol: string | null;
+  actual_protocol: string | null;
+  operation: string | null;
+  failure_kind: string | null;
+  failure_scope: string | null;
+  failure_confidence: string | null;
+  status_code: number | null;
+  provider_code: string | null;
+  provider_type: string | null;
 }
 
 export type RouteOutcomeStatus = "not_requested" | "filtered" | "success" | "failed";
@@ -40,6 +52,18 @@ export interface RouteOutcomeItem {
   retryable: boolean | null;
   latency_ms: number | null;
   first_token_ms: number | null;
+  actual_upstream_url: string | null;
+  stream_completed: boolean | null;
+  stream_terminal_event: string | null;
+  required_protocol: string | null;
+  actual_protocol: string | null;
+  operation: string | null;
+  failure_kind: string | null;
+  failure_scope: string | null;
+  failure_confidence: string | null;
+  status_code: number | null;
+  provider_code: string | null;
+  provider_type: string | null;
 }
 
 export interface TraceRecord {
@@ -51,6 +75,7 @@ export interface TraceRecord {
   stream: boolean;
   has_tools: boolean;
   privacy_level: string;
+  required_protocol: string | null;
   selected_provider: string | null;
   selected_endpoint: string | null;
   selected_route_id: string | null;

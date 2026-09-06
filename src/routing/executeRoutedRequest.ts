@@ -5,10 +5,8 @@ import type { SelectedRoute } from "./routeEngine.js";
 import type { RuntimeSnapshot } from "../runtime/runtimeTypes.js";
 import type { TraceAttempt, TraceCandidate } from "../trace/traceTypes.js";
 import { HttpError } from "../utils/httpErrors.js";
-import {
-  PROVIDER_AUTH_FAILED_CODE,
-  PROVIDER_AUTH_FAILED_MESSAGE
-} from "../utils/providerErrors.js";
+import { classifyProviderFailure } from "../runtime/providerFailure.js";
+import { wireProtocolSchema } from "../config/schema.js";
 
 /** `selectRoute` 返回的候选，已排序并带 runtime 对象引用 */
 export type RoutedCandidate = SelectedRoute & { score: number; sticky: boolean };
@@ -18,11 +16,13 @@ export interface RoutedExecutionInput {
   runtimeStatusService?: RuntimeStatusService;
   candidates: RoutedCandidate[];
   requestHeaders?: RouteTarget["request_headers"];
-  /**
-   * 跳过不适用的候选（如 `/v1/responses` 需要 adapter 实现 responseCompletion）。
-   * 返回 false 的候选不计入 attempts，也不记失败。
-   */
-  supportsCandidate?: (candidate: RoutedCandidate, target: RouteTarget) => boolean;
+  attemptMetadata?: (
+    candidate: RoutedCandidate,
+    target: RouteTarget
+  ) => Pick<
+    TraceAttempt,
+    "actual_upstream_url" | "stream_completed" | "stream_terminal_event"
+  >;
   /** 非流式执行；返回上游响应 */
   invoke: (candidate: RoutedCandidate, target: RouteTarget) => Promise<ProviderResponse>;
 }
@@ -34,8 +34,6 @@ export interface RoutedExecutionOutcome {
   attempts: TraceAttempt[];
   fallbacks: TraceCandidate[];
   lastError: unknown;
-  /** supportsCandidate 至少放行过一个候选 */
-  sawSupportedCandidate: boolean;
 }
 
 function toTraceCandidate(candidate: RoutedCandidate): TraceCandidate {
@@ -68,7 +66,7 @@ function buildRouteTarget(
   candidate: RoutedCandidate,
   requestHeaders?: RouteTarget["request_headers"]
 ): RouteTarget | null {
-  const accountConfig = state.config.accounts[candidate.account.id];
+  const accountConfig = state.config.accounts[candidate.accountConfigId];
   if (!accountConfig) {
     return null;
   }
@@ -80,7 +78,7 @@ function buildRouteTarget(
     account: candidate.account,
     modelId: candidate.modelId,
     model: candidate.modelDefinition,
-    credential: state.credentialStore.resolve(candidate.account.id, accountConfig),
+    credential: state.credentialStore.resolve(candidate.accountConfigId, accountConfig),
     request_headers: requestHeaders
   };
 }
@@ -124,19 +122,36 @@ function recordFailure(
   candidate.endpoint.recent_error_count += 1;
   candidate.account.recent_error_count += 1;
 
-  input.runtimeStatusService?.recordFailure({
-    snapshot: input.state,
-    providerKey: candidate.provider.id,
-    modelKey: resolveModelKey(input.state, candidate),
-    accountId: candidate.account.id,
-    error
-  });
-
-  if (error instanceof HttpError && error.code === PROVIDER_AUTH_FAILED_CODE) {
-    candidate.account.available = false;
-    candidate.account.disabled_reason = PROVIDER_AUTH_FAILED_CODE;
-    candidate.account.disabled_message = error.message || PROVIDER_AUTH_FAILED_MESSAGE;
+  if (candidate.account.account_key && candidate.account.endpoint_key) {
+    input.runtimeStatusService?.recordFailure({
+      snapshot: input.state,
+      providerKey: candidate.provider.id,
+      modelKey: resolveModelKey(input.state, candidate),
+      accountKey: candidate.account.account_key,
+      endpointKey: candidate.account.endpoint_key,
+      error
+    });
   }
+
+}
+
+function failureTrace(error: unknown, candidate: RoutedCandidate) {
+  const protocol = wireProtocolSchema.parse(candidate.platform.protocol);
+  const failure = classifyProviderFailure(error, {
+    protocol
+  });
+  return {
+    retryable: failure.retryable,
+    required_protocol: protocol,
+    actual_protocol: protocol,
+    operation: failure.evidence.operation,
+    failure_kind: failure.kind,
+    failure_scope: failure.scope,
+    failure_confidence: failure.confidence,
+    status_code: failure.evidence.status_code,
+    provider_code: failure.evidence.provider_code,
+    provider_type: failure.evidence.provider_type
+  };
 }
 
 /**
@@ -151,7 +166,6 @@ export async function executeRoutedRequest(
   let selected: RoutedCandidate | null = null;
   let response: ProviderResponse | null = null;
   let lastError: unknown;
-  let sawSupportedCandidate = false;
 
   for (const [index, candidate] of input.candidates.entries()) {
     if (!passesAccountGate(candidate)) {
@@ -164,10 +178,7 @@ export async function executeRoutedRequest(
       continue;
     }
 
-    if (input.supportsCandidate && !input.supportsCandidate(candidate, target)) {
-      continue;
-    }
-    sawSupportedCandidate = true;
+    const attemptMetadata = input.attemptMetadata?.(candidate, target) ?? {};
 
     const attemptStartedAt = Date.now();
     try {
@@ -178,16 +189,20 @@ export async function executeRoutedRequest(
         ...toTraceCandidate(candidate),
         status: "success",
         latency_ms: latencyMs,
-        first_token_ms: latencyMs
+        first_token_ms: latencyMs,
+        ...attemptMetadata
       });
       selected = candidate;
 
-      input.runtimeStatusService?.recordSuccess({
-        snapshot: input.state,
-        providerKey: candidate.provider.id,
-        modelKey: resolveModelKey(input.state, candidate),
-        accountId: candidate.account.id
-      });
+      if (candidate.account.account_key && candidate.account.endpoint_key) {
+        input.runtimeStatusService?.recordSuccess({
+          snapshot: input.state,
+          providerKey: candidate.provider.id,
+          modelKey: resolveModelKey(input.state, candidate),
+          accountKey: candidate.account.account_key,
+          endpointKey: candidate.account.endpoint_key
+        });
+      }
       break;
     } catch (error) {
       lastError = error;
@@ -197,8 +212,9 @@ export async function executeRoutedRequest(
         ...toTraceCandidate(candidate),
         status: "failed",
         error: error instanceof Error ? error.message : "provider_request_failed",
-        retryable: error instanceof HttpError && error.retryable,
-        latency_ms: Date.now() - attemptStartedAt
+        ...failureTrace(error, candidate),
+        latency_ms: Date.now() - attemptStartedAt,
+        ...input.attemptMetadata?.(candidate, target)
       });
 
       if (index < input.candidates.length - 1) {
@@ -207,7 +223,7 @@ export async function executeRoutedRequest(
     }
   }
 
-  return { selected, response, attempts, fallbacks, lastError, sawSupportedCandidate };
+  return { selected, response, attempts, fallbacks, lastError };
 }
 
 export interface RoutedStreamInput extends Omit<RoutedExecutionInput, "invoke"> {
@@ -244,7 +260,6 @@ export async function* streamRoutedRequest(
     attempts: TraceAttempt[];
     fallbacks: TraceCandidate[];
     lastError: unknown;
-    sawSupportedCandidate: boolean;
     /** 已向调用方 yield 过 chunk 后又失败 */
     partialFailure: boolean;
   }
@@ -259,11 +274,6 @@ export async function* streamRoutedRequest(
       outcome.lastError = new HttpError(500, "account_not_found", "Configured account missing");
       continue;
     }
-
-    if (input.supportsCandidate && !input.supportsCandidate(candidate, target)) {
-      continue;
-    }
-    outcome.sawSupportedCandidate = true;
 
     const attemptStartedAt = Date.now();
     let firstTokenMs: number | undefined;
@@ -285,16 +295,20 @@ export async function* streamRoutedRequest(
         ...toTraceCandidate(candidate),
         status: "success",
         latency_ms: latencyMs,
-        first_token_ms: firstTokenMs ?? latencyMs
+        first_token_ms: firstTokenMs ?? latencyMs,
+        ...input.attemptMetadata?.(candidate, target)
       });
       outcome.selected = candidate;
 
-      input.runtimeStatusService?.recordSuccess({
-        snapshot: input.state,
-        providerKey: candidate.provider.id,
-        modelKey: resolveModelKey(input.state, candidate),
-        accountId: candidate.account.id
-      });
+      if (candidate.account.account_key && candidate.account.endpoint_key) {
+        input.runtimeStatusService?.recordSuccess({
+          snapshot: input.state,
+          providerKey: candidate.provider.id,
+          modelKey: resolveModelKey(input.state, candidate),
+          accountKey: candidate.account.account_key,
+          endpointKey: candidate.account.endpoint_key
+        });
+      }
       return;
     } catch (error) {
       outcome.lastError = error;
@@ -304,9 +318,10 @@ export async function* streamRoutedRequest(
         ...toTraceCandidate(candidate),
         status: "failed",
         error: error instanceof Error ? error.message : "provider_request_failed",
-        retryable: error instanceof HttpError && error.retryable,
+        ...failureTrace(error, candidate),
         latency_ms: Date.now() - attemptStartedAt,
-        first_token_ms: firstTokenMs
+        first_token_ms: firstTokenMs,
+        ...input.attemptMetadata?.(candidate, target)
       });
 
       // 字节已写出，不能再换候选

@@ -1,12 +1,11 @@
 import { z } from "zod";
+import { wireProtocolSchema } from "../config/schema.js";
 
 const providerKindSchema = z.enum(["official", "relay", "custom"]);
-const modelAvailabilityScopeSchema = z.enum(["shared_by_provider", "per_account"]);
-const protocolSchema = z.enum(["openai", "anthropic"]);
 
 export const providerTemplateEndpointSchema = z.object({
   endpoint_key: z.string().min(1),
-  protocol: protocolSchema,
+  protocol: wireProtocolSchema,
   base_url: z.string().url(),
   custom_headers: z.record(z.string(), z.string()).optional(),
   enabled: z.boolean().optional()
@@ -23,7 +22,6 @@ export const providerTemplateSchema = z.object({
   website_url: z.string().url().optional(),
   docs_url: z.string().url().optional(),
   provider_kind: providerKindSchema,
-  model_availability_scope: modelAvailabilityScopeSchema,
   endpoints: z.array(providerTemplateEndpointSchema).min(1),
   notes: z.string().optional()
 }).strict();
