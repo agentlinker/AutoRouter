@@ -134,14 +134,16 @@ describe("database migrations", () => {
     runMigrations(sqlite);
 
     const rows = sqlite.prepare(`
-      SELECT protocol, protocol_bundle_key AS protocolBundleKey
+      SELECT protocol
       FROM managed_provider_endpoints
       ORDER BY protocol
-    `).all() as Array<{ protocol: string; protocolBundleKey: string | null }>;
+    `).all() as Array<{ protocol: string }>;
     expect(rows).toEqual([
-      { protocol: "anthropic-messages", protocolBundleKey: null },
-      { protocol: "openai-responses", protocolBundleKey: null }
+      { protocol: "anthropic-messages" },
+      { protocol: "openai-responses" }
     ]);
+    expect((sqlite.pragma("table_info(managed_provider_endpoints)") as Array<{ name: string }>)
+      .some((column) => column.name === "protocol_bundle_key")).toBe(false);
     sqlite.close();
   });
 

@@ -69,7 +69,7 @@ describe("provider model catalog sharing", () => {
         {
           endpoint: {
             endpointKey: "openai",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://relay.example.com/v1"
           },
           models: [
@@ -86,7 +86,7 @@ describe("provider model catalog sharing", () => {
         {
           endpoint: {
             endpointKey: "anthropic",
-            protocol: "anthropic",
+            protocol: "anthropic-messages",
             baseUrl: "https://relay.example.com"
           },
           models: []
@@ -116,6 +116,7 @@ describe("provider model catalog sharing", () => {
   it("projects the shared model as a candidate on both protocols", () => {
     const { config, db, repo, cipher } = createRepo();
     seedSharedCatalogProvider(repo, cipher);
+    repo.markAccountEndpointSuccess("relay", "default", "anthropic", true);
 
     const projector = new RuntimeConfigProjector({
       baseConfig: config,
@@ -128,11 +129,28 @@ describe("provider model catalog sharing", () => {
     });
     const snapshot = projector.project();
 
+    expect(snapshot.accounts).toHaveLength(1);
+    expect(snapshot.accounts[0]).toMatchObject({
+      id: "relay/default",
+      provider_key: "relay",
+      account_key: "default"
+    });
+    expect(snapshot.accountEndpoints).toEqual([
+      expect.objectContaining({
+        account_id: "relay/default",
+        endpoint_id: "relay/anthropic",
+        runtime_status: "normal"
+      })
+    ]);
+
     const candidates = snapshot.modelCatalog.getCandidates("glm-5.2");
     expect(candidates.map((candidate) => candidate.endpoint).sort()).toEqual([
       "relay/anthropic",
       "relay/openai"
     ]);
+    expect(new Set(candidates.map((candidate) => candidate.account))).toEqual(
+      new Set(["relay/openai/default", "relay/anthropic/default"])
+    );
   });
 
   it("updates one account catalog without assigning models to an endpoint", () => {

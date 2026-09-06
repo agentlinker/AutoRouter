@@ -1,3 +1,4 @@
+import type { WireProtocol } from "../config/schema.js";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 
@@ -29,7 +30,7 @@ export type ProviderKind = "official" | "relay" | "custom";
 export interface ManagedProviderInput {
   providerKey: string;
   displayName: string;
-  protocol?: "openai" | "anthropic";
+  protocol?: WireProtocol;
   baseUrl: string;
   websiteUrl?: string | null;
   modelCatalogUrl?: string | null;
@@ -70,10 +71,9 @@ export interface AccountQuota {
 
 export interface ManagedEndpointInput {
   endpointKey: string;
-  protocol: "openai" | "anthropic";
+  protocol: WireProtocol;
   baseUrl: string;
   customHeaders?: Record<string, string>;
-  protocolBundleKey?: string | null;
   enabled?: boolean;
   supportsStreaming?: boolean;
   supportsTools?: boolean;
@@ -81,7 +81,7 @@ export interface ManagedEndpointInput {
 }
 
 export interface ManagedEndpointSetInput {
-  protocol: "openai" | "anthropic";
+  protocol: WireProtocol;
   baseUrl: string;
 }
 
@@ -96,7 +96,7 @@ export interface ManagedProviderEndpointSetCandidate {
   relation: ManagedEndpointSetRelation;
   matchingEndpoints: ManagedProviderEndpointRow[];
   conflictingEndpoints: Array<{
-    protocol: "openai" | "anthropic";
+    protocol: WireProtocol;
     candidateBaseUrl: string;
     existingBaseUrl: string;
   }>;
@@ -157,10 +157,9 @@ function isManualModel(model: Pick<ManagedModelRow, "rawMetadataJson">): boolean
 }
 
 export interface ManagedEndpointUpdateInput {
-  protocol?: "openai" | "anthropic";
+  protocol?: WireProtocol;
   baseUrl?: string;
   customHeaders?: Record<string, string>;
-  protocolBundleKey?: string | null;
   enabled?: boolean;
   supportsStreaming?: boolean;
   supportsTools?: boolean;
@@ -185,6 +184,7 @@ export interface ManagedProviderDetails {
     models: ManagedModelRow[];
   }>;
   accountEndpointModels: ManagedAccountEndpointModelRow[];
+  accountEndpoints: ManagedAccountEndpointRow[];
   endpoints: ManagedProviderEndpointRow[];
   models: ManagedModelRow[];
   latestSync: ModelSyncRunRow | null;
@@ -351,7 +351,7 @@ function classifyProviderEndpointSet(
   }
 
   const existingOnlyEndpoints = providerEndpoints.filter(
-    (endpoint) => !candidateProtocols.has(endpoint.protocol as "openai" | "anthropic")
+    (endpoint) => !candidateProtocols.has(endpoint.protocol as WireProtocol)
   );
   return {
     provider,
@@ -829,6 +829,9 @@ export class ManagedProviderRepository {
         endpointIds.has(row.endpointId) &&
         modelIds.has(row.managedModelId)
       );
+    const accountEndpoints = this.db.select().from(managedAccountEndpointsTable)
+      .all()
+      .filter((row) => accountIds.has(row.accountId) && endpointIds.has(row.endpointId));
 
     return {
       provider,
@@ -836,6 +839,7 @@ export class ManagedProviderRepository {
       accounts,
       accountModels,
       accountEndpointModels,
+      accountEndpoints,
       endpoints,
       models,
       latestSync
@@ -904,8 +908,8 @@ export class ManagedProviderRepository {
       endpointBundles: [
         {
           endpoint: {
-            endpointKey: "default",
-            protocol: input.provider.protocol ?? "openai",
+            endpointKey: input.provider.protocol ?? "openai-responses",
+            protocol: input.provider.protocol ?? "openai-responses",
             baseUrl: input.provider.baseUrl,
             enabled: input.provider.enabled ?? true,
             supportsStreaming: true,
@@ -973,7 +977,6 @@ export class ManagedProviderRepository {
             protocol: bundle.endpoint.protocol,
             baseUrl: bundle.endpoint.baseUrl,
             customHeadersJson: bundle.endpoint.customHeaders ? JSON.stringify(bundle.endpoint.customHeaders) : null,
-            protocolBundleKey: bundle.endpoint.protocolBundleKey ?? null,
             enabled: bundle.endpoint.enabled ?? true,
             supportsStreaming: bundle.endpoint.supportsStreaming ?? true,
             supportsTools: bundle.endpoint.supportsTools ?? bundle.models.some((model) => model.supportsTools),
@@ -1117,7 +1120,6 @@ export class ManagedProviderRepository {
             protocol: bundle.endpoint.protocol,
             baseUrl: bundle.endpoint.baseUrl,
             customHeadersJson: bundle.endpoint.customHeaders ? JSON.stringify(bundle.endpoint.customHeaders) : null,
-            protocolBundleKey: bundle.endpoint.protocolBundleKey ?? null,
             enabled: bundle.endpoint.enabled ?? true,
             supportsStreaming: bundle.endpoint.supportsStreaming ?? true,
             supportsTools: bundle.endpoint.supportsTools ?? bundle.models.some((model) => model.supportsTools),
@@ -1487,7 +1489,7 @@ export class ManagedProviderRepository {
 
   public getProviderEndpointByProtocol(
     providerKey: string,
-    protocol: "openai" | "anthropic"
+    protocol: WireProtocol
   ): ManagedProviderEndpointRow | null {
     const provider = this.db.select().from(managedProvidersTable)
       .where(eq(managedProvidersTable.providerKey, providerKey))
@@ -1525,7 +1527,6 @@ export class ManagedProviderRepository {
         protocol: input.protocol,
         baseUrl: input.baseUrl,
         customHeadersJson: input.customHeaders ? JSON.stringify(input.customHeaders) : null,
-        protocolBundleKey: input.protocolBundleKey ?? null,
         enabled: input.enabled ?? true,
         supportsStreaming: input.supportsStreaming ?? true,
         supportsTools: input.supportsTools ?? false,
@@ -1559,7 +1560,6 @@ export class ManagedProviderRepository {
           protocol: endpoint.protocol,
           baseUrl: endpoint.baseUrl,
           customHeadersJson: endpoint.customHeaders ? JSON.stringify(endpoint.customHeaders) : null,
-          protocolBundleKey: endpoint.protocolBundleKey ?? null,
           enabled: endpoint.enabled ?? true,
           supportsStreaming: endpoint.supportsStreaming ?? true,
           supportsTools: endpoint.supportsTools ?? false,
@@ -1606,10 +1606,6 @@ export class ManagedProviderRepository {
                 ? JSON.stringify(input.customHeaders)
                 : null
               : endpoint.customHeadersJson,
-          protocolBundleKey:
-            input.protocolBundleKey !== undefined
-              ? input.protocolBundleKey
-              : endpoint.protocolBundleKey,
           enabled: input.enabled ?? endpoint.enabled,
           supportsStreaming: input.supportsStreaming ?? endpoint.supportsStreaming,
           supportsTools: input.supportsTools ?? endpoint.supportsTools,
@@ -1643,8 +1639,6 @@ export class ManagedProviderRepository {
         protocol: input.protocol ?? endpoint.protocol,
         baseUrl: input.baseUrl ?? endpoint.baseUrl,
         customHeadersJson: input.customHeaders !== undefined ? (input.customHeaders ? JSON.stringify(input.customHeaders) : null) : endpoint.customHeadersJson,
-        protocolBundleKey:
-          input.protocolBundleKey !== undefined ? input.protocolBundleKey : endpoint.protocolBundleKey,
         enabled: input.enabled ?? endpoint.enabled,
         supportsStreaming: input.supportsStreaming ?? endpoint.supportsStreaming,
         supportsTools: input.supportsTools ?? endpoint.supportsTools,

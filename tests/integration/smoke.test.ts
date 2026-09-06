@@ -79,7 +79,10 @@ describe("local smoke", () => {
       override: {
         platforms: {
           openai: {
-            protocol: "openai"
+            protocol: "openai-chat-completions"
+          },
+          responses: {
+            protocol: "openai-responses"
           }
         },
         providers: {
@@ -101,6 +104,16 @@ describe("local smoke", () => {
               tools: true,
               json_mode: true
             }
+          },
+          "smoke-responses": {
+            provider: "smoke",
+            platform: "responses",
+            base_url: "https://smoke.example.com/v1",
+            capabilities: {
+              streaming: true,
+              tools: true,
+              json_mode: true
+            }
           }
         },
         accounts: {
@@ -108,11 +121,25 @@ describe("local smoke", () => {
             endpoint: "smoke-openai",
             account_type: "api_key",
             credential_env: "SMOKE_API_KEY"
+          },
+          "smoke-responses-account": {
+            endpoint: "smoke-responses",
+            account_type: "api_key",
+            credential_env: "SMOKE_API_KEY"
           }
         },
         models: {
           "smoke-model": {
             endpoint: "smoke-openai",
+            model_name: "smoke-model",
+            capabilities: {
+              streaming: true,
+              tools: true,
+              json_mode: true
+            }
+          },
+          "smoke-responses-model": {
+            endpoint: "smoke-responses",
             model_name: "smoke-model",
             capabilities: {
               streaming: true,
@@ -128,6 +155,10 @@ describe("local smoke", () => {
               {
                 account: "smoke-account",
                 model: "smoke-model"
+              },
+              {
+                account: "smoke-responses-account",
+                model: "smoke-responses-model"
               }
             ]
           }

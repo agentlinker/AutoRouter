@@ -108,7 +108,8 @@ export async function registerResponsesRoute(
         privacyLevel,
         null,
         state.modelStatuses ?? {},
-        "openai-responses"
+        "openai-responses",
+        state.accountEndpoints
       );
     } catch (error) {
       recordRouteSelectionFailure(runtimeManager, error, {
@@ -119,7 +120,8 @@ export async function registerResponsesRoute(
         privacyLevel,
         contextTokensEst,
         sessionId: null,
-        policyHits: ["route_selection_failed", "responses_native"]
+        policyHits: ["route_selection_failed", "responses_native"],
+        requiredProtocol: "openai-responses"
       });
       throw error;
     }
@@ -148,7 +150,8 @@ export async function registerResponsesRoute(
         has_tools: Array.isArray(request.body.tools) && request.body.tools.length > 0,
         privacy_level: privacyLevel,
         context_tokens_est: estimateResponsesContextTokens(request.body),
-        requested_context_window: routeDecision.requestedContextWindow ?? null
+        requested_context_window: routeDecision.requestedContextWindow ?? null,
+        required_protocol: "openai-responses"
       },
       candidates: routeDecision.candidates.map((candidate) => ({
         route_id: candidate.routeId,
@@ -210,7 +213,6 @@ export async function registerResponsesRoute(
         attempts: [] as TraceAttempt[],
         fallbacks: [] as TraceCandidate[],
         lastError: undefined as unknown,
-        sawSupportedCandidate: false,
         partialFailure: false
       };
 
@@ -218,7 +220,7 @@ export async function registerResponsesRoute(
         {
           ...executionInput,
           invokeStream: (_candidate, target) =>
-            state.adapters.forProtocol(target.platform.protocol).streamResponse!(
+            state.adapters.forProtocol("openai-responses").streamResponse(
               {
                 ...(request.body as Record<string, unknown>),
                 model: request.body.model!,
@@ -289,7 +291,7 @@ export async function registerResponsesRoute(
       const outcome = await executeRoutedRequest({
         ...executionInput,
         invoke: (_candidate, target) =>
-          state.adapters.forProtocol(target.platform.protocol).responseCompletion!(
+          state.adapters.forProtocol("openai-responses").responseCompletion(
             {
               ...(request.body as Record<string, unknown>),
               model: request.body.model!,

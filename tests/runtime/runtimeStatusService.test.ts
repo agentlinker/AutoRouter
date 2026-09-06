@@ -57,7 +57,7 @@ function createHarness(tempDir: string) {
       {
         endpoint: {
           endpointKey: "openai",
-          protocol: "openai",
+          protocol: "openai-chat-completions",
           baseUrl: "https://demo.example.com/v1",
           supportsStreaming: true,
           supportsTools: true,
@@ -114,7 +114,7 @@ describe("RuntimeStatusService", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("persists account auth failures without disabling the whole provider", () => {
+  it("disables the Account only for explicit invalid-key evidence", () => {
     const harness = createHarness(tempDir);
 
     harness.service.recordFailure({
@@ -123,7 +123,11 @@ describe("RuntimeStatusService", () => {
       modelKey: "demo/demo-model",
       accountKey: "default",
       endpointKey: "openai",
-      error: new HttpError(401, "provider_auth_failed", "Invalid API key")
+      error: new HttpError(401, "provider_auth_failed", "Invalid API key", false, {
+        provider_code: "invalid_api_key",
+        protocol: "openai-chat-completions",
+        operation: "chat-completions"
+      })
     });
 
     let details = harness.managedProviders.getProviderDetails("demo");
@@ -143,7 +147,7 @@ describe("RuntimeStatusService", () => {
     expect(details?.accounts[0]?.statusMessage).toBeNull();
   });
 
-  it("keeps the account enabled when an HTML access block returns 403", () => {
+  it("keeps a generic 403 on Account-Endpoint without changing Account or Endpoint", () => {
     const harness = createHarness(tempDir);
 
     harness.service.recordFailure({
@@ -162,8 +166,54 @@ describe("RuntimeStatusService", () => {
 
     const details = harness.managedProviders.getProviderDetails("demo");
     expect(details?.accounts[0]?.runtimeStatus).toBe("normal");
-    expect(details?.endpoints[0]?.runtimeStatus).toBe("cooling_down");
-    expect(details?.endpoints[0]?.lastErrorCode).toBe("provider_access_blocked");
+    expect(details?.endpoints[0]?.runtimeStatus).toBe("normal");
+    expect(harness.managedProviders.getAccountEndpoint("demo", "default", "openai"))
+      .toMatchObject({
+        runtimeStatus: "disabled",
+        statusReason: "access_denied",
+        lastErrorCode: "provider_access_blocked"
+      });
+    expect(harness.runtimeManager.getSnapshot().accounts[0]?.available).toBe(true);
+    expect(harness.runtimeManager.getSnapshot().accountEndpoints).toEqual([
+      expect.objectContaining({
+        account_id: "demo/default",
+        endpoint_id: "demo/openai",
+        runtime_status: "disabled"
+      })
+    ]);
+  });
+
+  it.each([401, 403])("isolates generic Messages %s from the Account's OpenAI protocol surfaces", (status) => {
+    const harness = createHarness(tempDir);
+    harness.managedProviders.createProviderEndpoint("demo", {
+      endpointKey: "openai-responses",
+      protocol: "openai-responses",
+      baseUrl: "https://demo.example.com/v1"
+    });
+    harness.managedProviders.createProviderEndpoint("demo", {
+      endpointKey: "anthropic-messages",
+      protocol: "anthropic-messages",
+      baseUrl: "https://demo.example.com/anthropic"
+    });
+    harness.runtimeManager.reload();
+
+    harness.service.recordFailure({
+      snapshot: harness.runtimeManager.getSnapshot(),
+      providerKey: "demo",
+      modelKey: "demo/demo-model",
+      accountKey: "default",
+      endpointKey: "anthropic-messages",
+      error: new HttpError(status, "provider_auth_failed", "group cannot dispatch messages", false, {
+        protocol: "anthropic-messages",
+        operation: "messages"
+      })
+    });
+
+    expect(harness.managedProviders.getAccount("demo", "default")?.runtimeStatus).toBe("normal");
+    expect(harness.managedProviders.getAccountEndpoint("demo", "default", "anthropic-messages"))
+      .toMatchObject({ runtimeStatus: "disabled" });
+    expect(harness.managedProviders.listEnabledProviderBundles().map((bundle) => bundle.endpoint.protocol).sort())
+      .toEqual(["openai-chat-completions", "openai-responses"]);
   });
 
   it("persists combination rate limits and does not fake recovery when the provider model is enabled", () => {
@@ -189,7 +239,7 @@ describe("RuntimeStatusService", () => {
     expect(model?.statusCooldownUntil).toBeTruthy();
     expect(
       harness.runtimeManager.getSnapshot().modelStatuses[
-        "account:demo/openai/default|model:demo/demo-model"
+        "account:demo/default|model:demo/demo-model"
       ]?.runtime_status
     ).toBe("rate_limited");
 

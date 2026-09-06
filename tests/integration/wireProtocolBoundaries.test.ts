@@ -37,15 +37,19 @@ describe("gateway wire protocol boundaries", () => {
     vi.unstubAllEnvs();
   });
 
-  async function harness(available: readonly string[] = protocols) {
+  async function harness(available: readonly string[] = protocols, fallbackProtocol?: string) {
+    const providers = [
+      ...available.map((protocol) => ({ key: protocol, protocol })),
+      ...(fallbackProtocol ? [{ key: `${fallbackProtocol}-fallback`, protocol: fallbackProtocol }] : [])
+    ];
     const config = loadConfig({ override: {
-      providers: Object.fromEntries(available.map((protocol) => [protocol, {
-        protocol, base_url: `https://${protocol}.example/v1`, privacy_level: "normal",
+      providers: Object.fromEntries(providers.map(({ key, protocol }) => [key, {
+        protocol, base_url: `https://${key}.example/v1`, privacy_level: "normal",
         accounts: [{ id: "main", account_type: "local_model" }],
         models: [{ id: "model", model_name: "model" }]
       }])),
-      routes: { auto: { policy: "balanced", candidates: available.map((protocol) => ({
-        provider: protocol, account: "main", model: "model"
+      routes: { auto: { policy: "balanced", candidates: providers.map(({ key }) => ({
+        provider: key, account: "main", model: "model"
       })) } }
     } });
     const database = createDatabaseClient(":memory:");
@@ -87,5 +91,33 @@ describe("gateway wire protocol boundaries", () => {
       headers: { authorization: "Bearer test-token" }, payload: { model: "auto", input: "Hello" } });
     expect(response.statusCode).toBe(404);
     expect(traceStore.latest()?.attempts?.map((attempt) => attempt.provider)).toEqual(["openai-responses"]);
+  });
+
+  it.each([ingress[0], ingress[2]])("retries $protocol only before the first streaming byte", async ({ protocol, path, body }) => {
+    upstream.get(`https://${protocol}.example`).intercept({ path, method: "POST" })
+      .reply(503, { error: { message: "temporarily unavailable" } });
+    const raw = protocol === "anthropic-messages"
+      ? 'event: message_start\ndata: {"type":"message_start","message":{"id":"native","usage":{"input_tokens":1}}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n'
+      : 'event: response.completed\ndata: {"type":"response.completed","response":{"id":"native","status":"completed"}}\n\n';
+    upstream.get(`https://${protocol}-fallback.example`).intercept({ path, method: "POST" })
+      .reply(200, raw, { headers: { "content-type": "text/event-stream" } });
+    const { gateway, traceStore } = await harness(protocols, protocol);
+    const response = await gateway.inject({ method: "POST", url: path,
+      headers: { authorization: "Bearer test-token" }, payload: { model: "auto", ...body, stream: true } });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toBe(raw);
+    expect(traceStore.latest()?.attempts?.map((attempt) => attempt.provider))
+      .toEqual([protocol, `${protocol}-fallback`]);
+    upstream.assertNoPendingInterceptors();
+  });
+
+  it.each([401, 403])("does not attempt another protocol after a Messages %s", async (status) => {
+    upstream.get("https://anthropic-messages.example").intercept({ path: "/v1/messages", method: "POST" })
+      .reply(status, { error: { message: "group cannot dispatch messages" } });
+    const { gateway, traceStore } = await harness();
+    const response = await gateway.inject({ method: "POST", url: "/v1/messages",
+      headers: { authorization: "Bearer test-token" }, payload: { model: "auto", ...ingress[2].body } });
+    expect(response.statusCode).toBe(status);
+    expect(traceStore.latest()?.attempts?.map((attempt) => attempt.provider)).toEqual(["anthropic-messages"]);
   });
 });

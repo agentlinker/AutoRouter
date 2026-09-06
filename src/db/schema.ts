@@ -1,4 +1,5 @@
 import { integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import type { WireProtocol } from "../config/schema.js";
 
 export const managedProvidersTable = sqliteTable("managed_providers", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -61,10 +62,9 @@ export const managedProviderEndpointsTable = sqliteTable("managed_provider_endpo
   id: integer("id").primaryKey({ autoIncrement: true }),
   providerId: integer("provider_id").notNull(),
   endpointKey: text("endpoint_key").notNull(),
-  protocol: text("protocol").notNull().default("openai"),
+  protocol: text("protocol").$type<WireProtocol>().notNull().default("openai-responses"),
   baseUrl: text("base_url").notNull(),
   customHeadersJson: text("custom_headers_json"),
-  protocolBundleKey: text("protocol_bundle_key"),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
   supportsStreaming: integer("supports_streaming", { mode: "boolean" }).notNull().default(true),
   supportsTools: integer("supports_tools", { mode: "boolean" }).notNull().default(false),
@@ -250,6 +250,7 @@ export const routeTracesTable = sqliteTable("route_traces", {
   privacyLevel: text("privacy_level").notNull(),
   contextTokensEst: integer("context_tokens_est").notNull().default(0),
   requestedContextWindow: integer("requested_context_window"),
+  requiredProtocol: text("required_protocol"),
   selectedRouteId: text("selected_route_id"),
   selectedEndpoint: text("selected_endpoint"),
   selectedPlatform: text("selected_platform"),

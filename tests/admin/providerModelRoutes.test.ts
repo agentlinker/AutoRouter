@@ -27,7 +27,7 @@ function providerWithObservations(
   return {
     provider_key: "test-provider",
     display_name: "Test Provider",
-    protocol: "openai",
+    protocol: "openai-responses",
     base_url: "https://example.com",
     model_catalog_url: null,
     website_url: null,
@@ -53,7 +53,7 @@ function providerWithObservations(
     endpoints: [
       {
         endpoint_key: "openai",
-        protocol: "openai",
+        protocol: "openai-responses",
         base_url: "https://example.com/v1",
         enabled: true,
         runtime_status: "normal",
@@ -63,7 +63,7 @@ function providerWithObservations(
       },
       {
         endpoint_key: "anthropic",
-        protocol: "anthropic",
+        protocol: "anthropic-messages",
         base_url: "https://example.com",
         enabled: true,
         runtime_status: "normal",
@@ -74,7 +74,8 @@ function providerWithObservations(
     ],
     latest_sync: null,
     models: [model],
-    account_endpoint_models: observations
+    account_endpoint_models: observations,
+    account_endpoints: []
   };
 }
 

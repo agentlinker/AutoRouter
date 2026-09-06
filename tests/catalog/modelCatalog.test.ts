@@ -9,7 +9,7 @@ describe("ModelCatalog", () => {
       override: {
         platforms: {
           openai: {
-            protocol: "openai"
+            protocol: "openai-chat-completions"
           }
         },
         providers: {
@@ -74,7 +74,7 @@ describe("ModelCatalog", () => {
             trust_level: "medium",
             privacy_level: "normal",
             usage_trust: "medium",
-            protocol: "openai",
+            protocol: "openai-chat-completions",
             adapter: "openai_compatible",
             base_url: "https://example.com/v1",
             accounts: [{ id: "main", credential_env: "DEMO_API_KEY" }],
@@ -143,7 +143,7 @@ describe("ModelCatalog", () => {
             trust_level: "medium",
             privacy_level: "normal",
             usage_trust: "medium",
-            protocol: "anthropic",
+            protocol: "anthropic-messages",
             adapter: "anthropic",
             base_url: "https://example.com",
             accounts: [{ id: "main", credential_env: "DEMO_API_KEY" }],
@@ -205,7 +205,7 @@ describe("ModelCatalog", () => {
             trust_level: "medium",
             privacy_level: "normal",
             usage_trust: "medium",
-            protocol: "anthropic",
+            protocol: "anthropic-messages",
             adapter: "anthropic",
             base_url: "https://example.com",
             accounts: [{ id: "main", credential_env: "DEMO_API_KEY" }],

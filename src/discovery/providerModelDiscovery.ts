@@ -1,4 +1,5 @@
 import { request as undiciRequest } from "undici";
+import type { WireProtocol } from "../config/schema.js";
 
 import { HttpError } from "../utils/httpErrors.js";
 
@@ -52,7 +53,7 @@ function extractModelData(body: unknown): unknown[] {
 
 export interface ModelCatalogEndpoint {
   endpointKey: string;
-  protocol: "openai" | "anthropic";
+  protocol: WireProtocol;
   baseUrl: string;
   enabled?: boolean;
 }
@@ -94,7 +95,7 @@ function candidatesForEndpoint(endpoint: ModelCatalogEndpoint): string[] {
   if (/\/v\d+(?:beta)?$/i.test(pathname)) {
     return [`${baseUrl}/models`];
   }
-  if (endpoint.protocol === "openai") {
+  if (endpoint.protocol !== "anthropic-messages") {
     return [
       appendCatalogPath(baseUrl, "/v1/models"),
       appendCatalogPath(baseUrl, "/models")
@@ -110,8 +111,9 @@ function candidatesForEndpoint(endpoint: ModelCatalogEndpoint): string[] {
 
 export function deriveModelCatalogUrls(endpoints: ModelCatalogEndpoint[]): string[] {
   const enabled = endpoints.filter((endpoint) => endpoint.enabled !== false);
-  const basis = enabled.find((endpoint) => endpoint.protocol === "openai") ??
-    enabled.find((endpoint) => endpoint.protocol === "anthropic");
+  const basis = enabled.find((endpoint) => endpoint.protocol === "openai-responses") ??
+    enabled.find((endpoint) => endpoint.protocol === "openai-chat-completions") ??
+    enabled.find((endpoint) => endpoint.protocol === "anthropic-messages");
   if (!basis) {
     return [];
   }

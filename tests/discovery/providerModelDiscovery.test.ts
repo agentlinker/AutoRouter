@@ -10,12 +10,12 @@ describe("provider model catalog discovery", () => {
     expect(deriveModelCatalogUrls([
       {
         endpointKey: "openai",
-        protocol: "openai",
+        protocol: "openai-responses",
         baseUrl: "https://example.com/v1/"
       },
       {
         endpointKey: "anthropic",
-        protocol: "anthropic",
+        protocol: "anthropic-messages",
         baseUrl: "https://example.com/anthropic"
       }
     ])).toEqual(["https://example.com/v1/models"]);
@@ -25,7 +25,7 @@ describe("provider model catalog discovery", () => {
     expect(deriveModelCatalogUrls([
       {
         endpointKey: "anthropic",
-        protocol: "anthropic",
+        protocol: "anthropic-messages",
         baseUrl: "https://example.com/anthropic/"
       }
     ])).toEqual([
@@ -82,7 +82,7 @@ describe("provider model catalog discovery", () => {
       apiKey: "secret",
       endpoints: [{
         endpointKey: "anthropic",
-        protocol: "anthropic",
+        protocol: "anthropic-messages",
         baseUrl: "https://example.com/anthropic"
       }]
     });

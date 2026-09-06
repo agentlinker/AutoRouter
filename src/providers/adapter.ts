@@ -26,7 +26,7 @@ export interface ProviderResponse {
   /**
    * 上游响应的原始 JSON 文本。存在时应字节级透传给调用方，避免
    * JSON → 对象 → JSON 往返导致的数字精度、键序、重复键丢失。
-   * `body` 仅用于只读记账（usage / 协议转换），不参与回写。
+   * `body` 仅用于只读记账，不参与回写。
    */
   raw?: string;
   usage?: {
@@ -51,35 +51,46 @@ export type ProviderMessagesRequest = Record<string, unknown> & {
   stream?: boolean;
 };
 
-export interface ProviderAdapter {
-  readonly type: string;
+export interface ChatCompletionsAdapter {
+  readonly protocol: "openai-chat-completions";
   chatCompletion(
     request: NormalizedChatRequest,
     target: RouteTarget
   ): Promise<ProviderResponse>;
-  streamChatCompletion?(
+  streamChatCompletion(
     request: NormalizedChatRequest,
     target: RouteTarget
   ): AsyncIterable<ProviderStreamChunk>;
-  responseCompletion?(
+}
+
+export interface ResponsesAdapter {
+  readonly protocol: "openai-responses";
+  responseCompletion(
     request: ProviderResponsesRequest,
     target: RouteTarget
   ): Promise<ProviderResponse>;
-  streamResponse?(
+  streamResponse(
     request: ProviderResponsesRequest,
     target: RouteTarget
   ): AsyncIterable<ProviderStreamChunk>;
-  /**
-   * 原生 Anthropic Messages 直通（对称于 responseCompletion）。
-   * 实现该方法表示 endpoint 能直接消费 Anthropic 协议，`/v1/messages`
-   * 命中时可零转换透传，保住 thinking blocks / cache_control / tools 等字段。
-   */
-  messageCompletion?(
+}
+
+export interface MessagesAdapter {
+  readonly protocol: "anthropic-messages";
+  messageCompletion(
     request: ProviderMessagesRequest,
     target: RouteTarget
   ): Promise<ProviderResponse>;
-  streamMessage?(
+  streamMessage(
     request: ProviderMessagesRequest,
     target: RouteTarget
   ): AsyncIterable<ProviderStreamChunk>;
 }
+
+export interface ProtocolAdapters {
+  "openai-responses": ResponsesAdapter;
+  "openai-chat-completions": ChatCompletionsAdapter;
+  "anthropic-messages": MessagesAdapter;
+}
+
+export type ProviderAdapter = ProtocolAdapters[keyof ProtocolAdapters];

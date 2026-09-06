@@ -3,14 +3,16 @@ import type { AppSettingsRepository } from "../repositories/appSettingsRepositor
 import type { RuntimeSnapshot } from "./runtimeTypes.js";
 import {
   accountUnavailableReason,
-  classifyProviderFailure,
   nextCooldown,
-  type FailureClass,
   type RuntimeStatus,
   type RuntimeStatusSettings
 } from "./runtimeStatus.js";
-import { PROVIDER_AUTH_FAILED_CODE } from "../utils/providerErrors.js";
 import { accountModelStatusKey } from "../state/routerState.js";
+import { wireProtocolSchema } from "../config/schema.js";
+import {
+  classifyProviderFailure,
+  type StructuredProviderFailure
+} from "./providerFailure.js";
 
 interface FailureContext {
   snapshot: RuntimeSnapshot;
@@ -21,6 +23,7 @@ interface FailureContext {
   code?: string;
   message: string;
   settings: RuntimeStatusSettings;
+  failure: StructuredProviderFailure;
 }
 
 export class RuntimeStatusService {
@@ -92,6 +95,12 @@ export class RuntimeStatusService {
       input.endpointKey,
       settings.clear_counters_on_success
     );
+    this.managedProviders.markAccountEndpointSuccess(
+      input.providerKey,
+      input.accountKey,
+      input.endpointKey,
+      settings.clear_counters_on_success
+    );
     const accountModel = this.managedProviders.markAccountEndpointModelSuccess(
       input.providerKey,
       input.accountKey,
@@ -121,7 +130,14 @@ export class RuntimeStatusService {
     error: unknown;
   }): void {
     const settings = this.getSettings();
-    const failureClass = classifyProviderFailure(input.error);
+    const endpoint = input.snapshot.endpoints.find(
+      (item) => item.id === `${input.providerKey}/${input.endpointKey}`
+    );
+    const failure = classifyProviderFailure(input.error, {
+      protocol: wireProtocolSchema.parse(
+        input.snapshot.platforms.find((item) => item.id === endpoint?.platform_id)?.protocol
+      )
+    });
     const context: FailureContext = {
       snapshot: input.snapshot,
       providerKey: input.providerKey,
@@ -137,41 +153,34 @@ export class RuntimeStatusService {
           : undefined,
       message:
         input.error instanceof Error ? input.error.message : "provider_request_failed",
-      settings
+      settings,
+      failure
     };
 
-    switch (failureClass) {
-      case "auth":
-        this.handleAuthFailure(context);
+    switch (failure.scope) {
+      case "account":
+        if (failure.kind === "billing") this.handleBillingFailure(context);
+        else this.handleAuthFailure(context);
         return;
-      case "billing":
-        this.handleBillingFailure(context);
-        return;
-      case "rate_limit":
-        this.handleRateLimit(context);
-        return;
-      case "model_unavailable":
-        this.handleModelUnavailable(context);
-        return;
-      case "upstream_error":
-        this.handleUpstreamError(context);
-        return;
-      case "client_error":
-        this.handleClientError(context);
-        return;
-      case "transient":
-      default:
+      case "endpoint":
         this.handleTransient(context);
+        return;
+      case "account-endpoint":
+        this.handleAccountEndpointFailure(context);
+        return;
+      case "account-endpoint-model":
+        if (failure.kind === "rate-limit") this.handleRateLimit(context);
+        else if (failure.kind === "model-unavailable") this.handleModelUnavailable(context);
+        else this.handleUpstreamError(context);
+        return;
+      case "request":
+      case "unknown":
+        return;
     }
   }
 
-  /** 401/403：只禁当前 account，不牵连同 provider 的其它凭证 */
+  /** 只有结构化 scope=account 的明确凭证证据才禁用 Account。 */
   private handleAuthFailure(context: FailureContext): void {
-    if (!context.settings.auth_disables_account) {
-      this.handleTransient(context);
-      return;
-    }
-
     const account = this.managedProviders.markAccountAuthFailed(
       context.providerKey,
       context.accountKey,
@@ -184,6 +193,25 @@ export class RuntimeStatusService {
         context.accountKey,
         this.toPatchedAccountStatus(account)
       );
+    }
+  }
+
+  private handleAccountEndpointFailure(context: FailureContext): void {
+    const row = this.managedProviders.applyAccountEndpointFailure(
+      context.providerKey,
+      context.accountKey,
+      context.endpointKey,
+      {
+        runtimeStatus: "disabled",
+        reason: context.failure.kind === "authentication" ? "authentication_failed" : "access_denied",
+        cooldownUntil: null,
+        code: context.code,
+        message: context.message
+      }
+    );
+    if (row) {
+      this.patchAccountEndpointStatus(context.snapshot, context.providerKey, context.accountKey,
+        context.endpointKey, row.runtimeStatus as RuntimeStatus, row.statusReason, row.statusMessage);
     }
   }
 
@@ -359,28 +387,6 @@ export class RuntimeStatusService {
         }
       );
     }
-
-  }
-
-  /**
-   * 400/409/413/422：无法区分是我们的请求有问题还是这个节点限制更严
-   * （413 明确是节点 body 上限更低），惩罚会误杀好节点，因此只留痕不改状态。
-   */
-  private handleClientError(context: FailureContext): void {
-    this.managedProviders.recordAccountClientError(context.providerKey, context.accountKey, {
-      code: context.code,
-      message: context.message
-    });
-    this.managedProviders.recordAccountEndpointModelClientError(
-      context.providerKey,
-      context.accountKey,
-      context.endpointKey,
-      context.modelKey,
-      {
-        code: context.code,
-        message: context.message
-      }
-    );
   }
 
   private patchAccountStatus(
@@ -445,7 +451,7 @@ export class RuntimeStatusService {
       recent_error_count: status.recent_error_count ?? 0
     };
     if (accountKey && endpointKey) {
-      const accountId = `${providerKey}/${endpointKey}/${accountKey}`;
+      const accountId = `${providerKey}/${accountKey}`;
       const providerPrefix = `${providerKey}/`;
       const providerModelId = modelKey.startsWith(providerPrefix)
         ? modelKey.slice(providerPrefix.length)
@@ -485,6 +491,35 @@ export class RuntimeStatusService {
     endpoint.status_message = status.status_message ?? null;
     endpoint.status_cooldown_until = status.status_cooldown_until ?? null;
   }
-}
 
-export type { FailureClass };
+  private patchAccountEndpointStatus(
+    snapshot: RuntimeSnapshot,
+    providerKey: string,
+    accountKey: string,
+    endpointKey: string,
+    runtimeStatus: RuntimeStatus,
+    reason?: string | null,
+    message?: string | null
+  ): void {
+    const accountId = `${providerKey}/${accountKey}`;
+    const endpointId = `${providerKey}/${endpointKey}`;
+    const existing = snapshot.accountEndpoints.find((item) =>
+      item.account_id === accountId && item.endpoint_id === endpointId
+    );
+    if (existing) {
+      existing.runtime_status = runtimeStatus;
+      existing.status_reason = reason ?? null;
+      existing.status_message = message ?? null;
+      return;
+    }
+    snapshot.accountEndpoints.push({
+      account_id: accountId,
+      endpoint_id: endpointId,
+      enabled: true,
+      runtime_status: runtimeStatus,
+      status_reason: reason ?? null,
+      status_message: message ?? null,
+      recent_error_count: 1
+    });
+  }
+}

@@ -147,10 +147,10 @@ Expected:
 
 - Accepts `input`, `instructions`, `tools`, `tool_choice`, `temperature`, `max_output_tokens`, `metadata`, and `upstream_metadata`
 - Routes through the same policy, fallback, trace, and credential handling as chat completions
-- OpenAI-compatible managed endpoints with native Responses support are forwarded directly to upstream `POST /responses`
-- Streaming Responses requests are proxied as upstream SSE rather than converted from chat completions
-- If every eligible endpoint lacks native Responses support, AutoRouter falls back to a best-effort Chat Completions conversion
-- Function calls and `function_call_output` are preserved on the native path; fallback conversion is only for compatibility
+- Routes only through `openai-responses` Endpoints and upstream `POST /responses`
+- Streaming Responses requests are proxied as upstream SSE without protocol conversion
+- Falls back only to another eligible `openai-responses` candidate before response bytes are emitted
+- Returns `required_protocol_unavailable` when no matching Endpoint exists
 
 ### Claude Code
 
@@ -221,7 +221,7 @@ Expected:
 - AutoRouter traces preserve the requested `claude-opus-5[1m]` selector and
   normalize it to `auto/claude-opus-5`.
 
-The Messages compatibility layer supports:
+The Messages endpoint supports native Anthropic request and response fields:
 
 - Anthropic `system` and message content
 - `tools`, `tool_choice`, `tool_use`, and `tool_result`
@@ -229,17 +229,16 @@ The Messages compatibility layer supports:
 - Anthropic SSE response events
 - Authentication through either `Authorization: Bearer` or `x-api-key`
 
-Current streaming behavior is compatibility-oriented: AutoRouter completes the
-internal routed Chat Completions request before emitting Anthropic SSE events.
-Claude Code and tool calls work, but the first SSE event currently arrives
-after the upstream response completes rather than token by token.
+Messages requests route only through `anthropic-messages` Endpoints. Native SSE
+bytes are forwarded as they arrive. AutoRouter never translates Messages to
+Chat Completions; pre-stream fallback remains limited to another
+`anthropic-messages` candidate.
 
 ### Managed Provider Endpoints
 
-Managed providers expose one protocol configuration per provider protocol. For
-relay providers that serve OpenAI-compatible and Anthropic-compatible APIs from
-the same base URL, use `protocol: "all"`; AutoRouter stores separate internal
-OpenAI and Anthropic endpoints under one bundle.
+Managed providers expose one Endpoint per exact wire protocol. A relay that
+supports multiple wire contracts uses separate Endpoint rows even when they
+share the same base URL.
 
 ```bash
 curl -s \
@@ -248,19 +247,23 @@ curl -s \
   -H "Content-Type: application/json" \
   http://127.0.0.1:8811/admin/api/providers/my-provider/endpoints \
   -d '{
-    "protocol": "all",
+    "protocol": "openai-chat-completions",
     "base_url": "https://example.com/v1"
   }'
 ```
 
+Create additional `openai-responses` or `anthropic-messages` Endpoints with a
+separate request to the same Admin API.
+
 Expected:
 
 - The original provider remains one logical vendor entry
-- Each stored endpoint carries one concrete `protocol`, `base_url`, enabled flag, capabilities, and optional `protocol_bundle_key`
-- `protocol: "all"` expands to OpenAI and Anthropic stored endpoints with `protocol_bundle_key: "all"`
-- New provider data allows only one endpoint per protocol under the same provider
-- Models discovered from protocol endpoints are keyed as `provider/protocol/model`
-- Runtime routing creates separate protocol endpoints internally while preserving provider-level trust, privacy, and credential settings
+- Supported values are exactly `openai-responses`, `openai-chat-completions`, and `anthropic-messages`
+- Legacy `openai`, `anthropic`, and `all` values are rejected by configuration and Admin APIs
+- A Provider allows at most one Endpoint per wire protocol
+- Account identity remains Provider-scoped; Account-Endpoint state isolates access to one protocol surface
+- Generic `401/403` failures affect Account-Endpoint state, while only explicit invalid-key evidence disables the Account
+- Traces record required and actual protocol plus structured failure kind, scope, confidence, status, and provider code
 
 ### Catalog And Logical Models
 

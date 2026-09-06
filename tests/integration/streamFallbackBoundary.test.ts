@@ -23,7 +23,7 @@ function createState(input: { adapter: ProviderAdapter; traceDatabasePath: strin
       },
       platforms: {
         openai: {
-          protocol: "openai"
+          protocol: input.adapter.protocol
         }
       },
       providers: {
@@ -133,7 +133,6 @@ function createState(input: { adapter: ProviderAdapter; traceDatabasePath: strin
     accounts: registry.accounts,
     priceTable: new PriceTable(config),
     adapters: {
-      get: () => input.adapter,
       forProtocol: () => input.adapter
     } as unknown as RouterState["adapters"],
     stickySessions: new StickySessionStore(),
@@ -159,7 +158,7 @@ describe("stream fallback boundary", () => {
   it("does not fallback chat streams after a chunk has reached the client", async () => {
     const attemptedEndpoints: string[] = [];
     const adapter: ProviderAdapter = {
-      type: "openai_compatible",
+      protocol: "openai-chat-completions",
       async chatCompletion() {
         throw new Error("not used");
       },
@@ -216,10 +215,7 @@ describe("stream fallback boundary", () => {
   it("does not fallback native response streams after a chunk has reached the client", async () => {
     const attemptedEndpoints: string[] = [];
     const adapter: ProviderAdapter = {
-      type: "openai_compatible",
-      async chatCompletion() {
-        throw new Error("not used");
-      },
+      protocol: "openai-responses",
       async responseCompletion() {
         throw new Error("not used");
       },
@@ -280,7 +276,7 @@ describe("stream fallback boundary", () => {
    */
   it("returns a JSON error when every chat stream candidate fails before the first byte", async () => {
     const adapter: ProviderAdapter = {
-      type: "openai_compatible",
+      protocol: "openai-chat-completions",
       async chatCompletion() {
         throw new Error("not used");
       },
@@ -324,10 +320,7 @@ describe("stream fallback boundary", () => {
 
   it("returns a JSON error when every responses stream candidate fails before the first byte", async () => {
     const adapter: ProviderAdapter = {
-      type: "openai_compatible",
-      async chatCompletion() {
-        throw new Error("not used");
-      },
+      protocol: "openai-responses",
       async responseCompletion() {
         throw new Error("not used");
       },

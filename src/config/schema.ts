@@ -8,11 +8,6 @@ export const wireProtocolSchema = z.enum([
   "openai-chat-completions",
   "anthropic-messages"
 ]);
-/**
- * 内部 adapter 实现标识，由 endpoint 的 protocol 唯一决定，不是用户输入字段。
- * 用户只需要选精确的 wire protocol。
- */
-export const adapterTypeSchema = z.enum(["openai_compatible", "anthropic"]);
 export const accountTypeSchema = z.enum(["api_key", "local_model"]);
 
 export const quotaSchema = z
@@ -249,7 +244,6 @@ export type TrustLevel = z.infer<typeof trustLevelSchema>;
 export type PrivacyLevel = z.infer<typeof privacyLevelSchema>;
 export type UsageTrust = z.infer<typeof usageTrustSchema>;
 export type WireProtocol = z.infer<typeof wireProtocolSchema>;
-export type AdapterType = z.infer<typeof adapterTypeSchema>;
 export type AccountType = z.infer<typeof accountTypeSchema>;
 export type QuotaConfig = z.infer<typeof quotaSchema>;
 export type PlatformConfig = z.infer<typeof platformSchema>;

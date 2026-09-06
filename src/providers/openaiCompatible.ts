@@ -8,13 +8,15 @@ import {
 import { HttpError } from "../utils/httpErrors.js";
 import { mergeCustomHeaders, pickForwardedRequestHeaders } from "./customHeaders.js";
 import type {
-  ProviderAdapter,
+  ChatCompletionsAdapter,
+  ResponsesAdapter,
   ProviderResponse,
   ProviderResponsesRequest,
   ProviderStreamChunk,
   RouteTarget
 } from "./adapter.js";
 import { resolveUpstreamUrl } from "./upstreamUrl.js";
+import { providerErrorDetails } from "../runtime/providerFailure.js";
 
 function buildHeaders(target: RouteTarget): Record<string, string> {
   const headers = mergeCustomHeaders(
@@ -98,8 +100,8 @@ export function parseJsonSafely(raw: string): unknown {
   }
 }
 
-export class OpenAiCompatibleAdapter implements ProviderAdapter {
-  public readonly type = "openai_compatible";
+export class OpenAiChatCompletionsAdapter implements ChatCompletionsAdapter {
+  public readonly protocol = "openai-chat-completions";
 
   public async chatCompletion(
     requestBody: NormalizedChatRequest,
@@ -144,28 +146,34 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
         typeof body.error.message === "string"
           ? body.error.message
           : `Provider request failed with status ${response.statusCode}`;
+      const details = providerErrorDetails(
+        body,
+        this.protocol,
+        "chat-completions",
+        typeof response.headers["retry-after"] === "string" ? response.headers["retry-after"] : undefined
+      );
 
       if (response.statusCode === 401 || response.statusCode === 403) {
-        throw new HttpError(response.statusCode, PROVIDER_AUTH_FAILED_CODE, message, false);
+        throw new HttpError(response.statusCode, PROVIDER_AUTH_FAILED_CODE, message, false, details);
       }
 
       if (response.statusCode === 404) {
-        throw new HttpError(response.statusCode, "provider_invalid_model", message, true);
+        throw new HttpError(response.statusCode, "provider_invalid_model", message, true, details);
       }
 
       if (response.statusCode === 408) {
-        throw new HttpError(response.statusCode, "provider_timeout", message, true);
+        throw new HttpError(response.statusCode, "provider_timeout", message, true, details);
       }
 
       if (response.statusCode === 429) {
-        throw new HttpError(response.statusCode, "provider_rate_limited", message, true);
+        throw new HttpError(response.statusCode, "provider_rate_limited", message, true, details);
       }
 
       if (response.statusCode >= 500) {
-        throw new HttpError(response.statusCode, "provider_server_error", message, true);
+        throw new HttpError(response.statusCode, "provider_server_error", message, true, details);
       }
 
-      throw new HttpError(response.statusCode, "request_invalid", message, false);
+      throw new HttpError(response.statusCode, "request_invalid", message, false, details);
     }
 
     return {
@@ -218,18 +226,24 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     }
 
     if (response.statusCode >= 400) {
+      const raw = await response.body.text();
+      const body = parseJsonSafely(raw);
       throwIfProviderAccessBlocked({
         statusCode: response.statusCode,
         contentType: response.headers["content-type"],
-        operation: "Streaming provider request"
+        operation: "Streaming provider request",
+        bodyText: raw
       });
+      const details = providerErrorDetails(body, this.protocol, "chat-completions",
+        typeof response.headers["retry-after"] === "string" ? response.headers["retry-after"] : undefined);
 
       if (response.statusCode === 401 || response.statusCode === 403) {
         throw new HttpError(
           response.statusCode,
           PROVIDER_AUTH_FAILED_CODE,
           `Streaming provider request failed with status ${response.statusCode}`,
-          false
+          false,
+          details
         );
       }
 
@@ -237,7 +251,8 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
         response.statusCode,
         response.statusCode === 429 ? "provider_rate_limited" : "provider_error",
         `Streaming provider request failed with status ${response.statusCode}`,
-        response.statusCode >= 500 || response.statusCode === 429 || response.statusCode === 408
+        response.statusCode >= 500 || response.statusCode === 429 || response.statusCode === 408,
+        details
       );
     }
 
@@ -247,6 +262,11 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
       };
     }
   }
+
+}
+
+export class OpenAiResponsesAdapter implements ResponsesAdapter {
+  public readonly protocol = "openai-responses";
 
   public async responseCompletion(
     requestBody: ProviderResponsesRequest,
@@ -290,20 +310,22 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
         typeof body.error.message === "string"
           ? body.error.message
           : `Provider responses request failed with status ${response.statusCode}`;
+      const details = providerErrorDetails(body, this.protocol, "responses",
+        typeof response.headers["retry-after"] === "string" ? response.headers["retry-after"] : undefined);
 
       if (response.statusCode === 401 || response.statusCode === 403) {
-        throw new HttpError(response.statusCode, PROVIDER_AUTH_FAILED_CODE, message, false);
+        throw new HttpError(response.statusCode, PROVIDER_AUTH_FAILED_CODE, message, false, details);
       }
 
       if (response.statusCode === 429) {
-        throw new HttpError(response.statusCode, "provider_rate_limited", message, true);
+        throw new HttpError(response.statusCode, "provider_rate_limited", message, true, details);
       }
 
       if (response.statusCode >= 500 || response.statusCode === 408 || response.statusCode === 404) {
-        throw new HttpError(response.statusCode, "provider_error", message, true);
+        throw new HttpError(response.statusCode, "provider_error", message, true, details);
       }
 
-      throw new HttpError(response.statusCode, "request_invalid", message, false);
+      throw new HttpError(response.statusCode, "request_invalid", message, false, details);
     }
 
     return {
@@ -340,18 +362,24 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
     }
 
     if (response.statusCode >= 400) {
+      const raw = await response.body.text();
+      const body = parseJsonSafely(raw);
       throwIfProviderAccessBlocked({
         statusCode: response.statusCode,
         contentType: response.headers["content-type"],
-        operation: "Streaming responses request"
+        operation: "Streaming responses request",
+        bodyText: raw
       });
+      const details = providerErrorDetails(body, this.protocol, "responses",
+        typeof response.headers["retry-after"] === "string" ? response.headers["retry-after"] : undefined);
 
       if (response.statusCode === 401 || response.statusCode === 403) {
         throw new HttpError(
           response.statusCode,
           PROVIDER_AUTH_FAILED_CODE,
           `Streaming responses request failed with status ${response.statusCode}`,
-          false
+          false,
+          details
         );
       }
 
@@ -359,7 +387,8 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
         response.statusCode,
         response.statusCode === 429 ? "provider_rate_limited" : "provider_error",
         `Streaming responses request failed with status ${response.statusCode}`,
-        response.statusCode >= 500 || response.statusCode === 429 || response.statusCode === 408
+        response.statusCode >= 500 || response.statusCode === 429 || response.statusCode === 408,
+        details
       );
     }
 

@@ -21,12 +21,10 @@ import type { RuntimeStatusService } from "../../runtime/runtimeStatusService.js
 import type { RuntimeManagerLike } from "../../runtime/runtimeTypes.js";
 import type { ManagedCredentialRow, ManagedModelRow } from "../../db/schema.js";
 import { HttpError, isHttpError } from "../../utils/httpErrors.js";
-import { customHeadersSchema, RESERVED_CUSTOM_HEADER_NAMES } from "../../config/schema.js";
-import { isResponsesUnsupportedError } from "../../utils/responsesFallback.js";
+import { customHeadersSchema, RESERVED_CUSTOM_HEADER_NAMES, wireProtocolSchema, type WireProtocol } from "../../config/schema.js";
 import { providerKeyPattern, suggestProviderKey } from "../../utils/providerKey.js";
 
-const protocolSchema = z.enum(["openai", "anthropic"]);
-const protocolInputSchema = z.enum(["openai", "anthropic", "all"]);
+const protocolSchema = wireProtocolSchema;
 const endpointKeySchema = z.string().min(1).regex(/^[A-Za-z0-9_.-]+$/);
 const providerKeySchema = z.string().trim().regex(
   providerKeyPattern,
@@ -128,10 +126,10 @@ const websiteUrlInputSchema = z.string()
 const createProviderBodySchema = z.object({
   provider_key: providerKeySchema.optional(),
   display_name: z.string().min(1),
-  protocol: protocolInputSchema.optional(),
+  protocol: protocolSchema.optional(),
   base_url: urlInputSchema.optional(),
   endpoints: z.array(z.object({
-    protocol: protocolInputSchema,
+    protocol: protocolSchema,
     base_url: urlInputSchema,
     custom_headers: customHeadersSchema.optional(),
     enabled: z.boolean().optional()
@@ -160,10 +158,10 @@ const patchProviderBodySchema = z.object({
   enabled: z.boolean().optional(),
   display_name: z.string().min(1).optional(),
   priority: z.number().int().nonnegative().optional(),
-  protocol: protocolInputSchema.optional(),
+  protocol: protocolSchema.optional(),
   base_url: urlInputSchema.optional(),
   endpoints: z.array(z.object({
-    protocol: protocolInputSchema,
+    protocol: protocolSchema,
     base_url: urlInputSchema,
     custom_headers: customHeadersSchema.optional(),
     enabled: z.boolean().optional()
@@ -213,16 +211,20 @@ const patchAccountBodySchema = z.object({
   enabled: z.boolean().optional()
 }).strict();
 
+const patchAccountEndpointBodySchema = z.object({
+  enabled: z.boolean()
+}).strict();
+
 const mergeCheckBodySchema = z.object({
   provider_key: providerKeySchema.optional(),
   endpoints: z.array(z.object({
-    protocol: protocolInputSchema,
+    protocol: protocolSchema,
     base_url: urlInputSchema
   }).strict()).min(1)
 }).strict();
 
 const createEndpointBodySchema = z.object({
-  protocol: protocolInputSchema,
+  protocol: protocolSchema,
   base_url: urlInputSchema,
   custom_headers: customHeadersSchema.optional(),
   enabled: z.boolean().optional()
@@ -231,25 +233,22 @@ const createEndpointBodySchema = z.object({
 interface EndpointDiscoveryBundle {
   endpoint: {
     endpointKey: string;
-    protocol: "openai" | "anthropic";
+    protocol: WireProtocol;
     baseUrl: string;
     customHeaders?: Record<string, string>;
-    protocolBundleKey?: string | null;
     enabled?: boolean;
   };
   models: ManagedDiscoveredModelInput[];
   error?: unknown;
 }
 
-type Protocol = "openai" | "anthropic";
-type ProtocolInput = Protocol | "all";
+type Protocol = WireProtocol;
 
 interface NormalizedEndpointInput {
   endpoint_key: string;
   protocol: Protocol;
   base_url: string;
   custom_headers?: Record<string, string>;
-  protocol_bundle_key?: string | null;
   enabled?: boolean;
 }
 
@@ -273,11 +272,11 @@ const createProviderModelBodySchema = manualModelInputSchema.extend({
 }).strict();
 
 function normalizeEndpointInputs(input: {
-  protocol?: ProtocolInput;
+  protocol?: Protocol;
   baseUrl?: string;
   endpoints?: Array<{
     endpoint_key?: string;
-    protocol: ProtocolInput;
+    protocol: Protocol;
     base_url: string;
     custom_headers?: Record<string, string>;
     enabled?: boolean;
@@ -285,29 +284,17 @@ function normalizeEndpointInputs(input: {
 }): NormalizedEndpointInput[] {
   const expand = (endpoint: {
     endpoint_key?: string;
-    protocol: ProtocolInput;
+    protocol: Protocol;
     base_url: string;
     custom_headers?: Record<string, string>;
     enabled?: boolean;
   }): NormalizedEndpointInput[] => {
-    if (endpoint.protocol === "all") {
-      return ["openai", "anthropic"].map((protocol) => ({
-        endpoint_key: protocol,
-        protocol: protocol as Protocol,
-        base_url: endpoint.base_url,
-        custom_headers: endpoint.custom_headers,
-        protocol_bundle_key: "all",
-        enabled: endpoint.enabled
-      }));
-    }
-
     return [
       {
         endpoint_key: endpoint.protocol,
         protocol: endpoint.protocol,
         base_url: endpoint.base_url,
         custom_headers: endpoint.custom_headers,
-        protocol_bundle_key: null,
         enabled: endpoint.enabled
       }
     ];
@@ -323,7 +310,7 @@ function normalizeEndpointInputs(input: {
     }
 
     return expand({
-      protocol: input.protocol ?? "openai",
+      protocol: input.protocol ?? "openai-responses",
       base_url: input.baseUrl,
       enabled: true
     });
@@ -346,7 +333,7 @@ function buildProviderInput(input: {
 }, endpointInputs: NormalizedEndpointInput[]): {
   providerKey: string;
   displayName: string;
-  protocol: "openai" | "anthropic";
+  protocol: WireProtocol;
   baseUrl: string;
   websiteUrl: string | null;
   modelCatalogUrl: string | null;
@@ -362,7 +349,7 @@ function buildProviderInput(input: {
   return {
     providerKey: input.provider_key,
     displayName: input.display_name,
-    protocol: representativeEndpoint?.protocol ?? "openai",
+    protocol: representativeEndpoint?.protocol ?? "openai-responses",
     baseUrl: representativeEndpoint?.base_url ?? "",
     websiteUrl: input.website_url || null,
     modelCatalogUrl: input.model_catalog_url || null,
@@ -430,7 +417,7 @@ function mergeManualModelsIntoBundles(
     endpointBundles.map((bundle) => [bundle.endpoint.endpointKey, bundle])
   );
   for (const model of manualModels) {
-    const endpointKey = endpointBundles[0]?.endpoint.endpointKey ?? "openai";
+    const endpointKey = endpointBundles[0]?.endpoint.endpointKey ?? "openai-responses";
     const bundle = bundlesByEndpointKey.get(endpointKey);
     if (!bundle) {
       throw new HttpError(400, "invalid_model_endpoint", `Model endpoint ${endpointKey} does not exist`);
@@ -460,7 +447,6 @@ function buildEndpointBundles(
       protocol: endpoint.protocol,
       baseUrl: endpoint.base_url,
       customHeaders: endpoint.custom_headers,
-      protocolBundleKey: endpoint.protocol_bundle_key,
       enabled: endpoint.enabled
     },
     models: index === 0 ? models : []
@@ -591,7 +577,7 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
   return {
     provider_key: details.provider.providerKey,
     display_name: details.provider.displayName,
-    protocol: details.endpoints[0]?.protocol ?? "openai",
+    protocol: details.endpoints[0]?.protocol ?? "openai-responses",
     base_url: details.provider.baseUrl,
     model_catalog_url: details.provider.modelCatalogUrl,
     website_url: details.provider.websiteUrl,
@@ -612,7 +598,6 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
       protocol: endpoint.protocol,
       base_url: endpoint.baseUrl,
       custom_headers: parseCustomHeaders(endpoint.customHeadersJson),
-      protocol_bundle_key: endpoint.protocolBundleKey ?? null,
       enabled: endpoint.enabled,
       runtime_status: endpoint.runtimeStatus,
       status_reason: endpoint.statusReason,
@@ -662,6 +647,27 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
         last_error_code: observation.lastErrorCode,
         last_error_message: observation.lastErrorMessage
       }];
+    }),
+    account_endpoints: details.accountEndpoints.flatMap((relation) => {
+      const account = accountById.get(relation.accountId);
+      const endpoint = endpointById.get(relation.endpointId);
+      if (!account || !endpoint) return [];
+      return [{
+        account_key: account.accountKey,
+        endpoint_key: endpoint.endpointKey,
+        enabled: relation.enabled,
+        runtime_status: relation.runtimeStatus,
+        status_reason: relation.statusReason,
+        status_message: relation.statusMessage,
+        status_source: relation.statusSource,
+        status_updated_at: relation.statusUpdatedAt,
+        status_cooldown_until: relation.statusCooldownUntil,
+        recent_error_count: relation.recentErrorCount,
+        last_success_at: relation.lastSuccessAt,
+        last_error_at: relation.lastErrorAt,
+        last_error_code: relation.lastErrorCode,
+        last_error_message: relation.lastErrorMessage
+      }];
     })
   };
 }
@@ -687,7 +693,7 @@ async function syncAccountModels(
       modelCatalogUrl: details.provider.modelCatalogUrl,
       endpoints: details.endpoints.map((endpoint) => ({
         endpointKey: endpoint.endpointKey,
-        protocol: endpoint.protocol as "openai" | "anthropic",
+        protocol: endpoint.protocol as WireProtocol,
         baseUrl: endpoint.baseUrl,
         enabled: endpoint.enabled
       }))
@@ -853,8 +859,7 @@ export async function registerAdminProvidersRoutes(
     }
 
     const snapshot = dependencies.runtimeManager.getSnapshot();
-    const adapterType = endpoint.protocol === "anthropic" ? "anthropic" : "openai_compatible";
-    const adapter = snapshot.adapters.get(adapterType);
+    const adapter = snapshot.adapters.forProtocol(endpoint.protocol);
     const endpointId = `${details.provider.providerKey}/${endpoint.endpointKey}`;
     const accountId = `${endpointId}/${account.accountKey}`;
     const target = {
@@ -918,10 +923,7 @@ export async function registerAdminProvidersRoutes(
     };
 
     const startedAt = Date.now();
-    let protocol: "responses" | "chat_completions" =
-      endpoint.protocol === "openai" && adapter.responseCompletion
-        ? "responses"
-        : "chat_completions";
+    const protocol = adapter.protocol;
 
     try {
       const chatRequest = {
@@ -936,21 +938,20 @@ export async function registerAdminProvidersRoutes(
       };
 
       let providerResponse;
-      if (protocol === "responses") {
-        try {
-          providerResponse = await adapter.responseCompletion!({
-            model: model.modelName,
-            input: body.prompt,
-            max_output_tokens: 8,
-            stream: false
-          }, target);
-        } catch (error) {
-          if (!isResponsesUnsupportedError(error)) {
-            throw error;
-          }
-          protocol = "chat_completions";
-          providerResponse = await adapter.chatCompletion(chatRequest, target);
-        }
+      if (adapter.protocol === "openai-responses") {
+        providerResponse = await adapter.responseCompletion({
+          model: model.modelName,
+          input: body.prompt,
+          max_output_tokens: 8,
+          stream: false
+        }, target);
+      } else if (adapter.protocol === "anthropic-messages") {
+        providerResponse = await adapter.messageCompletion({
+          model: model.modelName,
+          messages: [{ role: "user", content: body.prompt }],
+          max_tokens: 8,
+          stream: false
+        }, target);
       } else {
         providerResponse = await adapter.chatCompletion(chatRequest, target);
       }
@@ -1186,7 +1187,7 @@ export async function registerAdminProvidersRoutes(
             modelCatalogUrl: details.provider.modelCatalogUrl,
             endpoints: details.endpoints.map((endpoint) => ({
               endpointKey: endpoint.endpointKey,
-              protocol: endpoint.protocol as "openai" | "anthropic",
+              protocol: endpoint.protocol as WireProtocol,
               baseUrl: endpoint.baseUrl,
               enabled: endpoint.enabled
             }))
@@ -1242,7 +1243,6 @@ export async function registerAdminProvidersRoutes(
             protocol: endpoint.protocol,
             baseUrl: endpoint.base_url,
             customHeaders: endpoint.custom_headers,
-            protocolBundleKey: endpoint.protocol_bundle_key,
             enabled: endpoint.enabled
           }))
         );
@@ -1325,7 +1325,6 @@ export async function registerAdminProvidersRoutes(
           protocol: endpointInput.protocol,
           baseUrl: endpointInput.base_url,
           customHeaders: endpointInput.custom_headers,
-          protocolBundleKey: endpointInput.protocol_bundle_key,
           enabled: endpointInput.enabled
         });
 
@@ -1528,6 +1527,41 @@ export async function registerAdminProvidersRoutes(
 
       await dependencies.runtimeManager.reload();
       return serializeProviderDetails(lastUpdated);
+    }
+  );
+
+  fastify.patch<{
+    Params: { providerKey: string; accountKey: string; endpointKey: string };
+    Body: unknown;
+  }>(
+    "/admin/api/providers/:providerKey/accounts/:accountKey/endpoints/:endpointKey",
+    async (request) => {
+      const body = patchAccountEndpointBodySchema.parse(request.body);
+      const relation = dependencies.repository.setAccountEndpointEnabled(
+        request.params.providerKey,
+        request.params.accountKey,
+        request.params.endpointKey,
+        body.enabled
+      );
+      if (!relation) throw new HttpError(404, "account_endpoint_not_found", "Account or Endpoint not found");
+      await dependencies.runtimeManager.reload();
+      return serializeProviderDetails(dependencies.repository.getProviderDetails(request.params.providerKey));
+    }
+  );
+
+  fastify.post<{
+    Params: { providerKey: string; accountKey: string; endpointKey: string };
+  }>(
+    "/admin/api/providers/:providerKey/accounts/:accountKey/endpoints/:endpointKey/clear-status",
+    async (request) => {
+      const relation = dependencies.repository.clearAccountEndpointStatus(
+        request.params.providerKey,
+        request.params.accountKey,
+        request.params.endpointKey
+      );
+      if (!relation) throw new HttpError(404, "account_endpoint_not_found", "Account or Endpoint not found");
+      await dependencies.runtimeManager.reload();
+      return serializeProviderDetails(dependencies.repository.getProviderDetails(request.params.providerKey));
     }
   );
 

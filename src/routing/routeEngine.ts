@@ -10,6 +10,7 @@ import type {
 } from "../config/schema.js";
 import type {
   AccountRuntimeState,
+  AccountEndpointRuntimeState,
   EndpointRuntimeState,
   ModelRuntimeStatusState,
   PlatformRuntimeState,
@@ -28,6 +29,8 @@ export interface SelectedRoute {
   provider: ProviderRuntimeState;
   endpoint: EndpointRuntimeState;
   account: AccountRuntimeState;
+  accountEndpoint: AccountEndpointRuntimeState | null;
+  accountConfigId: string;
   modelId: string;
   /** 上游模型名（provider model id / model_name） */
   model: string;
@@ -313,7 +316,8 @@ export function selectRoute(
   privacyLevel: string,
   stickyRoute: StickyRoute | null | undefined,
   modelStatuses: Record<string, ModelRuntimeStatusState>,
-  requiredProtocol: WireProtocol
+  requiredProtocol: WireProtocol,
+  accountEndpoints: AccountEndpointRuntimeState[] = []
 ): {
   selected: SelectedRoute;
   /**
@@ -388,7 +392,9 @@ export function selectRoute(
     const platform = endpoint
       ? platforms.find((item) => item.id === endpoint.platform_id)
       : undefined;
-    const account = accounts.find((item) => item.id === candidate.account);
+    const account = accounts.find((item) =>
+      item.id === candidate.account || item.route_ids?.includes(candidate.account)
+    );
     const modelDefinition = modelCatalog.resolveModel(candidate.modelId);
 
     if (!endpoint || !provider || !platform || !account || !modelDefinition) {
@@ -422,6 +428,27 @@ export function selectRoute(
       modelStatuses[`${provider.id}|${candidate.modelId}`] ??
       modelStatuses[`${provider.id}|${candidate.model}`] ??
       null;
+    const accountEndpoint = accountEndpoints.find((item) =>
+      item.account_id === account.id && item.endpoint_id === endpoint.id
+    ) ?? null;
+    if (accountEndpoint) {
+      const relationReason = modelFilterReason({
+        enabled: accountEndpoint.enabled,
+        runtimeStatus: accountEndpoint.runtime_status,
+        statusReason: accountEndpoint.status_reason,
+        statusMessage: accountEndpoint.status_message,
+        statusCooldownUntil: accountEndpoint.status_cooldown_until
+      });
+      if (relationReason) {
+        filtered.push({
+          routeId: candidate.routeId, platform: platform.id, provider: provider.id,
+          endpoint: endpoint.id, account: candidate.account, modelId: candidate.modelId,
+          model: candidate.model, filteredReason: relationReason === "model_disabled"
+            ? "account_endpoint_disabled" : relationReason
+        });
+        continue;
+      }
+    }
 
     const filteredReason = canUseCandidate(
       thresholds,
@@ -498,6 +525,8 @@ export function selectRoute(
       provider,
       endpoint,
       account,
+      accountEndpoint,
+      accountConfigId: candidate.account,
       modelId: candidate.modelId,
       model: candidate.model,
       modelDefinition,

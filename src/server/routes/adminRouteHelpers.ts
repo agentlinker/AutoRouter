@@ -55,7 +55,16 @@ function serializeAttempt(attempt: TraceAttempt, snapshot?: RuntimeSnapshot) {
     first_token_ms: attempt.first_token_ms ?? null,
     actual_upstream_url: attempt.actual_upstream_url ?? null,
     stream_completed: attempt.stream_completed ?? null,
-    stream_terminal_event: attempt.stream_terminal_event ?? null
+    stream_terminal_event: attempt.stream_terminal_event ?? null,
+    required_protocol: attempt.required_protocol ?? null,
+    actual_protocol: attempt.actual_protocol ?? null,
+    operation: attempt.operation ?? null,
+    failure_kind: attempt.failure_kind ?? null,
+    failure_scope: attempt.failure_scope ?? null,
+    failure_confidence: attempt.failure_confidence ?? null,
+    status_code: attempt.status_code ?? null,
+    provider_code: attempt.provider_code ?? null,
+    provider_type: attempt.provider_type ?? null
   };
 }
 
@@ -80,6 +89,15 @@ export interface RouteOutcomeItem {
   actual_upstream_url: string | null;
   stream_completed: boolean | null;
   stream_terminal_event: string | null;
+  required_protocol: string | null;
+  actual_protocol: string | null;
+  operation: string | null;
+  failure_kind: string | null;
+  failure_scope: string | null;
+  failure_confidence: string | null;
+  status_code: number | null;
+  provider_code: string | null;
+  provider_type: string | null;
 }
 
 function candidateKey(item: {
@@ -124,7 +142,16 @@ export function buildRouteOutcomeItems(trace: RouteTrace, snapshot?: RuntimeSnap
       first_token_ms: attempt.first_token_ms ?? null,
       actual_upstream_url: attempt.actual_upstream_url ?? null,
       stream_completed: attempt.stream_completed ?? null,
-      stream_terminal_event: attempt.stream_terminal_event ?? null
+      stream_terminal_event: attempt.stream_terminal_event ?? null,
+      required_protocol: attempt.required_protocol ?? null,
+      actual_protocol: attempt.actual_protocol ?? null,
+      operation: attempt.operation ?? null,
+      failure_kind: attempt.failure_kind ?? null,
+      failure_scope: attempt.failure_scope ?? null,
+      failure_confidence: attempt.failure_confidence ?? null,
+      status_code: attempt.status_code ?? null,
+      provider_code: attempt.provider_code ?? null,
+      provider_type: attempt.provider_type ?? null
     });
   }
 
@@ -144,7 +171,16 @@ export function buildRouteOutcomeItems(trace: RouteTrace, snapshot?: RuntimeSnap
       first_token_ms: null,
       actual_upstream_url: null,
       stream_completed: null,
-      stream_terminal_event: null
+      stream_terminal_event: null,
+      required_protocol: trace.request.required_protocol ?? null,
+      actual_protocol: null,
+      operation: null,
+      failure_kind: null,
+      failure_scope: null,
+      failure_confidence: null,
+      status_code: null,
+      provider_code: null,
+      provider_type: null
     });
   }
 
@@ -164,7 +200,16 @@ export function buildRouteOutcomeItems(trace: RouteTrace, snapshot?: RuntimeSnap
       first_token_ms: null,
       actual_upstream_url: null,
       stream_completed: null,
-      stream_terminal_event: null
+      stream_terminal_event: null,
+      required_protocol: trace.request.required_protocol ?? null,
+      actual_protocol: null,
+      operation: null,
+      failure_kind: null,
+      failure_scope: null,
+      failure_confidence: null,
+      status_code: null,
+      provider_code: null,
+      provider_type: null
     });
   }
 
@@ -212,6 +257,7 @@ export function serializeTrace(trace: RouteTrace, snapshot?: RuntimeSnapshot) {
     has_tools: trace.request.has_tools,
     privacy_level: trace.request.privacy_level,
     context_tokens_est: trace.request.context_tokens_est,
+    required_protocol: trace.request.required_protocol ?? null,
     selected_provider: trace.selected?.provider ?? null,
     selected_endpoint: trace.selected?.endpoint ?? null,
     selected_route_id: trace.selected?.route_id ?? null,

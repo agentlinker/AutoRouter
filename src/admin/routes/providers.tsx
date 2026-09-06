@@ -32,6 +32,7 @@ import { z } from "zod";
 
 import {
   clearProviderAccountEndpointModelStatus,
+  clearProviderAccountEndpointStatus,
   createProvider,
   createProviderAccount,
   createProviderEndpoint,
@@ -48,6 +49,7 @@ import {
   testProviderModel,
   updateProvider,
   updateProviderAccount,
+  updateProviderAccountEndpoint,
   updateProviderModelCapabilities,
   type CreateProviderPayload,
   type ProviderDetails,
@@ -57,6 +59,7 @@ import {
   type ProviderModelTestResult,
   type ProviderSortBy,
   type ProviderTemplate,
+  type WireProtocol,
   type SortDirection,
   type UpdateProviderPayload
 } from "../api/providers.js";
@@ -89,7 +92,7 @@ interface ProviderFormData {
   provider_key: string;
   display_name: string;
   endpoints: Array<{
-    protocol: "openai" | "anthropic" | "all";
+    protocol: WireProtocol;
     base_url: string;
     custom_headers?: Array<{ key: string; value: string }>;
   }>;
@@ -124,7 +127,7 @@ const providerFormSchema = z.object({
     .regex(providerKeyPattern, "Provider Key 只能包含小写字母、数字和连字符"),
   display_name: z.string().trim().min(1, "请填写 Display Name"),
   endpoints: z.array(z.object({
-    protocol: z.enum(["openai", "anthropic", "all"]),
+    protocol: z.enum(["openai-responses", "openai-chat-completions", "anthropic-messages"]),
     base_url: z.string().trim().url("Base URL 必须是有效网址"),
     custom_headers: z.array(z.object({
       key: z.string(),
@@ -170,29 +173,23 @@ const providerFormSchema = z.object({
 }).strict().superRefine((value, ctx) => {
   const seen = new Map<string, number>();
   value.endpoints.forEach((endpoint, index) => {
-    for (const protocol of expandFormEndpointProtocols(endpoint)) {
-      const previous = seen.get(protocol);
-      if (previous !== undefined) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ["endpoints", index, "protocol"],
-          message: `${protocolDisplayLabel(protocol)} 协议已配置`
-        });
-      }
-      seen.set(protocol, index);
+    const previous = seen.get(endpoint.protocol);
+    if (previous !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["endpoints", index, "protocol"],
+        message: `${protocolDisplayLabel(endpoint.protocol)} 协议已配置`
+      });
     }
+    seen.set(endpoint.protocol, index);
   });
 });
 
-function protocolDisplayLabel(protocol: "openai" | "anthropic" | "all") {
+function protocolDisplayLabel(protocol: WireProtocol) {
   switch (protocol) {
-    case "all":
-      return "OpenAI + Anthropic";
-    case "anthropic":
-      return "Anthropic";
-    case "openai":
-    default:
-      return "OpenAI";
+    case "openai-responses": return "OpenAI Responses";
+    case "openai-chat-completions": return "OpenAI Chat Completions";
+    case "anthropic-messages": return "Anthropic Messages";
   }
 }
 
@@ -205,39 +202,14 @@ function nextGeneratedAccountKey(accounts: Array<{ account_key?: string }>) {
   return `account-${index}`;
 }
 
-function expandFormEndpointProtocols(endpoint: { protocol: "openai" | "anthropic" | "all" }) {
-  return endpoint.protocol === "all" ? ["openai", "anthropic"] as const : [endpoint.protocol] as const;
-}
-
 function providerEndpointsToForm(
   endpoints: ProviderDetails["endpoints"]
 ): ProviderFormData["endpoints"] {
-  const allBundle = endpoints.filter((endpoint) => endpoint.protocol_bundle_key === "all");
-  const allProtocols = new Set(allBundle.map((endpoint) => endpoint.protocol));
-  const hasAllBundle = allProtocols.has("openai") && allProtocols.has("anthropic");
-  const consumed = new Set<string>();
   const result: ProviderFormData["endpoints"] = [];
 
-  if (hasAllBundle) {
-    const representative = allBundle[0]!;
-    for (const endpoint of allBundle) {
-      consumed.add(endpoint.endpoint_key);
-    }
-    result.push({
-      protocol: "all",
-      base_url: representative.base_url,
-      custom_headers: representative.custom_headers
-        ? Object.entries(representative.custom_headers).map(([key, value]) => ({ key, value }))
-        : []
-    });
-  }
-
   for (const endpoint of endpoints) {
-    if (consumed.has(endpoint.endpoint_key)) {
-      continue;
-    }
     result.push({
-      protocol: endpoint.protocol as "openai" | "anthropic",
+      protocol: endpoint.protocol,
       base_url: endpoint.base_url,
       custom_headers: endpoint.custom_headers
         ? Object.entries(endpoint.custom_headers).map(([key, value]) => ({ key, value }))
@@ -957,7 +929,7 @@ export function ProviderDetailPage() {
           {provider.endpoints.map((endpoint) => (
             <div className="model-capability-row" key={endpoint.endpoint_key}>
               <span className="detail-table-text endpoint-protocol-cell">
-                {protocolDisplayLabel(endpoint.protocol as "openai" | "anthropic")}
+                {protocolDisplayLabel(endpoint.protocol)}
               </span>
               <div className="model-name-cell">
                 <span className="detail-table-text endpoint-base-url-cell">{endpoint.base_url}</span>
@@ -1215,7 +1187,7 @@ function ProviderFormPage(props: {
       display_name: "",
       endpoints: [
         {
-          protocol: "openai",
+          protocol: "openai-responses",
           base_url: "",
           custom_headers: []
         }
@@ -1264,7 +1236,7 @@ function ProviderFormPage(props: {
       ? providerEndpointsToForm(props.provider.endpoints)
       : [
           {
-            protocol: "openai" as const,
+            protocol: "openai-responses" as const,
             base_url: "",
             custom_headers: []
           }
@@ -1580,7 +1552,7 @@ function ProviderFormPage(props: {
       for (const missingEndpoint of target.candidate_only_endpoints) {
         const sourceEndpoint = values.endpoints.find(
           (endpoint) =>
-            endpoint.protocol === missingEndpoint.protocol || endpoint.protocol === "all"
+            endpoint.protocol === missingEndpoint.protocol
         );
         const customHeaders = sourceEndpoint?.custom_headers?.reduce<Record<string, string>>(
           (result, header) => {
@@ -1772,7 +1744,7 @@ function ProviderFormPage(props: {
               className="ghost-action small-action"
               onClick={() =>
                 append({
-                  protocol: "openai",
+                  protocol: "openai-responses",
                   base_url: "",
                   custom_headers: []
                 })
@@ -1793,9 +1765,9 @@ function ProviderFormPage(props: {
                   <label className="field">
                     <span>协议类型</span>
                     <select {...form.register(`endpoints.${index}.protocol`)}>
-                      <option value="openai">OpenAI</option>
-                      <option value="anthropic">Anthropic</option>
-                      <option value="all">OpenAI + Anthropic</option>
+                      <option value="openai-responses">OpenAI Responses</option>
+                      <option value="openai-chat-completions">OpenAI Chat Completions</option>
+                      <option value="anthropic-messages">Anthropic Messages</option>
                     </select>
                     {endpointErrors?.protocol ? <small>{endpointErrors.protocol.message}</small> : null}
                   </label>
@@ -1804,7 +1776,7 @@ function ProviderFormPage(props: {
                     <span>Base URL</span>
                     <input
                       {...form.register(`endpoints.${index}.base_url`)}
-                      placeholder={protocol === "anthropic" ? "https://api.anthropic.com/v1" : "https://example.com/v1"}
+                      placeholder={protocol === "anthropic-messages" ? "https://api.anthropic.com/v1" : "https://example.com/v1"}
                     />
                     {endpointErrors?.base_url ? <small>{endpointErrors.base_url.message}</small> : null}
                   </label>
@@ -2102,7 +2074,7 @@ function ProviderFormPage(props: {
                 const conflict = conflictingCandidates[0]?.conflicting_endpoints[0];
                 const endpointIndex = mergeDialog.pendingValues?.endpoints.findIndex(
                   (endpoint) =>
-                    endpoint.protocol === conflict?.protocol || endpoint.protocol === "all"
+                    endpoint.protocol === conflict?.protocol
                 ) ?? 0;
                 setMergeDialog({
                   open: false,
@@ -2360,7 +2332,6 @@ function ProviderModelTestDialog(props: {
       setRequestError(error instanceof Error ? error.message : "清除状态失败");
     }
   });
-
   return (
     <AppDialog
       open
@@ -2506,7 +2477,7 @@ function ProviderModelTestDialog(props: {
           <div className={`provider-test-result ${result.success ? "success" : "error"}`}>
             <strong>{result.success ? "模型可用" : "模型不可用"}</strong>
             <span>
-              {result.protocol === "responses" ? "Responses" : "Chat Completions"}
+              {protocolDisplayLabel(result.protocol)}
               {" · "}
               {result.latency_ms} ms
               {result.upstream_status ? ` · HTTP ${result.upstream_status}` : ""}
@@ -2542,12 +2513,79 @@ function ProviderConnectivityMatrix(props: {
       }),
     onSuccess: props.onChanged
   });
+  const accessMutation = useMutation({
+    mutationFn: (input: { accountKey: string; endpointKey: string; enabled: boolean }) =>
+      updateProviderAccountEndpoint(props.token, props.provider.provider_key,
+        input.accountKey, input.endpointKey, input.enabled),
+    onSuccess: props.onChanged
+  });
+  const clearAccessMutation = useMutation({
+    mutationFn: (input: { accountKey: string; endpointKey: string }) =>
+      clearProviderAccountEndpointStatus(props.token, props.provider.provider_key,
+        input.accountKey, input.endpointKey),
+    onSuccess: props.onChanged
+  });
   const accounts = props.provider.accounts ?? [];
   const endpoints = props.provider.endpoints;
 
   return (
     <div className="provider-connectivity">
       <h3>协议连通性</h3>
+      <div
+        className="connectivity-grid"
+        style={{ gridTemplateColumns: `minmax(120px, 1fr) repeat(${endpoints.length}, minmax(180px, 1fr))` }}
+      >
+        <strong>Account</strong>
+        {endpoints.map((endpoint) => (
+          <strong key={endpoint.endpoint_key}>{endpointProtocolLabel(endpoint.protocol)}</strong>
+        ))}
+        {accounts.flatMap((account) => [
+          <span key={`${account.account_key}-access-label`}>{account.account_key}</span>,
+          ...endpoints.map((endpoint) => {
+            const relation = (props.provider.account_endpoints ?? []).find((item) =>
+              item.account_key === account.account_key && item.endpoint_key === endpoint.endpoint_key
+            );
+            const testModel = account.models?.find((model) => model.enabled !== false);
+            const enabled = relation?.enabled ?? true;
+            return (
+              <div className="connectivity-cell" key={`${account.account_key}-${endpoint.endpoint_key}-access`}>
+                <div className="inline-actions">
+                  <SwitchControl
+                    checked={enabled}
+                    disabled={accessMutation.isPending}
+                    label={`${account.account_key} ${endpointProtocolLabel(endpoint.protocol)} 启用开关`}
+                    onChange={(next) => accessMutation.mutate({
+                      accountKey: account.account_key,
+                      endpointKey: endpoint.endpoint_key,
+                      enabled: next
+                    })}
+                  />
+                  <span className={runtimeStatusBadgeClass(relation ?? { runtime_status: "unknown" })}
+                    title={relation ? runtimeStatusDetail(relation) : "未验证（可尝试）"}>
+                    {relation ? runtimeStatusDisplayLabel(relation) : "未验证"}
+                  </span>
+                </div>
+                <div className="inline-actions">
+                  <button type="button" className="ghost-action small-action"
+                    disabled={!testModel || !enabled}
+                    onClick={() => testModel && props.onTest({ accountKey: account.account_key,
+                      modelKey: testModel.model_key, endpointKey: endpoint.endpoint_key })}>
+                    <FlaskConical size={14} /> 测试
+                  </button>
+                  {relation && (relation.runtime_status !== "unknown" || relation.last_error_at || relation.last_success_at) ? (
+                    <button type="button" className="ghost-action small-action"
+                      disabled={clearAccessMutation.isPending}
+                      onClick={() => clearAccessMutation.mutate({ accountKey: account.account_key,
+                        endpointKey: endpoint.endpoint_key })}>
+                      <Trash2 size={14} /> 清除状态
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            );
+          })
+        ])}
+      </div>
       {props.provider.models.map((model) => (
         <details key={model.model_key}>
           <summary>{model.model_name}</summary>

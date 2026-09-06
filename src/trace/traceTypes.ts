@@ -25,6 +25,15 @@ export interface TraceAttempt extends TraceCandidate {
   stream_completed?: boolean;
   /** Last protocol event observed before completion or failure. */
   stream_terminal_event?: string | null;
+  required_protocol?: string;
+  actual_protocol?: string;
+  operation?: string;
+  failure_kind?: string;
+  failure_scope?: string;
+  failure_confidence?: string;
+  status_code?: number;
+  provider_code?: string;
+  provider_type?: string;
 }
 
 export interface TraceFeedbackLabel {
@@ -49,6 +58,7 @@ export interface RouteTrace {
     context_tokens_est: number;
     /** 调用方通过 selector 后缀显式要求的上下文窗口（如 `[1m]` → 1000000） */
     requested_context_window?: number | null;
+    required_protocol?: string | null;
   };
   candidates: TraceCandidate[];
   filtered: TraceCandidate[];
