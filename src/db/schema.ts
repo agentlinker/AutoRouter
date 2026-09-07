@@ -1,4 +1,5 @@
 import { integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import type { WireProtocol } from "../config/schema.js";
 
 export const managedProvidersTable = sqliteTable("managed_providers", {
   id: integer("id").primaryKey({ autoIncrement: true }),
@@ -61,10 +62,9 @@ export const managedProviderEndpointsTable = sqliteTable("managed_provider_endpo
   id: integer("id").primaryKey({ autoIncrement: true }),
   providerId: integer("provider_id").notNull(),
   endpointKey: text("endpoint_key").notNull(),
-  protocol: text("protocol").notNull().default("openai"),
+  protocol: text("protocol").$type<WireProtocol>().notNull().default("openai-responses"),
   baseUrl: text("base_url").notNull(),
   customHeadersJson: text("custom_headers_json"),
-  protocolBundleKey: text("protocol_bundle_key"),
   enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
   supportsStreaming: integer("supports_streaming", { mode: "boolean" }).notNull().default(true),
   supportsTools: integer("supports_tools", { mode: "boolean" }).notNull().default(false),
@@ -250,6 +250,7 @@ export const routeTracesTable = sqliteTable("route_traces", {
   privacyLevel: text("privacy_level").notNull(),
   contextTokensEst: integer("context_tokens_est").notNull().default(0),
   requestedContextWindow: integer("requested_context_window"),
+  requiredProtocol: text("required_protocol"),
   selectedRouteId: text("selected_route_id"),
   selectedEndpoint: text("selected_endpoint"),
   selectedPlatform: text("selected_platform"),
@@ -283,6 +284,31 @@ export const routeTracesTable = sqliteTable("route_traces", {
   timestampIndex: uniqueIndex("route_traces_timestamp_trace_id_unique").on(table.timestamp, table.traceId)
 }));
 
+export const managedAccountEndpointsTable = sqliteTable("managed_account_endpoints", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  accountId: integer("account_id").notNull().references(() => managedProviderCredentialsTable.id, { onDelete: "cascade" }),
+  endpointId: integer("endpoint_id").notNull().references(() => managedProviderEndpointsTable.id, { onDelete: "cascade" }),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  runtimeStatus: text("runtime_status").notNull().default("unknown"),
+  statusReason: text("status_reason"),
+  statusMessage: text("status_message"),
+  statusSource: text("status_source").notNull().default("system"),
+  statusUpdatedAt: text("status_updated_at"),
+  statusCooldownUntil: text("status_cooldown_until"),
+  cooldownStrike: integer("cooldown_strike").notNull().default(0),
+  rateLimitStrike: integer("rate_limit_strike").notNull().default(0),
+  recentErrorCount: integer("recent_error_count").notNull().default(0),
+  lastSuccessAt: text("last_success_at"),
+  lastErrorAt: text("last_error_at"),
+  lastErrorCode: text("last_error_code"),
+  lastErrorMessage: text("last_error_message"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull()
+}, (table) => ({
+  accountEndpointUnique: uniqueIndex("managed_account_endpoints_account_endpoint_unique")
+    .on(table.accountId, table.endpointId)
+}));
+
 export const schema = {
   managedProvidersTable,
   managedProviderCredentialsTable,
@@ -291,6 +317,7 @@ export const schema = {
   managedModelsTable,
   managedAccountModelsTable,
   managedAccountEndpointModelsTable,
+  managedAccountEndpointsTable,
   modelSyncRunsTable,
   appSettingsTable,
   routeTracesTable
@@ -303,6 +330,7 @@ export type LogicalModelRow = typeof logicalModelsTable.$inferSelect;
 export type ManagedModelRow = typeof managedModelsTable.$inferSelect;
 export type ManagedAccountModelRow = typeof managedAccountModelsTable.$inferSelect;
 export type ManagedAccountEndpointModelRow = typeof managedAccountEndpointModelsTable.$inferSelect;
+export type ManagedAccountEndpointRow = typeof managedAccountEndpointsTable.$inferSelect;
 export type ModelSyncRunRow = typeof modelSyncRunsTable.$inferSelect;
 export type RouteTraceRow = typeof routeTracesTable.$inferSelect;
 

@@ -37,7 +37,7 @@ describe("server body limit", () => {
         },
         platforms: {
           openai: {
-            protocol: "openai"
+            protocol: "openai-chat-completions"
           }
         },
         providers: {

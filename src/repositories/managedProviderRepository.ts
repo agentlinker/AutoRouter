@@ -1,8 +1,10 @@
+import type { WireProtocol } from "../config/schema.js";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 
 import {
   managedAccountEndpointModelsTable,
+  managedAccountEndpointsTable,
   logicalModelsTable,
   managedAccountModelsTable,
   managedModelsTable,
@@ -11,6 +13,7 @@ import {
   managedProvidersTable,
   modelSyncRunsTable,
   type ManagedAccountEndpointModelRow,
+  type ManagedAccountEndpointRow,
   type ManagedAccountModelRow,
   type ManagedCredentialRow,
   type ManagedModelRow,
@@ -20,13 +23,14 @@ import {
   type schema
 } from "../db/schema.js";
 import { displayNameFromLogicalName, mergeAliases, toLogicalModelName } from "../catalog/logicalModelNames.js";
+import { accountUnavailableReason, isRuntimeStatusValue } from "../runtime/runtimeStatus.js";
 
 export type ProviderKind = "official" | "relay" | "custom";
 
 export interface ManagedProviderInput {
   providerKey: string;
   displayName: string;
-  protocol?: "openai" | "anthropic";
+  protocol?: WireProtocol;
   baseUrl: string;
   websiteUrl?: string | null;
   modelCatalogUrl?: string | null;
@@ -67,10 +71,9 @@ export interface AccountQuota {
 
 export interface ManagedEndpointInput {
   endpointKey: string;
-  protocol: "openai" | "anthropic";
+  protocol: WireProtocol;
   baseUrl: string;
   customHeaders?: Record<string, string>;
-  protocolBundleKey?: string | null;
   enabled?: boolean;
   supportsStreaming?: boolean;
   supportsTools?: boolean;
@@ -78,7 +81,7 @@ export interface ManagedEndpointInput {
 }
 
 export interface ManagedEndpointSetInput {
-  protocol: "openai" | "anthropic";
+  protocol: WireProtocol;
   baseUrl: string;
 }
 
@@ -93,7 +96,7 @@ export interface ManagedProviderEndpointSetCandidate {
   relation: ManagedEndpointSetRelation;
   matchingEndpoints: ManagedProviderEndpointRow[];
   conflictingEndpoints: Array<{
-    protocol: "openai" | "anthropic";
+    protocol: WireProtocol;
     candidateBaseUrl: string;
     existingBaseUrl: string;
   }>;
@@ -154,10 +157,9 @@ function isManualModel(model: Pick<ManagedModelRow, "rawMetadataJson">): boolean
 }
 
 export interface ManagedEndpointUpdateInput {
-  protocol?: "openai" | "anthropic";
+  protocol?: WireProtocol;
   baseUrl?: string;
   customHeaders?: Record<string, string>;
-  protocolBundleKey?: string | null;
   enabled?: boolean;
   supportsStreaming?: boolean;
   supportsTools?: boolean;
@@ -182,6 +184,7 @@ export interface ManagedProviderDetails {
     models: ManagedModelRow[];
   }>;
   accountEndpointModels: ManagedAccountEndpointModelRow[];
+  accountEndpoints: ManagedAccountEndpointRow[];
   endpoints: ManagedProviderEndpointRow[];
   models: ManagedModelRow[];
   latestSync: ModelSyncRunRow | null;
@@ -348,7 +351,7 @@ function classifyProviderEndpointSet(
   }
 
   const existingOnlyEndpoints = providerEndpoints.filter(
-    (endpoint) => !candidateProtocols.has(endpoint.protocol as "openai" | "anthropic")
+    (endpoint) => !candidateProtocols.has(endpoint.protocol as WireProtocol)
   );
   return {
     provider,
@@ -826,6 +829,9 @@ export class ManagedProviderRepository {
         endpointIds.has(row.endpointId) &&
         modelIds.has(row.managedModelId)
       );
+    const accountEndpoints = this.db.select().from(managedAccountEndpointsTable)
+      .all()
+      .filter((row) => accountIds.has(row.accountId) && endpointIds.has(row.endpointId));
 
     return {
       provider,
@@ -833,6 +839,7 @@ export class ManagedProviderRepository {
       accounts,
       accountModels,
       accountEndpointModels,
+      accountEndpoints,
       endpoints,
       models,
       latestSync
@@ -901,8 +908,8 @@ export class ManagedProviderRepository {
       endpointBundles: [
         {
           endpoint: {
-            endpointKey: "default",
-            protocol: input.provider.protocol ?? "openai",
+            endpointKey: input.provider.protocol ?? "openai-responses",
+            protocol: input.provider.protocol ?? "openai-responses",
             baseUrl: input.provider.baseUrl,
             enabled: input.provider.enabled ?? true,
             supportsStreaming: true,
@@ -970,7 +977,6 @@ export class ManagedProviderRepository {
             protocol: bundle.endpoint.protocol,
             baseUrl: bundle.endpoint.baseUrl,
             customHeadersJson: bundle.endpoint.customHeaders ? JSON.stringify(bundle.endpoint.customHeaders) : null,
-            protocolBundleKey: bundle.endpoint.protocolBundleKey ?? null,
             enabled: bundle.endpoint.enabled ?? true,
             supportsStreaming: bundle.endpoint.supportsStreaming ?? true,
             supportsTools: bundle.endpoint.supportsTools ?? bundle.models.some((model) => model.supportsTools),
@@ -1114,7 +1120,6 @@ export class ManagedProviderRepository {
             protocol: bundle.endpoint.protocol,
             baseUrl: bundle.endpoint.baseUrl,
             customHeadersJson: bundle.endpoint.customHeaders ? JSON.stringify(bundle.endpoint.customHeaders) : null,
-            protocolBundleKey: bundle.endpoint.protocolBundleKey ?? null,
             enabled: bundle.endpoint.enabled ?? true,
             supportsStreaming: bundle.endpoint.supportsStreaming ?? true,
             supportsTools: bundle.endpoint.supportsTools ?? bundle.models.some((model) => model.supportsTools),
@@ -1281,6 +1286,7 @@ export class ManagedProviderRepository {
     provider: ManagedProviderRow;
     credential: ManagedCredentialRow;
     endpoint: ManagedProviderEndpointRow;
+    accountEndpoint: ManagedAccountEndpointRow | null;
     models: ManagedModelRow[];
   }> {
     const providers = this.db.select().from(managedProvidersTable)
@@ -1314,7 +1320,15 @@ export class ManagedProviderRepository {
       return accounts.flatMap((account) => {
         const accountModelIds = this.listAccountModelIds(account.id);
 
-        return endpoints.map((endpoint) => {
+        return endpoints.flatMap((endpoint) => {
+          const accountEndpoint = this.getAccountEndpoint(provider.providerKey, account.accountKey, endpoint.endpointKey);
+          if (accountEndpoint && (!accountEndpoint.enabled || accountUnavailableReason({
+            runtimeStatus: isRuntimeStatusValue(accountEndpoint.runtimeStatus) ? accountEndpoint.runtimeStatus : "unknown",
+            statusReason: accountEndpoint.statusReason,
+            statusCooldownUntil: accountEndpoint.statusCooldownUntil
+          }))) {
+            return [];
+          }
           const observations = this.db.select().from(managedAccountEndpointModelsTable)
             .where(and(
               eq(managedAccountEndpointModelsTable.accountId, account.id),
@@ -1355,6 +1369,7 @@ export class ManagedProviderRepository {
             provider,
             credential: account,
             endpoint,
+            accountEndpoint,
             models
           };
         });
@@ -1474,7 +1489,7 @@ export class ManagedProviderRepository {
 
   public getProviderEndpointByProtocol(
     providerKey: string,
-    protocol: "openai" | "anthropic"
+    protocol: WireProtocol
   ): ManagedProviderEndpointRow | null {
     const provider = this.db.select().from(managedProvidersTable)
       .where(eq(managedProvidersTable.providerKey, providerKey))
@@ -1512,7 +1527,6 @@ export class ManagedProviderRepository {
         protocol: input.protocol,
         baseUrl: input.baseUrl,
         customHeadersJson: input.customHeaders ? JSON.stringify(input.customHeaders) : null,
-        protocolBundleKey: input.protocolBundleKey ?? null,
         enabled: input.enabled ?? true,
         supportsStreaming: input.supportsStreaming ?? true,
         supportsTools: input.supportsTools ?? false,
@@ -1546,7 +1560,6 @@ export class ManagedProviderRepository {
           protocol: endpoint.protocol,
           baseUrl: endpoint.baseUrl,
           customHeadersJson: endpoint.customHeaders ? JSON.stringify(endpoint.customHeaders) : null,
-          protocolBundleKey: endpoint.protocolBundleKey ?? null,
           enabled: endpoint.enabled ?? true,
           supportsStreaming: endpoint.supportsStreaming ?? true,
           supportsTools: endpoint.supportsTools ?? false,
@@ -1593,10 +1606,6 @@ export class ManagedProviderRepository {
                 ? JSON.stringify(input.customHeaders)
                 : null
               : endpoint.customHeadersJson,
-          protocolBundleKey:
-            input.protocolBundleKey !== undefined
-              ? input.protocolBundleKey
-              : endpoint.protocolBundleKey,
           enabled: input.enabled ?? endpoint.enabled,
           supportsStreaming: input.supportsStreaming ?? endpoint.supportsStreaming,
           supportsTools: input.supportsTools ?? endpoint.supportsTools,
@@ -1630,8 +1639,6 @@ export class ManagedProviderRepository {
         protocol: input.protocol ?? endpoint.protocol,
         baseUrl: input.baseUrl ?? endpoint.baseUrl,
         customHeadersJson: input.customHeaders !== undefined ? (input.customHeaders ? JSON.stringify(input.customHeaders) : null) : endpoint.customHeadersJson,
-        protocolBundleKey:
-          input.protocolBundleKey !== undefined ? input.protocolBundleKey : endpoint.protocolBundleKey,
         enabled: input.enabled ?? endpoint.enabled,
         supportsStreaming: input.supportsStreaming ?? endpoint.supportsStreaming,
         supportsTools: input.supportsTools ?? endpoint.supportsTools,
@@ -2261,6 +2268,76 @@ export class ManagedProviderRepository {
         eq(managedAccountModelsTable.managedModelId, model.id)
       ))
       .get() ?? null;
+  }
+
+  public getAccountEndpoint(providerKey: string, accountKey: string, endpointKey: string): ManagedAccountEndpointRow | null {
+    const account = this.getAccount(providerKey, accountKey);
+    const endpoint = this.getProviderEndpoint(providerKey, endpointKey);
+    if (!account || !endpoint) {
+      return null;
+    }
+    return this.db.select().from(managedAccountEndpointsTable).where(and(
+      eq(managedAccountEndpointsTable.accountId, account.id),
+      eq(managedAccountEndpointsTable.endpointId, endpoint.id)
+    )).get() ?? null;
+  }
+
+  private updateAccountEndpoint(
+    providerKey: string, accountKey: string, endpointKey: string,
+    values: Partial<Omit<ManagedAccountEndpointRow, "id" | "accountId" | "endpointId" | "createdAt">>
+  ): ManagedAccountEndpointRow | null {
+    const account = this.getAccount(providerKey, accountKey);
+    const endpoint = this.getProviderEndpoint(providerKey, endpointKey);
+    if (!account || !endpoint) {
+      return null;
+    }
+    const now = nowIso();
+    this.db.insert(managedAccountEndpointsTable).values({
+      accountId: account.id, endpointId: endpoint.id, ...values, createdAt: now, updatedAt: now
+    }).onConflictDoUpdate({
+      target: [managedAccountEndpointsTable.accountId, managedAccountEndpointsTable.endpointId],
+      set: { ...values, updatedAt: now }
+    }).run();
+    return this.getAccountEndpoint(providerKey, accountKey, endpointKey);
+  }
+
+  public setAccountEndpointEnabled(providerKey: string, accountKey: string, endpointKey: string, enabled: boolean) {
+    return this.updateAccountEndpoint(providerKey, accountKey, endpointKey, { enabled });
+  }
+
+  public clearAccountEndpointStatus(providerKey: string, accountKey: string, endpointKey: string) {
+    return this.updateAccountEndpoint(providerKey, accountKey, endpointKey, {
+      runtimeStatus: "unknown", statusReason: null, statusMessage: null,
+      statusSource: "manual", statusUpdatedAt: nowIso(), statusCooldownUntil: null,
+      cooldownStrike: 0, rateLimitStrike: 0, recentErrorCount: 0,
+      lastSuccessAt: null, lastErrorAt: null, lastErrorCode: null, lastErrorMessage: null
+    });
+  }
+
+  public applyAccountEndpointFailure(
+    providerKey: string, accountKey: string, endpointKey: string,
+    input: { runtimeStatus: "disabled" | "rate_limited" | "cooling_down" | "abnormal";
+      reason: string; cooldownUntil: string | null; cooldownStrike?: number;
+      rateLimitStrike?: number; code?: string; message: string }
+  ) {
+    const previous = this.getAccountEndpoint(providerKey, accountKey, endpointKey);
+    return this.updateAccountEndpoint(providerKey, accountKey, endpointKey, {
+      runtimeStatus: input.runtimeStatus, statusReason: input.reason, statusMessage: input.message,
+      statusSource: "system", statusUpdatedAt: nowIso(), statusCooldownUntil: input.cooldownUntil,
+      cooldownStrike: input.cooldownStrike ?? previous?.cooldownStrike ?? 0,
+      rateLimitStrike: input.rateLimitStrike ?? previous?.rateLimitStrike ?? 0,
+      recentErrorCount: (previous?.recentErrorCount ?? 0) + 1,
+      lastErrorAt: nowIso(), lastErrorCode: input.code ?? "provider_error", lastErrorMessage: input.message
+    });
+  }
+
+  public markAccountEndpointSuccess(providerKey: string, accountKey: string, endpointKey: string, clearCounters: boolean) {
+    return this.updateAccountEndpoint(providerKey, accountKey, endpointKey, {
+      runtimeStatus: "normal", statusReason: null, statusMessage: null,
+      statusSource: "system", statusUpdatedAt: nowIso(), statusCooldownUntil: null,
+      lastSuccessAt: nowIso(),
+      ...(clearCounters ? { cooldownStrike: 0, rateLimitStrike: 0, recentErrorCount: 0 } : {})
+    });
   }
 
   private getAccountEndpointModelTarget(

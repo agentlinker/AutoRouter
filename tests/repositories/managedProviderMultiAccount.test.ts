@@ -60,7 +60,7 @@ describe("managed provider multi-account", () => {
         {
           endpoint: {
             endpointKey: "openai",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://demo.example.com/v1"
           },
           models: [
@@ -77,7 +77,7 @@ describe("managed provider multi-account", () => {
         {
           endpoint: {
             endpointKey: "anthropic",
-            protocol: "anthropic",
+            protocol: "anthropic-messages",
             baseUrl: "https://demo.example.com/anthropic"
           },
           models: []
@@ -161,7 +161,7 @@ describe("managed provider multi-account", () => {
         {
           endpoint: {
             endpointKey: "openai",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://open.bigmodel.cn/api/paas/v4/"
           },
           models: []
@@ -169,7 +169,7 @@ describe("managed provider multi-account", () => {
         {
           endpoint: {
             endpointKey: "anthropic",
-            protocol: "anthropic",
+            protocol: "anthropic-messages",
             baseUrl: "https://open.bigmodel.cn/api/anthropic"
           },
           models: []
@@ -188,7 +188,7 @@ describe("managed provider multi-account", () => {
         {
           endpoint: {
             endpointKey: "openai",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://api.example.com/v1"
           },
           models: []
@@ -197,16 +197,16 @@ describe("managed provider multi-account", () => {
     });
 
     const exact = repo.findProvidersByEndpointSet([
-      { protocol: "openai", baseUrl: "https://open.bigmodel.cn/api/paas/v4/v1" },
-      { protocol: "anthropic", baseUrl: "https://open.bigmodel.cn/api/anthropic" }
+      { protocol: "openai-responses", baseUrl: "https://open.bigmodel.cn/api/paas/v4/v1" },
+      { protocol: "anthropic-messages", baseUrl: "https://open.bigmodel.cn/api/anthropic" }
     ]);
     expect(exact).toEqual([
       expect.objectContaining({
         provider: expect.objectContaining({ providerKey: "bigmodel" }),
         relation: "exact",
         matchingEndpoints: expect.arrayContaining([
-          expect.objectContaining({ protocol: "openai" }),
-          expect.objectContaining({ protocol: "anthropic" })
+          expect.objectContaining({ protocol: "openai-responses" }),
+          expect.objectContaining({ protocol: "anthropic-messages" })
         ]),
         conflictingEndpoints: [],
         candidateOnlyEndpoints: [],
@@ -215,39 +215,39 @@ describe("managed provider multi-account", () => {
     ]);
 
     const candidateSubset = repo.findProvidersByEndpointSet([
-      { protocol: "openai", baseUrl: "https://open.bigmodel.cn/api/paas/v4" }
+      { protocol: "openai-responses", baseUrl: "https://open.bigmodel.cn/api/paas/v4" }
     ]);
     expect(candidateSubset[0]).toEqual(expect.objectContaining({
       relation: "candidate_subset",
       existingOnlyEndpoints: [
-        expect.objectContaining({ protocol: "anthropic" })
+        expect.objectContaining({ protocol: "anthropic-messages" })
       ]
     }));
 
     const existingSubset = repo.findProvidersByEndpointSet([
-      { protocol: "openai", baseUrl: "https://api.example.com" },
-      { protocol: "anthropic", baseUrl: "https://api.example.com/anthropic" }
+      { protocol: "openai-responses", baseUrl: "https://api.example.com" },
+      { protocol: "anthropic-messages", baseUrl: "https://api.example.com/anthropic" }
     ]);
     expect(existingSubset[0]).toEqual(expect.objectContaining({
       provider: expect.objectContaining({ providerKey: "openai-only" }),
       relation: "existing_subset",
       candidateOnlyEndpoints: [
         {
-          protocol: "anthropic",
+          protocol: "anthropic-messages",
           baseUrl: "https://api.example.com/anthropic"
         }
       ]
     }));
 
     const conflict = repo.findProvidersByEndpointSet([
-      { protocol: "openai", baseUrl: "https://open.bigmodel.cn/api/paas/v4" },
-      { protocol: "anthropic", baseUrl: "https://different.example.com/anthropic" }
+      { protocol: "openai-responses", baseUrl: "https://open.bigmodel.cn/api/paas/v4" },
+      { protocol: "anthropic-messages", baseUrl: "https://different.example.com/anthropic" }
     ]);
     expect(conflict[0]).toEqual(expect.objectContaining({
       relation: "conflict",
       conflictingEndpoints: [
         {
-          protocol: "anthropic",
+          protocol: "anthropic-messages",
           candidateBaseUrl: "https://different.example.com/anthropic",
           existingBaseUrl: "https://open.bigmodel.cn/api/anthropic"
         }
@@ -255,7 +255,7 @@ describe("managed provider multi-account", () => {
     }));
 
     expect(repo.findProvidersByEndpointSet([
-      { protocol: "openai", baseUrl: "https://unrelated.example.com/v1" }
+      { protocol: "openai-responses", baseUrl: "https://unrelated.example.com/v1" }
     ])).toEqual([]);
   });
 
@@ -289,7 +289,7 @@ describe("managed provider multi-account", () => {
         {
           endpoint: {
             endpointKey: "openai",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://relay.example.com/v1"
           },
           models: [
@@ -398,7 +398,7 @@ describe("managed provider multi-account", () => {
         {
           endpoint: {
             endpointKey: "openai",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://manual.example.com/v1"
           },
           models: []
@@ -479,7 +479,7 @@ describe("managed provider multi-account", () => {
         {
           endpoint: {
             endpointKey: "openai",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://alpha.example.com/v1"
           },
           models: []
@@ -499,7 +499,7 @@ describe("managed provider multi-account", () => {
         {
           endpoint: {
             endpointKey: "openai",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://beta.example.com/v1"
           },
           models: []
@@ -562,7 +562,7 @@ describe("managed provider multi-account", () => {
         {
           endpoint: {
             endpointKey: "openai",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://old.example.com/v1"
           },
           models: []
@@ -591,7 +591,7 @@ describe("managed provider multi-account", () => {
         {
           endpoint: {
             endpointKey: "openai",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://new.example.com/v1"
           },
           models

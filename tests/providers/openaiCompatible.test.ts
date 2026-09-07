@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MockAgent, setGlobalDispatcher } from "undici";
 
-import { OpenAiCompatibleAdapter } from "../../src/providers/openaiCompatible.js";
+import { OpenAiChatCompletionsAdapter, OpenAiResponsesAdapter } from "../../src/providers/openaiCompatible.js";
 import { HttpError } from "../../src/utils/httpErrors.js";
 
 function createRouteTarget(
@@ -12,7 +12,7 @@ function createRouteTarget(
   return {
     platform: {
       id: "openai",
-      protocol: "openai"
+      protocol: "openai-chat-completions"
     },
     provider: {
       id: "demo",
@@ -59,7 +59,7 @@ function createRouteTarget(
   };
 }
 
-describe("OpenAiCompatibleAdapter", () => {
+describe("OpenAI native adapters", () => {
   it("maps rate limit responses to retryable provider_rate_limited", async () => {
     const mockAgent = new MockAgent();
     mockAgent.disableNetConnect();
@@ -77,7 +77,7 @@ describe("OpenAiCompatibleAdapter", () => {
         }
       });
 
-    const adapter = new OpenAiCompatibleAdapter();
+    const adapter = new OpenAiChatCompletionsAdapter();
 
     await expect(
       adapter.chatCompletion(
@@ -116,7 +116,7 @@ describe("OpenAiCompatibleAdapter", () => {
         }
       });
 
-    const adapter = new OpenAiCompatibleAdapter();
+    const adapter = new OpenAiChatCompletionsAdapter();
 
     await expect(
       adapter.chatCompletion(
@@ -153,7 +153,7 @@ describe("OpenAiCompatibleAdapter", () => {
         headers: { "content-type": "text/html; charset=UTF-8" }
       });
 
-    const adapter = new OpenAiCompatibleAdapter();
+    const adapter = new OpenAiChatCompletionsAdapter();
 
     await expect(
       adapter.chatCompletion(
@@ -193,7 +193,7 @@ describe("OpenAiCompatibleAdapter", () => {
         }
       });
 
-    const adapter = new OpenAiCompatibleAdapter();
+    const adapter = new OpenAiResponsesAdapter();
     const iterator = adapter.streamResponse!(
       {
         model: "auto",
@@ -226,7 +226,7 @@ describe("OpenAiCompatibleAdapter", () => {
         headers: { "content-type": "text/html; charset=UTF-8" }
       });
 
-    const adapter = new OpenAiCompatibleAdapter();
+    const adapter = new OpenAiResponsesAdapter();
     const iterator = adapter.streamResponse!(
       {
         model: "auto",
@@ -278,7 +278,7 @@ describe("OpenAiCompatibleAdapter", () => {
         headers: { "content-type": "text/event-stream" }
       });
 
-    const adapter = new OpenAiCompatibleAdapter();
+    const adapter = new OpenAiChatCompletionsAdapter();
     const chunks: string[] = [];
     for await (const chunk of adapter.streamChatCompletion!(
       {
@@ -320,7 +320,7 @@ describe("OpenAiCompatibleAdapter", () => {
         };
       });
 
-    const adapter = new OpenAiCompatibleAdapter();
+    const adapter = new OpenAiChatCompletionsAdapter();
     await adapter.chatCompletion(
       {
         model: "auto",
@@ -360,7 +360,7 @@ describe("OpenAiCompatibleAdapter", () => {
         };
       });
 
-    const adapter = new OpenAiCompatibleAdapter();
+    const adapter = new OpenAiResponsesAdapter();
     await adapter.responseCompletion!(
       {
         model: "auto",
@@ -381,7 +381,7 @@ describe("OpenAiCompatibleAdapter", () => {
   });
 
   it("marks network failures as retryable provider_unreachable", async () => {
-    const adapter = new OpenAiCompatibleAdapter();
+    const adapter = new OpenAiChatCompletionsAdapter();
 
     await expect(
       adapter.chatCompletion(
@@ -419,7 +419,7 @@ describe("OpenAiCompatibleAdapter", () => {
         };
       });
 
-    const adapter = new OpenAiCompatibleAdapter();
+    const adapter = new OpenAiChatCompletionsAdapter();
     await adapter.chatCompletion(
       {
         model: "auto",
@@ -471,7 +471,7 @@ describe("OpenAiCompatibleAdapter", () => {
       .intercept({ path: "/v1/chat/completions", method: "POST" })
       .reply(200, upstreamRaw, { headers: { "content-type": "application/json" } });
 
-    const adapter = new OpenAiCompatibleAdapter();
+    const adapter = new OpenAiChatCompletionsAdapter();
     const response = await adapter.chatCompletion(
       {
         model: "auto",

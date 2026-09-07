@@ -1,5 +1,10 @@
 import { requestJson } from "./client.js";
 
+export type WireProtocol =
+  | "openai-responses"
+  | "openai-chat-completions"
+  | "anthropic-messages";
+
 export interface ProviderModel {
   model_key: string;
   provider_model_id: string;
@@ -21,10 +26,9 @@ export interface ProviderModel {
 
 export interface ProviderEndpoint {
   endpoint_key: string;
-  protocol: string;
+  protocol: WireProtocol;
   base_url: string;
   custom_headers?: Record<string, string>;
-  protocol_bundle_key?: string | null;
   enabled: boolean;
   runtime_status?: string;
   status_reason?: string | null;
@@ -79,10 +83,9 @@ export interface ProviderTemplate {
   provider_kind: "official" | "relay" | "custom";
   endpoints: Array<{
     endpoint_key: string;
-    protocol: "openai" | "anthropic";
+    protocol: WireProtocol;
     base_url: string;
     custom_headers?: Record<string, string>;
-    protocol_bundle_key?: string | null;
     enabled?: boolean;
   }>;
   notes?: string;
@@ -119,6 +122,24 @@ export interface ProviderDetails {
   } | null;
   models: ProviderModel[];
   account_endpoint_models: ProviderAccountEndpointModel[];
+  account_endpoints: ProviderAccountEndpoint[];
+}
+
+export interface ProviderAccountEndpoint {
+  account_key: string;
+  endpoint_key: string;
+  enabled: boolean;
+  runtime_status: string;
+  status_reason?: string | null;
+  status_message?: string | null;
+  status_source?: string | null;
+  status_updated_at?: string | null;
+  status_cooldown_until?: string | null;
+  recent_error_count: number;
+  last_success_at?: string | null;
+  last_error_at?: string | null;
+  last_error_code?: string | null;
+  last_error_message?: string | null;
 }
 
 export interface ProviderAccountEndpointModel {
@@ -166,7 +187,7 @@ export interface ProviderModelTestResult {
   model_key: string;
   model_name: string;
   prompt: string;
-  protocol: "responses" | "chat_completions";
+  protocol: WireProtocol;
   latency_ms: number;
   upstream_status: number | null;
   error_code: string | null;
@@ -189,16 +210,15 @@ export interface ProviderFormValues {
 }
 
 export interface ProviderEndpointInput {
-  protocol: "openai" | "anthropic" | "all";
+  protocol: WireProtocol;
   base_url: string;
   custom_headers?: string | Record<string, string>;
-  protocol_bundle_key?: string | null;
   enabled?: boolean;
 }
 
 export interface ProviderMergeEndpoint {
   endpoint_key?: string;
-  protocol: "openai" | "anthropic";
+  protocol: WireProtocol;
   base_url: string;
 }
 
@@ -209,7 +229,7 @@ export interface ProviderMergeCandidate {
   relation: "exact" | "candidate_subset" | "existing_subset" | "conflict";
   matching_endpoints: ProviderMergeEndpoint[];
   conflicting_endpoints: Array<{
-    protocol: "openai" | "anthropic";
+    protocol: WireProtocol;
     candidate_base_url: string;
     existing_base_url: string;
   }>;
@@ -227,7 +247,7 @@ export interface ProviderManualModelInput {
 }
 
 export interface CreateProviderPayload extends ProviderFormValues {
-  protocol?: "openai" | "anthropic";
+  protocol?: WireProtocol;
   base_url?: string;
   accounts?: Array<{
     account_key: string;
@@ -316,7 +336,7 @@ export function createProviderEndpoint(
   token: string,
   providerKey: string,
   payload: {
-    protocol: "openai" | "anthropic" | "all";
+    protocol: WireProtocol;
     base_url: string;
     custom_headers?: Record<string, string>;
     enabled?: boolean;
@@ -403,6 +423,33 @@ export function clearProviderAccountEndpointModelStatus(
   );
 }
 
+export function updateProviderAccountEndpoint(
+  token: string,
+  providerKey: string,
+  accountKey: string,
+  endpointKey: string,
+  enabled: boolean
+): Promise<ProviderDetails> {
+  return requestJson<ProviderDetails>(
+    `/admin/api/providers/${encodeURIComponent(providerKey)}/accounts/${encodeURIComponent(accountKey)}/endpoints/${encodeURIComponent(endpointKey)}`,
+    token,
+    { method: "PATCH", body: JSON.stringify({ enabled }) }
+  );
+}
+
+export function clearProviderAccountEndpointStatus(
+  token: string,
+  providerKey: string,
+  accountKey: string,
+  endpointKey: string
+): Promise<ProviderDetails> {
+  return requestJson<ProviderDetails>(
+    `/admin/api/providers/${encodeURIComponent(providerKey)}/accounts/${encodeURIComponent(accountKey)}/endpoints/${encodeURIComponent(endpointKey)}/clear-status`,
+    token,
+    { method: "POST" }
+  );
+}
+
 export function listProviderTemplates(token: string): Promise<{
   data: ProviderTemplate[];
   meta?: { load_errors?: string[] };
@@ -418,7 +465,7 @@ export function mergeCheckProvider(
   payload: {
     provider_key?: string;
     endpoints: Array<{
-      protocol: "openai" | "anthropic" | "all";
+      protocol: WireProtocol;
       base_url: string;
     }>;
   }

@@ -18,12 +18,12 @@ type AccountEndpointModelObservation = ProviderDetails["account_endpoint_models"
 
 export function endpointProtocolLabel(protocol: string) {
   switch (protocol) {
-    case "all":
-      return "OpenAI + Anthropic";
-    case "anthropic":
-      return "Anthropic";
-    case "openai":
-      return "OpenAI";
+    case "openai-responses":
+      return "OpenAI Responses";
+    case "openai-chat-completions":
+      return "OpenAI Chat Completions";
+    case "anthropic-messages":
+      return "Anthropic Messages";
     default:
       return protocol;
   }

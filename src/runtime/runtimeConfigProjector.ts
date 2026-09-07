@@ -3,7 +3,7 @@ import { resolveEffectiveModelMetadata } from "../catalog/effectiveModelMetadata
 import { ModelCatalog } from "../catalog/modelCatalog.js";
 import { PriceTable } from "../catalog/priceTable.js";
 import { parseConfigSource } from "../config/loadConfig.js";
-import type { PriceEntryConfig, RouterConfig } from "../config/schema.js";
+import { wireProtocolSchema, type PriceEntryConfig, type RouterConfig } from "../config/schema.js";
 import type { AdapterRegistry } from "../providers/registry.js";
 import type { StickySessionStore } from "../routing/stickySession.js";
 import type { TraceStore } from "../trace/traceStore.js";
@@ -156,7 +156,7 @@ export class RuntimeConfigProjector {
       managedCredentials.set(accountId, decryptedCredential);
 
       mergedConfig.platforms[bundle.endpoint.protocol] ??= {
-        protocol: bundle.endpoint.protocol
+        protocol: wireProtocolSchema.parse(bundle.endpoint.protocol)
       };
 
       mergedConfig.providers[providerId] = {
@@ -238,8 +238,46 @@ export class RuntimeConfigProjector {
         Boolean(account.credential_env && process.env[account.credential_env]) ||
         account.account_type === "local_model"
     });
+    const providerScopedAccounts = new Map<string, typeof registry.accounts[number]>();
+    for (const account of registry.accounts) {
+      if (!account.provider_key || !account.account_key || !account.endpoint_key) {
+        providerScopedAccounts.set(account.id, account);
+        continue;
+      }
+      const identity = `${account.provider_key}/${account.account_key}`;
+      const existing = providerScopedAccounts.get(identity);
+      if (existing) {
+        existing.route_ids = Array.from(new Set([...(existing.route_ids ?? []), account.id]));
+        existing.enabled ||= account.enabled;
+        existing.available ||= account.available;
+        continue;
+      }
+      providerScopedAccounts.set(identity, {
+        ...account,
+        id: identity,
+        endpoint_id: "",
+        endpoint_key: undefined,
+        route_ids: [account.id]
+      });
+    }
+    registry.accounts = Array.from(providerScopedAccounts.values());
 
     const modelStatuses: RuntimeSnapshot["modelStatuses"] = {};
+    const accountEndpoints: RuntimeSnapshot["accountEndpoints"] = managedBundles.flatMap((bundle) => {
+      if (!bundle.accountEndpoint) return [];
+      return [{
+        account_id: `${bundle.provider.providerKey}/${bundle.credential.accountKey || "default"}`,
+        endpoint_id: `${bundle.provider.providerKey}/${bundle.endpoint.endpointKey}`,
+        enabled: bundle.accountEndpoint.enabled,
+        runtime_status: isRuntimeStatusValue(bundle.accountEndpoint.runtimeStatus)
+          ? bundle.accountEndpoint.runtimeStatus
+          : "unknown",
+        status_reason: bundle.accountEndpoint.statusReason,
+        status_message: bundle.accountEndpoint.statusMessage,
+        status_cooldown_until: bundle.accountEndpoint.statusCooldownUntil,
+        recent_error_count: bundle.accountEndpoint.recentErrorCount
+      }];
+    });
     const managedProviderByKey = new Map(
       managedBundles.map((bundle) => [bundle.provider.providerKey, bundle.provider] as const)
     );
@@ -256,6 +294,7 @@ export class RuntimeConfigProjector {
     for (const bundle of managedBundles) {
       const accountKey = bundle.credential.accountKey || "default";
       const accountId = `${bundle.provider.providerKey}/${bundle.endpoint.endpointKey}/${accountKey}`;
+      const accountIdentity = `${bundle.provider.providerKey}/${accountKey}`;
       const endpointId = `${bundle.provider.providerKey}/${bundle.endpoint.endpointKey}`;
       const endpoint = registry.endpoints.find((item) => item.id === endpointId);
       if (endpoint) {
@@ -267,10 +306,9 @@ export class RuntimeConfigProjector {
         endpoint.status_cooldown_until = bundle.endpoint.statusCooldownUntil;
         endpoint.recent_error_count = bundle.endpoint.recentErrorCount ?? 0;
       }
-      const account = registry.accounts.find((item) => item.id === accountId);
+      const account = registry.accounts.find((item) => item.id === accountIdentity);
       if (account) {
         account.provider_key = bundle.provider.providerKey;
-        account.endpoint_key = bundle.endpoint.endpointKey;
         account.account_key = accountKey;
         account.api_key_hint = bundle.credential.keyHint ?? undefined;
         account.recent_error_count = bundle.credential.recentErrorCount ?? 0;
@@ -356,9 +394,9 @@ export class RuntimeConfigProjector {
             rate_limit_strike: accountModel.rateLimitStrike ?? 0,
             recent_error_count: accountModel.recentErrorCount ?? 0
           };
-          modelStatuses[accountModelStatusKey(accountId, model.modelKey)] = accountStatusEntry;
-          modelStatuses[accountModelStatusKey(accountId, configModelId)] = accountStatusEntry;
-          modelStatuses[accountModelStatusKey(accountId, model.providerModelId)] =
+          modelStatuses[accountModelStatusKey(accountIdentity, model.modelKey)] = accountStatusEntry;
+          modelStatuses[accountModelStatusKey(accountIdentity, configModelId)] = accountStatusEntry;
+          modelStatuses[accountModelStatusKey(accountIdentity, model.providerModelId)] =
             accountStatusEntry;
         }
       }
@@ -375,6 +413,7 @@ export class RuntimeConfigProjector {
       providers: registry.providers,
       endpoints: registry.endpoints,
       accounts: registry.accounts,
+      accountEndpoints,
       modelStatuses,
       runtimeStatusSettings,
       priceTable: new PriceTable(config),

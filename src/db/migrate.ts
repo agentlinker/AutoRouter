@@ -14,6 +14,43 @@ function backupBeforeAdapterColumnRemoval(sqlite: Database.Database): void {
   backupDatabase(sqlite, "adapter-column");
 }
 
+function migrateWireProtocols(sqlite: Database.Database): void {
+  const legacy = sqlite.prepare(`SELECT 1 FROM managed_provider_endpoints
+    WHERE protocol IN ('openai', 'anthropic') LIMIT 1`).get();
+  if (!legacy) {
+    return;
+  }
+
+  backupDatabase(sqlite, "wire-protocols");
+  sqlite.transaction(() => {
+    // Legacy OpenAI observations cannot distinguish Responses from Chat Completions.
+    sqlite.exec(`
+      UPDATE managed_account_endpoint_models SET
+        runtime_status = 'unknown', status_reason = NULL, status_message = NULL,
+        status_source = 'system', status_updated_at = NULL, status_cooldown_until = NULL,
+        rate_limit_strike = 0, cooldown_strike = 0, recent_error_count = 0,
+        last_success_at = NULL, last_error_at = NULL, last_error_code = NULL,
+        last_error_message = NULL
+      WHERE endpoint_id IN (SELECT id FROM managed_provider_endpoints WHERE protocol = 'openai');
+      UPDATE managed_provider_endpoints SET
+        runtime_status = 'unknown', status_reason = NULL, status_message = NULL,
+        status_source = 'system', status_updated_at = NULL, status_cooldown_until = NULL,
+        cooldown_strike = 0, recent_error_count = 0,
+        last_error_at = NULL, last_error_code = NULL, last_error_message = NULL
+      WHERE protocol = 'openai';
+      UPDATE managed_provider_endpoints
+      SET endpoint_key = 'wire-migration-' || lower(hex(randomblob(16)))
+      WHERE protocol IN ('openai', 'anthropic');
+      UPDATE managed_provider_endpoints SET
+        endpoint_key = CASE protocol WHEN 'openai' THEN 'openai-responses' ELSE 'anthropic-messages' END,
+        protocol = CASE protocol WHEN 'openai' THEN 'openai-responses' ELSE 'anthropic-messages' END
+      WHERE protocol IN ('openai', 'anthropic');
+      CREATE UNIQUE INDEX IF NOT EXISTS managed_provider_endpoints_provider_protocol_unique
+        ON managed_provider_endpoints(provider_id, protocol);
+    `);
+  })();
+}
+
 // 与 src/catalog/logicalModelNames.ts 保持一致：migrate 不依赖应用层代码，故复制一份。
 function toLogicalModelName(modelName: string): string {
   const trimmed = modelName.trim();
@@ -737,100 +774,9 @@ function repairSyntheticManagedModels(sqlite: Database.Database): void {
   })();
 }
 
-function normalizeBaseUrl(value: string): string {
-  return value.trim().replace(/\/+$/g, "").toLowerCase();
-}
 
-function normalizeJsonValue(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map(normalizeJsonValue);
-  }
 
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, nestedValue]) => [key, normalizeJsonValue(nestedValue)])
-    );
-  }
 
-  return value;
-}
-
-function normalizeJsonText(value: string | null): string {
-  if (!value) {
-    return "";
-  }
-
-  try {
-    return JSON.stringify(normalizeJsonValue(JSON.parse(value)));
-  } catch {
-    return value;
-  }
-}
-
-function backfillProtocolBundles(sqlite: Database.Database): void {
-  const endpoints = sqlite.prepare(`
-    SELECT
-      id,
-      provider_id AS providerId,
-      protocol,
-      base_url AS baseUrl,
-      custom_headers_json AS customHeadersJson,
-      enabled,
-      supports_streaming AS supportsStreaming,
-      supports_tools AS supportsTools,
-      supports_json_mode AS supportsJsonMode
-    FROM managed_provider_endpoints
-    WHERE protocol IN ('openai', 'anthropic')
-      AND protocol_bundle_key IS NULL
-  `).all() as Array<{
-    id: number;
-    providerId: number;
-    protocol: string;
-    baseUrl: string;
-    customHeadersJson: string | null;
-    enabled: number;
-    supportsStreaming: number;
-    supportsTools: number;
-    supportsJsonMode: number;
-  }>;
-
-  const byProvider = new Map<number, typeof endpoints>();
-  for (const endpoint of endpoints) {
-    const group = byProvider.get(endpoint.providerId) ?? [];
-    group.push(endpoint);
-    byProvider.set(endpoint.providerId, group);
-  }
-
-  const markBundled = sqlite.prepare(`
-    UPDATE managed_provider_endpoints
-    SET protocol_bundle_key = 'all'
-    WHERE id IN (?, ?)
-  `);
-
-  for (const group of byProvider.values()) {
-    const openai = group.filter((endpoint) => endpoint.protocol === "openai");
-    const anthropic = group.filter((endpoint) => endpoint.protocol === "anthropic");
-    if (openai.length !== 1 || anthropic.length !== 1 || group.length !== 2) {
-      continue;
-    }
-
-    const left = openai[0];
-    const right = anthropic[0];
-    const sameConfig =
-      normalizeBaseUrl(left.baseUrl) === normalizeBaseUrl(right.baseUrl) &&
-      normalizeJsonText(left.customHeadersJson) === normalizeJsonText(right.customHeadersJson) &&
-      left.enabled === right.enabled &&
-      left.supportsStreaming === right.supportsStreaming &&
-      left.supportsTools === right.supportsTools &&
-      left.supportsJsonMode === right.supportsJsonMode;
-
-    if (sameConfig) {
-      markBundled.run(left.id, right.id);
-    }
-  }
-}
 
 function metadataRank(source: string | null | undefined): number {
   switch (source) {
@@ -880,10 +826,9 @@ export function runMigrations(sqlite: Database.Database) {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       provider_id INTEGER NOT NULL,
       endpoint_key TEXT NOT NULL,
-      protocol TEXT NOT NULL DEFAULT 'openai',
+      protocol TEXT NOT NULL DEFAULT 'openai-responses',
       base_url TEXT NOT NULL,
       custom_headers_json TEXT,
-      protocol_bundle_key TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       supports_streaming INTEGER NOT NULL DEFAULT 1,
       supports_tools INTEGER NOT NULL DEFAULT 0,
@@ -1084,9 +1029,6 @@ export function runMigrations(sqlite: Database.Database) {
     sqlite.exec("ALTER TABLE managed_provider_endpoints ADD COLUMN custom_headers_json TEXT;");
   }
 
-  if (!endpointColumns.some((column) => column.name === "protocol_bundle_key")) {
-    sqlite.exec("ALTER TABLE managed_provider_endpoints ADD COLUMN protocol_bundle_key TEXT;");
-  }
   const endpointRuntimeDefinitions: Array<{ name: string; sql: string }> = [
     { name: "runtime_status", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN runtime_status TEXT NOT NULL DEFAULT 'normal';" },
     { name: "status_reason", sql: "ALTER TABLE managed_provider_endpoints ADD COLUMN status_reason TEXT;" },
@@ -1106,7 +1048,6 @@ export function runMigrations(sqlite: Database.Database) {
     }
   }
 
-  backfillProtocolBundles(sqlite);
 
   const duplicateEndpointProtocols = sqlite.prepare(`
     SELECT 1
@@ -2016,5 +1957,39 @@ export function runMigrations(sqlite: Database.Database) {
   if (finalModelColumns.some((column) => column.name === "endpoint_id")) {
     backupDatabase(sqlite, "managed-model-endpoint-column");
     sqlite.exec("ALTER TABLE managed_models DROP COLUMN endpoint_id;");
+  }
+  sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS managed_account_endpoints (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id INTEGER NOT NULL REFERENCES managed_provider_credentials(id) ON DELETE CASCADE,
+      endpoint_id INTEGER NOT NULL REFERENCES managed_provider_endpoints(id) ON DELETE CASCADE,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      runtime_status TEXT NOT NULL DEFAULT 'unknown',
+      status_reason TEXT,
+      status_message TEXT,
+      status_source TEXT NOT NULL DEFAULT 'system',
+      status_updated_at TEXT,
+      status_cooldown_until TEXT,
+      cooldown_strike INTEGER NOT NULL DEFAULT 0,
+      rate_limit_strike INTEGER NOT NULL DEFAULT 0,
+      recent_error_count INTEGER NOT NULL DEFAULT 0,
+      last_success_at TEXT,
+      last_error_at TEXT,
+      last_error_code TEXT,
+      last_error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS managed_account_endpoints_account_endpoint_unique
+      ON managed_account_endpoints(account_id, endpoint_id);
+  `);
+  const traceColumns = sqlite.pragma("table_info(route_traces)") as Array<{ name: string }>;
+  if (!traceColumns.some((column) => column.name === "required_protocol")) {
+    sqlite.exec("ALTER TABLE route_traces ADD COLUMN required_protocol TEXT;");
+  }
+  migrateWireProtocols(sqlite);
+  const finalEndpointColumns = sqlite.pragma("table_info(managed_provider_endpoints)") as Array<{ name: string }>;
+  if (finalEndpointColumns.some((column) => column.name === "protocol_bundle_key")) {
+    sqlite.exec("ALTER TABLE managed_provider_endpoints DROP COLUMN protocol_bundle_key;");
   }
 }

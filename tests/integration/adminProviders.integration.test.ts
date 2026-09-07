@@ -106,7 +106,7 @@ describe("admin providers integration", () => {
           {
             endpoint: {
               endpointKey: "default",
-              protocol: "openai",
+              protocol: "openai-responses",
               baseUrl: `https://${provider.providerKey}.example.com/v1`
             },
             models: [
@@ -281,11 +281,11 @@ describe("admin providers integration", () => {
         provider_key: "xiao-mi-mo-xing-fu-wu",
         endpoints: [
           {
-            protocol: "openai",
+            protocol: "openai-responses",
             base_url: "https://api.example.com"
           },
           {
-            protocol: "anthropic",
+            protocol: "anthropic-messages",
             base_url: "https://api.example.com/anthropic"
           }
         ]
@@ -298,7 +298,7 @@ describe("admin providers integration", () => {
         authorization: "Bearer admin-token"
       },
       payload: {
-        protocol: "anthropic",
+        protocol: "anthropic-messages",
         base_url: "https://api.example.com/anthropic"
       }
     });
@@ -312,11 +312,11 @@ describe("admin providers integration", () => {
         provider_key: "xiao-mi-mo-xing-fu-wu",
         endpoints: [
           {
-            protocol: "openai",
+            protocol: "openai-responses",
             base_url: "https://api.example.com"
           },
           {
-            protocol: "anthropic",
+            protocol: "anthropic-messages",
             base_url: "https://api.example.com/anthropic"
           }
         ]
@@ -332,7 +332,7 @@ describe("admin providers integration", () => {
         provider_key: "xiao-mi-mo-xing-fu-wu",
         endpoints: [
           {
-            protocol: "openai",
+            protocol: "openai-responses",
             base_url: "https://api.example.com"
           }
         ]
@@ -348,11 +348,11 @@ describe("admin providers integration", () => {
         provider_key: "xiao-mi-mo-xing-fu-wu",
         endpoints: [
           {
-            protocol: "openai",
+            protocol: "openai-responses",
             base_url: "https://api.example.com/v1"
           },
           {
-            protocol: "anthropic",
+            protocol: "anthropic-messages",
             base_url: "https://other.example.com/anthropic"
           }
         ]
@@ -368,7 +368,7 @@ describe("admin providers integration", () => {
         provider_key: "xiao-mi-mo-xing-fu-wu",
         endpoints: [
           {
-            protocol: "openai",
+            protocol: "openai-responses",
             base_url: "https://other.example.com/v1"
           }
         ]
@@ -386,7 +386,7 @@ describe("admin providers integration", () => {
         relation: "existing_subset",
         candidate_only_endpoints: [
           {
-            protocol: "anthropic",
+            protocol: "anthropic-messages",
             base_url: "https://api.example.com/anthropic"
           }
         ]
@@ -399,8 +399,8 @@ describe("admin providers integration", () => {
         provider_key: "xiao-mi-mo-xing-fu-wu",
         relation: "exact",
         matching_endpoints: expect.arrayContaining([
-          expect.objectContaining({ protocol: "openai" }),
-          expect.objectContaining({ protocol: "anthropic" })
+          expect.objectContaining({ protocol: "openai-responses" }),
+          expect.objectContaining({ protocol: "anthropic-messages" })
         ])
       })
     ]);
@@ -410,10 +410,10 @@ describe("admin providers integration", () => {
         provider_key: "xiao-mi-mo-xing-fu-wu",
         relation: "candidate_subset",
         matching_endpoints: [
-          expect.objectContaining({ protocol: "openai" })
+          expect.objectContaining({ protocol: "openai-responses" })
         ],
         existing_only_endpoints: [
-          expect.objectContaining({ protocol: "anthropic" })
+          expect.objectContaining({ protocol: "anthropic-messages" })
         ]
       })
     ]);
@@ -428,7 +428,7 @@ describe("admin providers integration", () => {
         relation: "conflict",
         conflicting_endpoints: [
           {
-            protocol: "anthropic",
+            protocol: "anthropic-messages",
             candidate_base_url: "https://other.example.com/anthropic",
             existing_base_url: "https://api.example.com/anthropic"
           }
@@ -519,7 +519,7 @@ describe("admin providers integration", () => {
         display_name: "Manual Provider",
         endpoints: [
           {
-            protocol: "openai",
+            protocol: "openai-responses",
             base_url: "https://manual-models.example.com/v1"
           }
         ],
@@ -556,7 +556,7 @@ describe("admin providers integration", () => {
 
     expect(modelsResponse.statusCode).toBe(200);
     expect(modelsResponse.json().data.map((item: { id: string }) => item.id)).toContain(
-      "manual-provider/openai/Deepseek-v4-flash"
+      "Deepseek-v4-flash"
     );
 
     await server.close();
@@ -640,7 +640,7 @@ describe("admin providers integration", () => {
         display_name: "Manual Update",
         endpoints: [
           {
-            protocol: "openai",
+            protocol: "openai-responses",
             base_url: "https://manual-update.example.com/v1"
           }
         ],
@@ -734,7 +734,8 @@ describe("admin providers integration", () => {
         object: "response",
         status: "completed",
         output: []
-      });
+      })
+      .times(2);
 
     pool
       .intercept({
@@ -924,7 +925,7 @@ describe("admin providers integration", () => {
       payload: {
         account_key: "primary",
         model_key: createResponse.json().models[0].model_key,
-        endpoint_key: "openai",
+        endpoint_key: "openai-responses",
         prompt: "Return exactly TEST_OK."
       }
     });
@@ -936,7 +937,7 @@ describe("admin providers integration", () => {
       account_key: "primary",
       model_name: "managed-model",
       prompt: "Return exactly TEST_OK.",
-      protocol: "responses",
+      protocol: "openai-responses",
       upstream_status: 200,
       error_code: null,
       error_message: null
@@ -953,7 +954,7 @@ describe("admin providers integration", () => {
     expect(testedProviderResponse.json().account_endpoint_models).toEqual([
       expect.objectContaining({
         account_key: "primary",
-        endpoint_key: "openai",
+        endpoint_key: "openai-responses",
         model_key: createResponse.json().models[0].model_key,
         runtime_status: "normal",
         last_success_at: expect.any(String)
@@ -968,7 +969,7 @@ describe("admin providers integration", () => {
       },
       payload: {
         account_key: "primary",
-        endpoint_key: "openai",
+        endpoint_key: "openai-responses",
         model_key: createResponse.json().models[0].model_key
       }
     });
@@ -986,23 +987,23 @@ describe("admin providers integration", () => {
     expect(modelsResponse.statusCode).toBe(200);
     const listedModels = modelsResponse.json().data.map((item: { id: string }) => item.id);
     expect(listedModels).toContain("managed-model");
-    expect(listedModels).toContain("managed/openai/managed-model");
+    expect(listedModels).toContain("managed/openai-responses/managed-model");
 
-    const chatResponse = await server.inject({
+    const responsesResponse = await server.inject({
       method: "POST",
-      url: "/v1/chat/completions",
+      url: "/v1/responses",
       headers: {
         authorization: "Bearer gateway-token"
       },
       payload: {
         model: "managed-model",
-        messages: [{ role: "user", content: "hello" }]
+        input: "hello"
       }
     });
 
-    expect(chatResponse.statusCode).toBe(200);
-    expect(chatResponse.json().choices[0].message.content).toBe("managed ok");
-    expect(chatResponse.headers["x-autorouter-normalized-model"]).toBe("auto/managed-model");
+    expect(responsesResponse.statusCode).toBe(200);
+    expect(responsesResponse.json().object).toBe("response");
+    expect(responsesResponse.headers["x-autorouter-normalized-model"]).toBe("auto/managed-model");
 
     const providerResponse = await server.inject({
       method: "GET",
@@ -1118,7 +1119,7 @@ describe("admin providers integration", () => {
         authorization: "Bearer admin-token"
       },
       payload: {
-        protocol: "anthropic",
+        protocol: "anthropic-messages",
         base_url: "https://managed.example.com/anthropic"
       }
     });
@@ -1127,12 +1128,12 @@ describe("admin providers integration", () => {
     expect(createEndpointResponse.json().endpoints).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          endpoint_key: "openai",
-          protocol: "openai"
+          endpoint_key: "openai-responses",
+          protocol: "openai-responses"
         }),
         expect.objectContaining({
-          endpoint_key: "anthropic",
-          protocol: "anthropic",
+          endpoint_key: "anthropic-messages",
+          protocol: "anthropic-messages",
         })
       ])
     );
@@ -1147,22 +1148,23 @@ describe("admin providers integration", () => {
     });
     expect(multiProtocolModelsResponse.statusCode).toBe(200);
     const multiProtocolModels = multiProtocolModelsResponse.json().data.map((item: { id: string }) => item.id);
-    expect(multiProtocolModels).toContain("managed/anthropic/managed-model-v2");
+    expect(multiProtocolModels).toContain("managed/anthropic-messages/managed-model-v2");
 
-    const anthropicChatResponse = await server.inject({
+    const anthropicMessagesResponse = await server.inject({
       method: "POST",
-      url: "/v1/chat/completions",
+      url: "/v1/messages",
       headers: {
         authorization: "Bearer gateway-token"
       },
       payload: {
-        model: "managed/anthropic/managed-model-v2",
+        model: "managed/anthropic-messages/managed-model-v2",
+        max_tokens: 32,
         messages: [{ role: "user", content: "hello" }]
       }
     });
 
-    expect(anthropicChatResponse.statusCode).toBe(200);
-    expect(anthropicChatResponse.json().choices[0].message.content).toBe("anthropic managed ok");
+    expect(anthropicMessagesResponse.statusCode).toBe(200);
+    expect(anthropicMessagesResponse.json().content[0].text).toBe("anthropic managed ok");
 
     const modelCapabilityResponse = await server.inject({
       method: "PATCH",
@@ -1276,7 +1278,7 @@ describe("admin providers integration", () => {
     await server.close();
   });
 
-  it("falls back to chat completions when provider model test finds unsupported responses", async () => {
+  it("does not fall back to Chat Completions when a Responses model test fails", async () => {
     const pool = mockAgent.get("https://admin-responses-fallback.example.com");
     pool
       .intercept({ path: "/v1/responses", method: "POST" })
@@ -1285,25 +1287,6 @@ describe("admin providers integration", () => {
           message: "not implemented"
         }
       });
-    pool
-      .intercept({ path: "/v1/chat/completions", method: "POST" })
-      .reply(200, {
-        id: "chatcmpl_admin_responses_fallback",
-        object: "chat.completion",
-        created: Math.floor(Date.now() / 1000),
-        model: "fallback-model",
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: "assistant",
-              content: "admin fallback ok"
-            },
-            finish_reason: "stop"
-          }
-        ]
-      });
-
     const config = loadConfig({
       override: {
         server: {
@@ -1358,7 +1341,7 @@ describe("admin providers integration", () => {
         {
           endpoint: {
             endpointKey: "default",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://admin-responses-fallback.example.com/v1"
           },
           models: [
@@ -1397,16 +1380,15 @@ describe("admin providers integration", () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
-      success: true,
+      success: false,
       provider_key: "responses-fallback",
       account_key: "default",
       model_key: "fallback-model",
       model_name: "fallback-model",
-      protocol: "chat_completions",
-      upstream_status: 200,
-      error_code: null,
-      error_message: null,
-      response_body: "admin fallback ok"
+      protocol: "openai-responses",
+      upstream_status: 500,
+      error_code: "provider_error",
+      error_message: "not implemented"
     });
 
     await server.close();
@@ -1557,7 +1539,7 @@ describe("admin providers integration", () => {
         {
           endpoint: {
             endpointKey: "default",
-            protocol: "openai",
+            protocol: "openai-responses",
             baseUrl: "https://existing.example.com/v1"
           },
           models: [
@@ -1592,7 +1574,7 @@ describe("admin providers integration", () => {
         api_key: "secret",
         endpoints: [
           {
-            protocol: "openai",
+            protocol: "openai-responses",
             base_url: "https://reserved-create.example.com/v1",
             custom_headers: {
               authorization: "Bearer should-not-persist"
@@ -1615,7 +1597,7 @@ describe("admin providers integration", () => {
       payload: {
         endpoints: [
           {
-            protocol: "openai",
+            protocol: "openai-responses",
             base_url: "https://existing.example.com/v2",
             custom_headers: {
               "x-api-key": "should-not-persist"
@@ -1636,7 +1618,7 @@ describe("admin providers integration", () => {
         authorization: "Bearer admin-token"
       },
       payload: {
-        protocol: "openai",
+        protocol: "openai-responses",
         base_url: "https://blocked.example.com/v1",
         custom_headers: {
           Authorization: "Bearer should-not-persist"
@@ -1779,11 +1761,11 @@ describe("admin providers integration", () => {
         display_name: "Multi Provider",
         endpoints: [
           {
-            protocol: "openai",
+            protocol: "openai-responses",
             base_url: "https://multi.example.com/v1"
           },
           {
-            protocol: "anthropic",
+            protocol: "anthropic-messages",
             base_url: "https://multi.example.com/anthropic"
           }
         ],
@@ -1810,7 +1792,7 @@ describe("admin providers integration", () => {
         display_name: "Multi Provider Edited",
         endpoints: [
           {
-            protocol: "openai",
+            protocol: "openai-responses",
             base_url: "https://multi.example.com/v2"
           }
         ]
@@ -1827,7 +1809,7 @@ describe("admin providers integration", () => {
     await server.close();
   });
 
-  it("expands all protocol providers into bundled openai and anthropic endpoints", async () => {
+  it("rejects the aggregate all protocol without persisting a provider", async () => {
     const pool = mockAgent.get("https://bundle.example.com");
 
     pool
@@ -1893,24 +1875,8 @@ describe("admin providers integration", () => {
       }
     });
 
-    expect(createResponse.statusCode).toBe(201);
-    expect(createResponse.json().endpoints).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          endpoint_key: "openai",
-          protocol: "openai",
-          protocol_bundle_key: "all"
-        }),
-        expect.objectContaining({
-          endpoint_key: "anthropic",
-          protocol: "anthropic",
-          protocol_bundle_key: "all"
-        })
-      ])
-    );
-    expect(createResponse.json().models).toEqual([
-      expect.objectContaining({ model_name: "shared-model" })
-    ]);
+    expect(createResponse.statusCode).toBe(400);
+    expect(repository.getProviderDetails("bundle")).toBeNull();
 
     await server.close();
   });
@@ -1997,7 +1963,7 @@ describe("admin providers integration", () => {
         display_name: "Custom Endpoint Key",
         endpoints: [{
           endpoint_key: "custom",
-          protocol: "openai",
+          protocol: "openai-responses",
           base_url: "https://shared-models.example.com/v1"
         }],
         api_key: "shared-secret"
@@ -2017,11 +1983,11 @@ describe("admin providers integration", () => {
         display_name: "Shared Models",
         endpoints: [
           {
-            protocol: "openai",
+            protocol: "openai-responses",
             base_url: "https://shared-models.example.com/v1"
           },
           {
-            protocol: "openai",
+            protocol: "openai-responses",
             base_url: "https://shared-models.example.com/alt"
           }
         ],
@@ -2135,7 +2101,7 @@ describe("admin providers integration", () => {
       payload: {
         provider_key: "anthropic-create",
         display_name: "Anthropic Create",
-        protocol: "anthropic",
+        protocol: "anthropic-messages",
         base_url: "https://anthropic-create.example.com/v1",
         website_url: "https://anthropic-create.example.com",
         api_key: "anthropic-secret"
@@ -2146,8 +2112,8 @@ describe("admin providers integration", () => {
     expect(createResponse.json().endpoints).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          endpoint_key: "anthropic",
-          protocol: "anthropic",
+          endpoint_key: "anthropic-messages",
+          protocol: "anthropic-messages",
           base_url: "https://anthropic-create.example.com/v1"
         })
       ])
@@ -2166,39 +2132,40 @@ describe("admin providers integration", () => {
       "claude-create"
     );
 
-    const chatResponse = await server.inject({
+    const messagesResponse = await server.inject({
       method: "POST",
-      url: "/v1/chat/completions",
+      url: "/v1/messages",
       headers: {
         authorization: "Bearer gateway-token"
       },
       payload: {
         model: "anthropic-create/claude-create",
+        max_tokens: 32,
         messages: [{ role: "user", content: "hello" }]
       }
     });
 
-    expect(chatResponse.statusCode).toBe(200);
-    expect(chatResponse.json().choices[0].message.content).toBe("anthropic create ok");
+    expect(messagesResponse.statusCode).toBe(200);
+    expect(messagesResponse.json().content[0].text).toBe("anthropic create ok");
 
     const protocolChangeResponse = await server.inject({
       method: "PATCH",
-      url: "/admin/api/providers/anthropic-create/endpoints/anthropic",
+      url: "/admin/api/providers/anthropic-create/endpoints/anthropic-messages",
       headers: {
         authorization: "Bearer admin-token"
       },
       payload: {
-        protocol: "openai"
+        protocol: "openai-responses"
       }
     });
     expect(protocolChangeResponse.statusCode).toBe(200);
     expect(protocolChangeResponse.json().endpoints).toEqual([
       expect.objectContaining({
-        endpoint_key: "openai",
-        protocol: "openai"
+        endpoint_key: "openai-responses",
+        protocol: "openai-responses"
       })
     ]);
-    expect(repository.getProviderEndpoint("anthropic-create", "anthropic")).toBeNull();
+    expect(repository.getProviderEndpoint("anthropic-create", "anthropic-messages")).toBeNull();
 
     await server.close();
   });
@@ -2263,7 +2230,7 @@ describe("admin providers integration", () => {
       payload: {
         provider_key: "relay-dual",
         display_name: "Relay Dual",
-        protocol: "openai",
+        protocol: "openai-responses",
         base_url: "https://relay-dual.example.com/v1",
         api_key: "relay-secret"
       }
@@ -2276,7 +2243,7 @@ describe("admin providers integration", () => {
       url: "/admin/api/providers/relay-dual/endpoints",
       headers: { authorization: "Bearer admin-token" },
       payload: {
-        protocol: "anthropic",
+        protocol: "anthropic-messages",
         base_url: "https://relay-dual.example.com/v1"
       }
     });
@@ -2285,13 +2252,13 @@ describe("admin providers integration", () => {
     expect(addAnthropicResponse.json().endpoints).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          endpoint_key: "openai",
-          protocol: "openai",
+          endpoint_key: "openai-responses",
+          protocol: "openai-responses",
           base_url: "https://relay-dual.example.com/v1"
         }),
         expect.objectContaining({
-          endpoint_key: "anthropic",
-          protocol: "anthropic",
+          endpoint_key: "anthropic-messages",
+          protocol: "anthropic-messages",
           base_url: "https://relay-dual.example.com/v1"
         })
       ])
@@ -2303,7 +2270,7 @@ describe("admin providers integration", () => {
       url: "/admin/api/providers/relay-dual/endpoints",
       headers: { authorization: "Bearer admin-token" },
       payload: {
-        protocol: "anthropic",
+        protocol: "anthropic-messages",
         base_url: "https://relay-dual.example.com/v1"
       }
     });

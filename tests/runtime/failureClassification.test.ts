@@ -1,135 +1,91 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  classifyFailureEvidence,
   classifyProviderFailure,
-  normalizeRuntimeStatusSettings
-} from "../../src/runtime/runtimeStatus.js";
+  type FailureEvidence
+} from "../../src/runtime/providerFailure.js";
+import { normalizeRuntimeStatusSettings } from "../../src/runtime/runtimeStatus.js";
 import { HttpError } from "../../src/utils/httpErrors.js";
-import { PROVIDER_AUTH_FAILED_CODE } from "../../src/utils/providerErrors.js";
 
-describe("classifyProviderFailure", () => {
-  it("classifies credential failures as auth", () => {
-    expect(
-      classifyProviderFailure(new HttpError(401, PROVIDER_AUTH_FAILED_CODE, "Invalid API key"))
-    ).toBe("auth");
-    expect(
-      classifyProviderFailure(new HttpError(403, PROVIDER_AUTH_FAILED_CODE, "Forbidden"))
-    ).toBe("auth");
-    // code 缺失时仍应按状态码判定
-    expect(classifyProviderFailure(new HttpError(401, "provider_error", "unauthorized"))).toBe(
-      "auth"
-    );
+const evidence = (input: Partial<FailureEvidence>): FailureEvidence => ({
+  protocol: "anthropic-messages",
+  operation: "messages",
+  message: "upstream request failed",
+  ...input
+});
+
+describe("structured provider failure classification", () => {
+  it("uses Account scope only for explicit invalid credential machine codes", () => {
+    expect(classifyFailureEvidence(evidence({ status_code: 401, provider_code: "invalid_api_key" })))
+      .toMatchObject({ kind: "authentication", scope: "account", confidence: "explicit-provider-code", retryable: false });
+    expect(classifyFailureEvidence(evidence({ status_code: 401 })))
+      .toMatchObject({ kind: "authentication", scope: "account-endpoint", confidence: "http-status", retryable: false });
   });
 
-  it("classifies HTML access blocks as transient endpoint failures", () => {
-    expect(
-      classifyProviderFailure(
-        new HttpError(
-          403,
-          "provider_access_blocked",
-          "Provider request returned HTML with status 403",
-          true
-        )
-      )
-    ).toBe("transient");
+  it("keeps generic 403 and group dispatch denial on Account-Endpoint", () => {
+    expect(classifyFailureEvidence(evidence({ status_code: 403 })))
+      .toMatchObject({ kind: "authorization", scope: "account-endpoint" });
+    expect(classifyFailureEvidence(evidence({ status_code: 403, provider_code: "group_access_denied" })))
+      .toMatchObject({ kind: "authorization", scope: "account-endpoint", confidence: "verified-profile" });
   });
 
-  it("classifies 402 as billing", () => {
-    expect(
-      classifyProviderFailure(new HttpError(402, "request_invalid", "Insufficient balance"))
-    ).toBe("billing");
+  it("attributes explicit billing evidence to Account", () => {
+    expect(classifyFailureEvidence(evidence({ status_code: 402, provider_code: "billing_hard_limit_reached" })))
+      .toMatchObject({ kind: "billing", scope: "account", retryable: false });
   });
 
-  it("classifies 429 as rate_limit", () => {
-    expect(
-      classifyProviderFailure(new HttpError(429, "provider_rate_limited", "Too many requests"))
-    ).toBe("rate_limit");
-    // 流式分支只带 message 时的兜底
-    expect(
-      classifyProviderFailure(
-        new HttpError(503, "provider_error", "Streaming responses request failed with status 429")
-      )
-    ).toBe("rate_limit");
+  it("attributes model errors and rate limits to Account-Endpoint-Model", () => {
+    expect(classifyFailureEvidence(evidence({ status_code: 404, provider_code: "model_not_found" })))
+      .toMatchObject({ kind: "model-unavailable", scope: "account-endpoint-model" });
+    expect(classifyFailureEvidence(evidence({ status_code: 429 })))
+      .toMatchObject({ kind: "rate-limit", scope: "account-endpoint-model", retryable: true });
   });
 
-  it("classifies 404 and 410 as model_unavailable", () => {
-    expect(
-      classifyProviderFailure(new HttpError(404, "provider_invalid_model", "model not found"))
-    ).toBe("model_unavailable");
-    expect(
-      classifyProviderFailure(new HttpError(410, "provider_error", "Gone"))
-    ).toBe("model_unavailable");
-  });
-
-  it("prefers statusCode over the generic provider_error code", () => {
-    // openaiCompatible.ts 的流式分支对所有非 429 4xx/5xx 都抛 code=provider_error，
-    // 只看 code 会把 410 误判成 transient。
-    const streaming410 = new HttpError(
-      410,
-      "provider_error",
-      "Streaming responses request failed with status 410"
-    );
-    expect(classifyProviderFailure(streaming410)).toBe("model_unavailable");
-
-    const streaming502 = new HttpError(
-      502,
-      "provider_error",
-      "Streaming responses request failed with status 502"
-    );
-    expect(classifyProviderFailure(streaming502)).toBe("upstream_error");
-  });
-
-  it("classifies upstream 5xx, gateway and HTTP timeout failures as model-scoped errors", () => {
-    for (const status of [500, 502, 503, 504, 520, 521, 522, 524, 530]) {
-      expect(
-        classifyProviderFailure(
-          new HttpError(status, "provider_error", `Streaming responses request failed with status ${status}`)
-        )
-      ).toBe("upstream_error");
-    }
-
-    expect(classifyProviderFailure(new HttpError(408, "provider_timeout", "timeout"))).toBe(
-      "upstream_error"
-    );
-    expect(
-      classifyProviderFailure(new HttpError(503, "provider_unreachable", "socket hang up"))
-    ).toBe("transient");
-  });
-
-  it("classifies request-shaped 4xx as client_error", () => {
-    for (const status of [400, 409, 413, 422]) {
-      expect(
-        classifyProviderFailure(new HttpError(status, "request_invalid", `failed with ${status}`))
-      ).toBe("client_error");
+  it("attributes DNS, TLS and connection failures to Endpoint", () => {
+    for (const transport_error of ["dns", "tls", "connection"] as const) {
+      expect(classifyFailureEvidence(evidence({ transport_error })))
+        .toMatchObject({ kind: "connectivity", scope: "endpoint", confidence: "transport", retryable: true });
     }
   });
 
-  it("treats unknown non-HTTP failures as transient", () => {
-    // undici 在迭代 SSE 时断流不会带 statusCode，本质仍是上游不稳
-    expect(classifyProviderFailure(new Error("stream disconnected before completion"))).toBe(
-      "transient"
-    );
-    expect(classifyProviderFailure(new Error("other side closed"))).toBe("transient");
-    expect(classifyProviderFailure(undefined)).toBe("transient");
-    expect(classifyProviderFailure(null)).toBe("transient");
+  it("keeps request validation and unknown evidence non-persistent", () => {
+    expect(classifyFailureEvidence(evidence({ status_code: 400 })))
+      .toMatchObject({ kind: "request-invalid", scope: "request", retryable: false });
+    expect(classifyFailureEvidence(evidence({})))
+      .toMatchObject({ kind: "unknown", scope: "unknown", confidence: "unknown" });
   });
 
-  it("recovers the status code from the message when statusCode is missing", () => {
-    expect(
-      classifyProviderFailure(new Error("Streaming responses request failed with status 502"))
-    ).toBe("upstream_error");
-    expect(
-      classifyProviderFailure(new Error("Streaming responses request failed with status 429"))
-    ).toBe("rate_limit");
+  it("preserves machine-readable evidence from HttpError details", () => {
+    const failure = classifyProviderFailure(new HttpError(401, "provider_error", "bad key", false, {
+      provider_code: "invalid_api_key",
+      provider_type: "authentication_error",
+      protocol: "openai-responses",
+      operation: "responses"
+    }));
+    expect(failure).toMatchObject({
+      kind: "authentication",
+      scope: "account",
+      evidence: {
+        status_code: 401,
+        provider_code: "invalid_api_key",
+        provider_type: "authentication_error",
+        protocol: "openai-responses",
+        operation: "responses",
+        message: "bad key"
+      }
+    });
+  });
+
+  it("does not widen scope from an undocumented message string", () => {
+    expect(classifyProviderFailure(new HttpError(403, "provider_error", "invalid api key")))
+      .toMatchObject({ scope: "account-endpoint", confidence: "http-status" });
   });
 });
 
 describe("normalizeRuntimeStatusSettings", () => {
   it("normalizes auth_disables_account", () => {
-    expect(
-      normalizeRuntimeStatusSettings({
-        auth_disables_account: false
-      }).auth_disables_account
-    ).toBe(false);
+    expect(normalizeRuntimeStatusSettings({ auth_disables_account: false }).auth_disables_account)
+      .toBe(false);
   });
 });

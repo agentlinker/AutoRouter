@@ -62,7 +62,7 @@ function createHarness(
       {
         endpoint: {
           endpointKey: "openai",
-          protocol: "openai",
+          protocol: "openai-chat-completions",
           baseUrl: "https://demo.example.com/v1",
           supportsStreaming: true,
           supportsTools: true,
@@ -93,7 +93,7 @@ function createHarness(
         ? [{
             endpoint: {
               endpointKey: "anthropic",
-              protocol: "anthropic" as const,
+              protocol: "anthropic-messages" as const,
               baseUrl: "https://demo.example.com/anthropic",
               supportsStreaming: true,
               supportsTools: true,
@@ -165,7 +165,7 @@ function createHarness(
         10,
         "normal",
         null,
-        snapshot.modelStatuses
+        snapshot.modelStatuses, "openai-chat-completions"
       );
       return { ok: true as const, decision, error: undefined };
     } catch (error) {
@@ -230,7 +230,7 @@ describe("cooling_down routing", () => {
     // 同一次请求内不污染整个 key。
     const live = harness.runtimeManager
       .getSnapshot()
-      .accounts.find((item) => item.id === "demo/openai/default");
+      .accounts.find((item) => item.id === "demo/default");
     expect(live?.available).toBe(true);
 
     expect((await harness.routeAfterReload("demo-model")).ok).toBe(false);
@@ -277,7 +277,7 @@ describe("cooling_down routing", () => {
     expect(routed.ok).toBe(true);
   });
 
-  it("keeps the same account and model schedulable on a sibling endpoint after a 5xx", async () => {
+  it("does not contaminate a sibling protocol after a 5xx or use it as cross-protocol fallback", async () => {
     const harness = createHarness(tempDir, { secondEndpoint: true });
 
     harness.service.recordFailure({
@@ -307,8 +307,7 @@ describe("cooling_down routing", () => {
     ).toBeNull();
 
     const routed = await harness.routeAfterReload("demo-model");
-    expect(routed.ok).toBe(true);
-    expect(routed.decision?.selected.endpoint.id).toBe("demo/anthropic");
+    expect(routed.ok).toBe(false);
   });
 
   it("keeps the same model on sibling accounts schedulable after a 5xx", async () => {
@@ -332,7 +331,7 @@ describe("cooling_down routing", () => {
 
     const routed = await harness.routeAfterReload("demo-model");
     expect(routed.ok).toBe(true);
-    expect(routed.decision?.selected.account.id).toBe("demo/openai/key-b");
+    expect(routed.decision?.selected.account.id).toBe("demo/key-b");
   });
 
   it("keeps account-model cooldown across model discovery sync", async () => {
@@ -447,7 +446,7 @@ describe("cooling_down routing", () => {
         10,
         "normal",
         null,
-        harness.runtimeManager.getSnapshot().modelStatuses
+        harness.runtimeManager.getSnapshot().modelStatuses, "openai-chat-completions"
       )
     ).toThrow(HttpError);
 
@@ -468,7 +467,7 @@ describe("cooling_down routing", () => {
         10,
         "normal",
         null,
-        harness.runtimeManager.getSnapshot().modelStatuses
+        harness.runtimeManager.getSnapshot().modelStatuses, "openai-chat-completions"
       )
     ).not.toThrow();
   });
@@ -638,11 +637,7 @@ describe("cooling_down routing", () => {
     expect(account?.runtimeStatus).toBe("normal");
     expect(account?.cooldownStrike).toBe(0);
     expect(account?.recentErrorCount).toBe(0);
-    expect(model?.runtimeStatus).toBe("normal");
-    expect(model?.recentErrorCount).toBe(0);
-    // 但要留痕，便于在 Admin 里看出这个节点老是拒绝请求
-    expect(model?.lastErrorCode).toBe("request_invalid");
-    expect(model?.lastErrorMessage).toBe("rejected with 422");
+    expect(model).toBeNull();
 
     expect((await harness.routeAfterReload("demo-model")).ok).toBe(true);
   });

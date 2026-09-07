@@ -79,7 +79,7 @@ describe("database migrations", () => {
     sqlite.close();
   });
 
-  it("marks historical openai and anthropic endpoints with matching config as an all bundle", () => {
+  it("migrates historical protocol bundles to separate explicit wire protocols", () => {
     const sqlite = new Database(":memory:");
     createLegacyProviderTables(sqlite);
     sqlite.exec(`
@@ -134,18 +134,20 @@ describe("database migrations", () => {
     runMigrations(sqlite);
 
     const rows = sqlite.prepare(`
-      SELECT protocol, protocol_bundle_key AS protocolBundleKey
+      SELECT protocol
       FROM managed_provider_endpoints
       ORDER BY protocol
-    `).all() as Array<{ protocol: string; protocolBundleKey: string | null }>;
+    `).all() as Array<{ protocol: string }>;
     expect(rows).toEqual([
-      { protocol: "anthropic", protocolBundleKey: "all" },
-      { protocol: "openai", protocolBundleKey: "all" }
+      { protocol: "anthropic-messages" },
+      { protocol: "openai-responses" }
     ]);
+    expect((sqlite.pragma("table_info(managed_provider_endpoints)") as Array<{ name: string }>)
+      .some((column) => column.name === "protocol_bundle_key")).toBe(false);
     sqlite.close();
   });
 
-  it("keeps duplicate historical protocols readable instead of creating a failing unique index", () => {
+  it("rejects duplicate historical protocols without silently deleting an Endpoint", () => {
     const sqlite = new Database(":memory:");
     createLegacyProviderTables(sqlite);
     sqlite.exec(`
@@ -191,7 +193,12 @@ describe("database migrations", () => {
         );
     `);
 
-    expect(() => runMigrations(sqlite)).not.toThrow();
+    expect(() => runMigrations(sqlite)).toThrow(/UNIQUE constraint failed/);
+    expect(sqlite.prepare("SELECT endpoint_key, protocol FROM managed_provider_endpoints ORDER BY id").all())
+      .toEqual([
+        { endpoint_key: "default", protocol: "openai" },
+        { endpoint_key: "alt", protocol: "openai" }
+      ]);
     const indexes = sqlite.prepare(`
       SELECT name
       FROM pragma_index_list('managed_provider_endpoints')
@@ -288,7 +295,7 @@ describe("database migrations", () => {
     sqlite.close();
   });
 
-  it("moves historical endpoint-scoped model errors into account-endpoint observations", () => {
+  it("clears ambiguous legacy OpenAI model errors after moving endpoint-scoped observations", () => {
     const sqlite = new Database(":memory:");
     runMigrations(sqlite);
     sqlite.exec(`
@@ -419,11 +426,11 @@ describe("database migrations", () => {
       accountId: 9,
       endpointId: 7,
       managedModelId: 11,
-      runtimeStatus: "cooling_down",
-      statusReason: "model_unavailable",
-      cooldownStrike: 2,
-      recentErrorCount: 3,
-      lastErrorCode: "provider_invalid_model"
+      runtimeStatus: "unknown",
+      statusReason: null,
+      cooldownStrike: 0,
+      recentErrorCount: 0,
+      lastErrorCode: null
     });
     sqlite.close();
   });
@@ -554,7 +561,7 @@ describe("database migrations", () => {
       ORDER BY endpoint_id
     `).all();
     expect(observations).toEqual([
-      { endpointId: 7, managedModelId: 11, lastSuccessAt: "2026-08-30T00:01:00.000Z" },
+      { endpointId: 7, managedModelId: 11, lastSuccessAt: null },
       { endpointId: 8, managedModelId: 11, lastSuccessAt: "2026-08-30T00:03:00.000Z" }
     ]);
 

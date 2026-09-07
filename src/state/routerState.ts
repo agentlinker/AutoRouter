@@ -57,6 +57,8 @@ export interface EndpointRuntimeState {
 
 export interface AccountRuntimeState {
   id: string;
+  /** Config account ids that route candidates may reference for this Provider-scoped identity. */
+  route_ids?: string[];
   endpoint_id: string;
   provider_key?: string;
   endpoint_key?: string;
@@ -79,6 +81,17 @@ export interface AccountRuntimeState {
   };
 }
 
+export interface AccountEndpointRuntimeState {
+  account_id: string;
+  endpoint_id: string;
+  enabled: boolean;
+  runtime_status: RuntimeStatus;
+  status_reason?: string | null;
+  status_message?: string | null;
+  status_cooldown_until?: string | null;
+  recent_error_count: number;
+}
+
 export interface RouterState {
   config: RouterConfig;
   logger: pino.Logger;
@@ -86,6 +99,7 @@ export interface RouterState {
   providers: ProviderRuntimeState[];
   endpoints: EndpointRuntimeState[];
   accounts: AccountRuntimeState[];
+  accountEndpoints?: AccountEndpointRuntimeState[];
   modelStatuses?: Record<string, ModelRuntimeStatusState>;
   runtimeStatusSettings?: import("../runtime/runtimeStatus.js").RuntimeStatusSettings;
   priceTable: PriceTable;
