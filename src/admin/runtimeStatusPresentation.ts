@@ -15,6 +15,8 @@ export function runtimeStatusLabel(status?: string | null) {
       return "错误冷却中";
     case "abnormal":
       return "失败过多";
+    case "unknown":
+      return "待验证（可尝试）";
     case "normal":
     case undefined:
     case null:
@@ -42,7 +44,7 @@ export function isCooldownActive(cooldownUntil?: string | null) {
  * again after cooldown unless marked permanent.
  */
 export function isRuntimeStatusSchedulable(input: RuntimeStatusInput) {
-  if (isRuntimeNormal(input.runtime_status)) {
+  if (isRuntimeNormal(input.runtime_status) || input.runtime_status === "unknown") {
     return true;
   }
   if (input.runtime_status === "disabled" || input.runtime_status === "abnormal") {
@@ -70,6 +72,9 @@ export function runtimeStatusBadgeClass(input: RuntimeStatusInput) {
 }
 
 export function runtimeStatusDisplayLabel(input: RuntimeStatusInput) {
+  if (input.runtime_status === "unknown") {
+    return "待验证（可尝试）";
+  }
   return isRuntimeStatusSchedulable(input) && !isRuntimeNormal(input.runtime_status)
     ? "可调度"
     : runtimeStatusLabel(input.runtime_status);
@@ -80,6 +85,9 @@ export function runtimeObservationDisplayLabel(
 ) {
   if (!input) {
     return "未知（可尝试）";
+  }
+  if (input.runtime_status === "unknown") {
+    return "未验证（可尝试）";
   }
   if (isRuntimeNormal(input.runtime_status)) {
     return input.last_success_at ? "可用" : "未验证（可尝试）";

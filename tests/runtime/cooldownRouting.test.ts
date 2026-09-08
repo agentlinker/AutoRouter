@@ -10,6 +10,7 @@ import { AppSettingsRepository } from "../../src/repositories/appSettingsReposit
 import { ManagedProviderRepository } from "../../src/repositories/managedProviderRepository.js";
 import { RouteTraceRepository } from "../../src/repositories/routeTraceRepository.js";
 import { selectRoute } from "../../src/routing/routeEngine.js";
+import { executeRoutedRequest } from "../../src/routing/executeRoutedRequest.js";
 import { StickySessionStore } from "../../src/routing/stickySession.js";
 import { RuntimeManager } from "../../src/runtime/runtimeManager.js";
 import { RuntimeStatusService } from "../../src/runtime/runtimeStatusService.js";
@@ -210,6 +211,42 @@ describe("cooling_down routing", () => {
     vi.useRealTimers();
     vi.unstubAllEnvs();
     rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("records a successful routed request for a Provider-scoped Account", async () => {
+    const harness = createHarness(tempDir);
+    const snapshot = harness.runtimeManager.getSnapshot();
+    const decision = selectRoute(
+      snapshot.config,
+      snapshot.modelCatalog,
+      snapshot.priceTable,
+      snapshot.platforms,
+      snapshot.providers,
+      snapshot.endpoints,
+      snapshot.accounts,
+      "demo-model",
+      false,
+      false,
+      10,
+      "normal",
+      null,
+      snapshot.modelStatuses,
+      "openai-chat-completions",
+      snapshot.accountEndpoints
+    );
+
+    expect(harness.managedProviders.getAccountEndpoint("demo", "default", "openai")).toBeNull();
+    await executeRoutedRequest({
+      state: snapshot,
+      runtimeStatusService: harness.service,
+      candidates: decision.ordered,
+      invoke: async () => ({ status: 200, body: { id: "success" } })
+    });
+
+    expect(harness.managedProviders.getAccountEndpoint("demo", "default", "openai"))
+      .toMatchObject({ runtimeStatus: "normal", lastSuccessAt: expect.any(String) });
+    expect(harness.managedProviders.getAccountEndpointModel("demo", "default", "openai", "demo-model"))
+      .toMatchObject({ runtimeStatus: "normal", lastSuccessAt: expect.any(String) });
   });
 
   it("cools only the failing account-model down on the first upstream 5xx", async () => {

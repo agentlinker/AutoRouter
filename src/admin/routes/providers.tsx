@@ -86,7 +86,6 @@ import { providerKeyPattern, suggestProviderKey } from "../../utils/providerKey.
 import { readSidebarCollapsed, writeSidebarCollapsed } from "../utils/sidebarCollapse.js";
 
 export const providerTokenStorageKey = "autorouter_admin_token";
-
 // Form 内部状态：custom_headers 是 key-value 数组
 interface ProviderFormData {
   provider_key: string;
