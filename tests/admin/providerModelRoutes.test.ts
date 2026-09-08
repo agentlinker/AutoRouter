@@ -186,4 +186,26 @@ describe("provider model routes", () => {
     expect(modelRouteSummary(provider, model).verified).toBe(2);
     expect(modelRouteStatus(provider, model).state).toBe("partial");
   });
+
+  it("shows migrated unknown protocol state as pending verification", () => {
+    const provider = providerWithObservations([
+      {
+        account_key: "account-1",
+        endpoint_key: "openai",
+        model_key: model.model_key,
+        runtime_status: "unknown",
+        last_success_at: null,
+        last_error_at: null
+      }
+    ]);
+    provider.accounts![0]!.runtime_status = "unknown";
+    provider.accounts![0]!.models![0]!.runtime_status = "unknown";
+    provider.models[0]!.runtime_status = "unknown";
+    provider.endpoints[0]!.runtime_status = "unknown";
+
+    const status = modelRouteStatus(provider, model);
+    expect(status.state).toBe("partial");
+    expect(status.tooltip).toContain("未验证（可尝试）");
+    expect(modelRouteSummary(provider, model).availableAccounts).toBe(1);
+  });
 });

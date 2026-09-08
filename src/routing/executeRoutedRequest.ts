@@ -57,6 +57,13 @@ function resolveModelKey(state: RuntimeSnapshot, candidate: RoutedCandidate): st
   return state.modelStatuses?.[candidate.modelId]?.model_key ?? candidate.modelId;
 }
 
+function resolveEndpointKey(candidate: RoutedCandidate): string {
+  const prefix = `${candidate.provider.id}/`;
+  return candidate.endpoint.id.startsWith(prefix)
+    ? candidate.endpoint.id.slice(prefix.length)
+    : candidate.endpoint.id;
+}
+
 /**
  * 构造 adapter 需要的 RouteTarget，凭证从 credentialStore 解析。
  * account 配置缺失时返回 null，由调用方计为失败并继续下一个候选。
@@ -112,7 +119,7 @@ function passesAccountGate(candidate: RoutedCandidate): boolean {
 }
 
 /**
- * 记录一次失败：错误计数、runtime status、auth 失败禁用 account。
+ * 记录一次失败及其结构化运行态归因。
  */
 function recordFailure(
   input: { state: RuntimeSnapshot; runtimeStatusService?: RuntimeStatusService },
@@ -122,13 +129,13 @@ function recordFailure(
   candidate.endpoint.recent_error_count += 1;
   candidate.account.recent_error_count += 1;
 
-  if (candidate.account.account_key && candidate.account.endpoint_key) {
+  if (candidate.account.account_key) {
     input.runtimeStatusService?.recordFailure({
       snapshot: input.state,
       providerKey: candidate.provider.id,
       modelKey: resolveModelKey(input.state, candidate),
       accountKey: candidate.account.account_key,
-      endpointKey: candidate.account.endpoint_key,
+      endpointKey: resolveEndpointKey(candidate),
       error
     });
   }
@@ -194,13 +201,13 @@ export async function executeRoutedRequest(
       });
       selected = candidate;
 
-      if (candidate.account.account_key && candidate.account.endpoint_key) {
+      if (candidate.account.account_key) {
         input.runtimeStatusService?.recordSuccess({
           snapshot: input.state,
           providerKey: candidate.provider.id,
           modelKey: resolveModelKey(input.state, candidate),
           accountKey: candidate.account.account_key,
-          endpointKey: candidate.account.endpoint_key
+          endpointKey: resolveEndpointKey(candidate)
         });
       }
       break;
@@ -300,13 +307,13 @@ export async function* streamRoutedRequest(
       });
       outcome.selected = candidate;
 
-      if (candidate.account.account_key && candidate.account.endpoint_key) {
+      if (candidate.account.account_key) {
         input.runtimeStatusService?.recordSuccess({
           snapshot: input.state,
           providerKey: candidate.provider.id,
           modelKey: resolveModelKey(input.state, candidate),
           accountKey: candidate.account.account_key,
-          endpointKey: candidate.account.endpoint_key
+          endpointKey: resolveEndpointKey(candidate)
         });
       }
       return;

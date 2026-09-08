@@ -14,6 +14,8 @@
 - 三条网关入口只调用匹配协议的原生 adapter；跨协议请求、响应和流转换已删除。
 - 结构化失败归因按 kind、scope、confidence、retryable 分派运行状态，并保留上游机器字段。
 - Trace、explain、Admin trace UI 已展示 required/actual protocol、operation 和失败归因。
+- `unknown` 运行态在模型列表和 Provider 模型路由状态中统一显示为待验证且可尝试，不再误报不可用。
+- 真实网关请求会按实际候选 Endpoint 即时回写 Account-Endpoint 与模型组合状态；Admin 页面由用户手动刷新读取最新状态。
 - 接口契约发生破坏性变化；迁移影响记录于 README、ADR 和 RELEASE_NOTES。
 
 ## 三、已知风险点

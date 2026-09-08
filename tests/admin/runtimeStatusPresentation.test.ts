@@ -60,6 +60,16 @@ describe("runtime status presentation", () => {
     })).toBe("冷却中");
   });
 
+  it("treats unknown runtime state as pending verification and schedulable", () => {
+    const status = { runtime_status: "unknown" };
+
+    expect(isRuntimeStatusSchedulable(status)).toBe(true);
+    expect(runtimeStatusBadgeClass(status)).toBe("badge success");
+    expect(runtimeStatusDisplayLabel(status)).toBe("待验证（可尝试）");
+    expect(runtimeObservationDisplayLabel(status)).toBe("未验证（可尝试）");
+    expect(isManualRecoveryRequired(status)).toBe(false);
+  });
+
   it("labels an expired cooldown error as historical", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-01T00:00:00Z"));
