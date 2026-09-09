@@ -77,6 +77,7 @@ import {
 import {
   endpointProtocolLabel,
   isAccountSchedulable,
+  modelConnectivityStatus,
   isProviderModelAvailable,
   modelRouteStatus,
   modelRouteSummary
@@ -961,8 +962,8 @@ export function ProviderDetailPage() {
           <div className="model-capability-header">
             <span>模型</span>
             <span title="可调度且可见此模型的账户数 / Provider 账户总数">可用账户</span>
-            <span title="存在成功或失败观测的路由数 / 可见账户与已启用 Endpoint 的组合数">
-              已验证路由
+            <span title="当前有成功记录且可调度的路由数 / 可见账户与已启用 Endpoint 的组合数">
+              可用路由
             </span>
             <span>启用</span>
             <span>路由状态</span>
@@ -988,7 +989,7 @@ export function ProviderDetailPage() {
                   {summary.availableAccounts}/{summary.accounts}
                 </span>
                 <span className="detail-table-text endpoint-protocol-cell">
-                  {summary.verified}/{summary.combinations}
+                  {summary.availableRoutes}/{summary.combinations}
                 </span>
                 <div className="detail-table-text provider-model-enabled-cell">
                   <SwitchControl
@@ -2529,7 +2530,7 @@ function ProviderConnectivityMatrix(props: {
 
   return (
     <div className="provider-connectivity">
-      <h3>协议连通性</h3>
+      <h3>账号协议连通性</h3>
       <div
         className="connectivity-grid"
         style={{ gridTemplateColumns: `minmax(120px, 1fr) repeat(${endpoints.length}, minmax(180px, 1fr))` }}
@@ -2585,6 +2586,7 @@ function ProviderConnectivityMatrix(props: {
           })
         ])}
       </div>
+      <h3 className="model-connectivity-heading">模型连通性</h3>
       {props.provider.models.map((model) => (
         <details key={model.model_key}>
           <summary>{model.model_name}</summary>
@@ -2606,12 +2608,15 @@ function ProviderConnectivityMatrix(props: {
                     item.endpoint_key === endpoint.endpoint_key &&
                     item.model_key === model.model_key
                   );
+                  const connectivity = visible
+                    ? modelConnectivityStatus(props.provider, model, account, endpoint)
+                    : { state: "unavailable" as const, label: "不可见" };
                   return (
                     <div
-                      className="connectivity-cell"
+                      className={`connectivity-cell model-connectivity-${connectivity.state}`}
                       key={`${account.account_key}-${endpoint.endpoint_key}`}
                     >
-                      <span>{visible ? runtimeObservationDisplayLabel(observation) : "不可见"}</span>
+                      <span>{connectivity.label}</span>
                       {visible ? (
                         <div className="inline-actions">
                           <button

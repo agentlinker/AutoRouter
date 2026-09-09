@@ -1226,6 +1226,10 @@ button:disabled {
   margin: 0;
 }
 
+.provider-connectivity .model-connectivity-heading {
+  margin-top: 10px;
+}
+
 .provider-connectivity details {
   border-top: 1px solid var(--line);
   padding-top: 10px;
@@ -1258,6 +1262,21 @@ button:disabled {
   justify-content: space-between;
   gap: 8px;
   min-width: max-content;
+}
+
+.connectivity-cell.model-connectivity-available {
+  background: rgba(52, 211, 153, 0.12);
+  box-shadow: inset 3px 0 0 var(--success);
+}
+
+.connectivity-cell.model-connectivity-pending {
+  background: rgba(245, 158, 11, 0.12);
+  box-shadow: inset 3px 0 0 var(--warning);
+}
+
+.connectivity-cell.model-connectivity-unavailable {
+  background: rgba(251, 113, 133, 0.12);
+  box-shadow: inset 3px 0 0 var(--danger);
 }
 
 .connectivity-cell > span,

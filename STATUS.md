@@ -16,6 +16,7 @@
 - Trace、explain、Admin trace UI 已展示 required/actual protocol、operation 和失败归因。
 - `unknown` 运行态在模型列表和 Provider 模型路由状态中统一显示为待验证且可尝试，不再误报不可用。
 - 真实网关请求会按实际候选 Endpoint 即时回写 Account-Endpoint 与模型组合状态；Admin 页面由用户手动刷新读取最新状态。
+- Provider 详情区分“账号协议连通性”和“模型连通性”；模型组合按可用、待验证、不可用显示不同背景色，模型列表统计改为可用路由。
 - 接口契约发生破坏性变化；迁移影响记录于 README、ADR 和 RELEASE_NOTES。
 
 ## 三、已知风险点

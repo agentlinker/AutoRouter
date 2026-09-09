@@ -12,6 +12,7 @@ import {
 } from "../runtimeStatusPresentation.js";
 
 export type ModelRouteState = "available" | "partial" | "unavailable";
+export type ModelConnectivityState = "available" | "pending" | "unavailable";
 
 type EndpointRouteState = "available" | "unknown" | "unavailable";
 type AccountEndpointModelObservation = ProviderDetails["account_endpoint_models"][number];
@@ -61,7 +62,7 @@ export function isProviderModelAvailable(model: {
 export function modelRouteSummary(provider: ProviderDetails, model: ProviderModel): {
   availableAccounts: number;
   accounts: number;
-  verified: number;
+  availableRoutes: number;
   combinations: number;
 } {
   const accounts = provider.accounts ?? [];
@@ -70,13 +71,9 @@ export function modelRouteSummary(provider: ProviderDetails, model: ProviderMode
     return accountModel ? [{ account, accountModel }] : [];
   });
   const enabledEndpoints = provider.endpoints.filter((endpoint) => endpoint.enabled);
-  const visibleAccountKeys = new Set(accountModels.map(({ account }) => account.account_key));
-  const verified = provider.account_endpoint_models.filter((observation) =>
-    observation.model_key === model.model_key &&
-    visibleAccountKeys.has(observation.account_key) &&
-    enabledEndpoints.some((endpoint) => endpoint.endpoint_key === observation.endpoint_key) &&
-    Boolean(observation.last_success_at || observation.last_error_at)
-  ).length;
+  const availableRoutes = accountModels.flatMap(({ account }) =>
+    enabledEndpoints.map((endpoint) => modelConnectivityStatus(provider, model, account, endpoint))
+  ).filter((status) => status.state === "available").length;
   return {
     availableAccounts:
       provider.enabled && isProviderModelAvailable(model)
@@ -85,8 +82,8 @@ export function modelRouteSummary(provider: ProviderDetails, model: ProviderMode
           ).length
         : 0,
     accounts: accounts.length,
-    verified,
-    combinations: visibleAccountKeys.size * enabledEndpoints.length
+    availableRoutes,
+    combinations: accountModels.length * enabledEndpoints.length
   };
 }
 
@@ -127,48 +124,49 @@ function findObservation(
   );
 }
 
-function endpointRouteState(
-  endpoint: ProviderDetails["endpoints"][number],
-  observation: AccountEndpointModelObservation | undefined,
-  unavailableReason: string | null
-): EndpointRouteState {
-  if (unavailableReason || !endpoint.enabled || !isRuntimeStatusSchedulable(endpoint)) {
-    return "unavailable";
-  }
-  if (!observation) {
-    return "unknown";
-  }
-  if (!isRuntimeStatusSchedulable(observation)) {
-    return "unavailable";
-  }
-  return observation.last_success_at ? "available" : "unknown";
+function findAccountEndpoint(
+  provider: ProviderDetails,
+  account: ProviderAccount,
+  endpointKey: string
+) {
+  return provider.account_endpoints.find((item) =>
+    item.account_key === account.account_key && item.endpoint_key === endpointKey
+  );
 }
 
-function endpointRouteLabel(
-  endpoint: ProviderDetails["endpoints"][number],
-  observation: AccountEndpointModelObservation | undefined,
-  unavailableReason: string | null,
-  state: EndpointRouteState
-): string {
+export function modelConnectivityStatus(
+  provider: ProviderDetails,
+  model: ProviderModel,
+  account: ProviderAccount,
+  endpoint: ProviderDetails["endpoints"][number]
+): { state: ModelConnectivityState; label: string } {
+  const unavailableReason = routeUnavailableReason(provider, model, account);
   if (unavailableReason) {
-    return unavailableReason;
+    return { state: "unavailable", label: unavailableReason };
   }
   if (!endpoint.enabled) {
-    return "Endpoint 已停用";
+    return { state: "unavailable", label: "Endpoint 已停用" };
   }
   if (!isRuntimeStatusSchedulable(endpoint)) {
-    return runtimeStatusDisplayLabel(endpoint);
+    return { state: "unavailable", label: runtimeStatusDisplayLabel(endpoint) };
   }
+  const relation = findAccountEndpoint(provider, account, endpoint.endpoint_key);
+  if (relation && !relation.enabled) {
+    return { state: "unavailable", label: "账号协议已停用" };
+  }
+  if (relation && !isRuntimeStatusSchedulable(relation)) {
+    return { state: "unavailable", label: runtimeStatusDisplayLabel(relation) };
+  }
+  const observation = findObservation(provider, account, model, endpoint.endpoint_key);
   if (!observation) {
-    return "未验证（可尝试）";
+    return { state: "pending", label: "未验证（可尝试）" };
   }
   if (!isRuntimeStatusSchedulable(observation)) {
-    return runtimeObservationDisplayLabel(observation);
+    return { state: "unavailable", label: runtimeObservationDisplayLabel(observation) };
   }
-  if (!observation.last_success_at) {
-    return "未验证（可尝试）";
-  }
-  return state === "available" ? "可用" : runtimeObservationDisplayLabel(observation);
+  return observation.last_success_at
+    ? { state: "available", label: "可用" }
+    : { state: "pending", label: runtimeObservationDisplayLabel(observation) };
 }
 
 function endpointRouteDetail(
@@ -199,17 +197,18 @@ export function modelRouteStatus(
       );
   const endpoints = provider.endpoints.filter((endpoint) => endpoint.enabled);
   const endpointStatuses = accounts.flatMap((routeAccount) => {
-    const unavailableReason = routeUnavailableReason(provider, model, routeAccount);
     return endpoints.map((endpoint) => {
       const observation = findObservation(provider, routeAccount, model, endpoint.endpoint_key);
-      const state = endpointRouteState(endpoint, observation, unavailableReason);
-      const label = endpointRouteLabel(endpoint, observation, unavailableReason, state);
+      const connectivity = modelConnectivityStatus(provider, model, routeAccount, endpoint);
+      const state: EndpointRouteState = connectivity.state === "pending"
+        ? "unknown"
+        : connectivity.state;
       return {
         state,
         detail: endpointRouteDetail(
           endpoint,
           observation,
-          label,
+          connectivity.label,
           account ? undefined : routeAccount.account_key
         )
       };

@@ -5,6 +5,7 @@ import type {
   ProviderModel
 } from "../../src/admin/api/providers.js";
 import {
+  modelConnectivityStatus,
   modelRouteStatus,
   modelRouteSummary
 } from "../../src/admin/utils/providerModelRoutes.js";
@@ -84,7 +85,7 @@ describe("provider model routes", () => {
     vi.useRealTimers();
   });
 
-  it("counts failed observations as verified routes", () => {
+  it("counts only successful combinations as available routes", () => {
     const provider = providerWithObservations([
       {
         account_key: "account-1",
@@ -105,7 +106,7 @@ describe("provider model routes", () => {
     expect(modelRouteSummary(provider, model)).toEqual({
       availableAccounts: 1,
       accounts: 1,
-      verified: 2,
+      availableRoutes: 1,
       combinations: 2
     });
   });
@@ -160,7 +161,7 @@ describe("provider model routes", () => {
     expect(modelRouteStatus(provider, model).state).toBe("unavailable");
   });
 
-  it("keeps expired failures verified but returns them to pending verification", () => {
+  it("keeps expired failures pending without counting them as available", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-02T00:00:00Z"));
 
@@ -183,7 +184,7 @@ describe("provider model routes", () => {
       }
     ]);
 
-    expect(modelRouteSummary(provider, model).verified).toBe(2);
+    expect(modelRouteSummary(provider, model).availableRoutes).toBe(0);
     expect(modelRouteStatus(provider, model).state).toBe("partial");
   });
 
@@ -207,5 +208,38 @@ describe("provider model routes", () => {
     expect(status.state).toBe("partial");
     expect(status.tooltip).toContain("未验证（可尝试）");
     expect(modelRouteSummary(provider, model).availableAccounts).toBe(1);
+    expect(modelRouteSummary(provider, model).availableRoutes).toBe(0);
+  });
+
+  it("distinguishes available, pending, and unavailable model connectivity", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-09T00:00:00Z"));
+    const provider = providerWithObservations([
+      {
+        account_key: "account-1",
+        endpoint_key: "openai",
+        model_key: model.model_key,
+        runtime_status: "normal",
+        last_success_at: "2026-09-08T00:00:00Z"
+      },
+      {
+        account_key: "account-1",
+        endpoint_key: "anthropic",
+        model_key: model.model_key,
+        runtime_status: "cooling_down",
+        status_cooldown_until: "2026-09-09T00:05:00Z",
+        last_error_at: "2026-09-09T00:00:00Z"
+      }
+    ]);
+    const account = provider.accounts![0]!;
+
+    expect(modelConnectivityStatus(provider, model, account, provider.endpoints[0]!))
+      .toMatchObject({ state: "available", label: "可用" });
+    expect(modelConnectivityStatus(provider, model, account, provider.endpoints[1]!))
+      .toMatchObject({ state: "unavailable", label: "冷却中" });
+
+    provider.account_endpoint_models = [];
+    expect(modelConnectivityStatus(provider, model, account, provider.endpoints[0]!))
+      .toMatchObject({ state: "pending", label: "未验证（可尝试）" });
   });
 });
