@@ -5,8 +5,9 @@ import type { SelectedRoute } from "./routeEngine.js";
 import type { RuntimeSnapshot } from "../runtime/runtimeTypes.js";
 import type { TraceAttempt, TraceCandidate } from "../trace/traceTypes.js";
 import { HttpError } from "../utils/httpErrors.js";
-import { classifyProviderFailure } from "../runtime/providerFailure.js";
+import { classifyProviderFailure, type StructuredProviderFailure } from "../runtime/providerFailure.js";
 import { wireProtocolSchema } from "../config/schema.js";
+import { activeRequestTracker } from "./activeRequests.js";
 
 /** `selectRoute` 返回的候选，已排序并带 runtime 对象引用 */
 export type RoutedCandidate = SelectedRoute & { score: number; sticky: boolean };
@@ -162,8 +163,21 @@ function failureTrace(error: unknown, candidate: RoutedCandidate) {
 }
 
 /**
+ * 判断失败后是否应跳过同 Endpoint 的其余 Key。
+ * Endpoint 连接故障不应把同一不可达地址的所有 Key 遍历一遍。
+ */
+function shouldSkipRemainingOnEndpoint(failure: StructuredProviderFailure): boolean {
+  return failure.scope === "endpoint" && failure.kind === "connectivity";
+}
+
+/**
  * 协议无关的非流式路由执行：按候选顺序尝试，任何上游失败都 fallback 到下一个。
  * `HttpError.retryable` 只描述同一候选是否可重试，不决定是否跨候选 fallback。
+ *
+ * 两阶段调度约束：
+ * - Endpoint 连接故障跳过同 Endpoint 其余 Key
+ * - 请求自身无效停止所有重试
+ * - 活跃请求计数在每次尝试前后 acquire/release
  */
 export async function executeRoutedRequest(
   input: RoutedExecutionInput
@@ -173,8 +187,13 @@ export async function executeRoutedRequest(
   let selected: RoutedCandidate | null = null;
   let response: ProviderResponse | null = null;
   let lastError: unknown;
+  /** 因连接故障被跳过的 endpoint id 集合 */
+  const skippedEndpoints = new Set<string>();
 
   for (const [index, candidate] of input.candidates.entries()) {
+    if (skippedEndpoints.has(candidate.endpoint.id)) {
+      continue;
+    }
     if (!passesAccountGate(candidate)) {
       continue;
     }
@@ -186,8 +205,10 @@ export async function executeRoutedRequest(
     }
 
     const attemptMetadata = input.attemptMetadata?.(candidate, target) ?? {};
-
     const attemptStartedAt = Date.now();
+
+    // 选择与占用必须原子完成：先 acquire 再 invoke
+    activeRequestTracker.acquire(candidate.account.id);
     try {
       response = await input.invoke(candidate, target);
       const latencyMs = Date.now() - attemptStartedAt;
@@ -215,6 +236,9 @@ export async function executeRoutedRequest(
       lastError = error;
       recordFailure(input, candidate, error);
 
+      const protocol = wireProtocolSchema.parse(candidate.platform.protocol);
+      const failure = classifyProviderFailure(error, { protocol });
+
       attempts.push({
         ...toTraceCandidate(candidate),
         status: "failed",
@@ -227,6 +251,13 @@ export async function executeRoutedRequest(
       if (index < input.candidates.length - 1) {
         fallbacks.push(toTraceCandidate(candidate));
       }
+
+      // Endpoint 连接故障：跳过同 Endpoint 其余 Key
+      if (shouldSkipRemainingOnEndpoint(failure)) {
+        skippedEndpoints.add(candidate.endpoint.id);
+      }
+    } finally {
+      activeRequestTracker.release(candidate.account.id);
     }
   }
 
@@ -259,6 +290,7 @@ export interface RoutedStreamEvent {
  * 就不能再 fallback（字节已在途），此时把失败信息挂到 outcome 上由调用方落 trace。
  *
  * 不直接写 reply，让调用方决定是透传还是转换后再写。
+ * 流式请求直到终止或取消才释放活跃请求计数。
  */
 export async function* streamRoutedRequest(
   input: RoutedStreamInput,
@@ -271,7 +303,12 @@ export async function* streamRoutedRequest(
     partialFailure: boolean;
   }
 ): AsyncGenerator<RoutedStreamEvent> {
+  const skippedEndpoints = new Set<string>();
+
   for (const [index, candidate] of input.candidates.entries()) {
+    if (skippedEndpoints.has(candidate.endpoint.id)) {
+      continue;
+    }
     if (!passesAccountGate(candidate)) {
       continue;
     }
@@ -286,6 +323,8 @@ export async function* streamRoutedRequest(
     let firstTokenMs: number | undefined;
     let yieldedForCandidate = false;
 
+    // 流式：从 acquire 到流终止才 release
+    activeRequestTracker.acquire(candidate.account.id);
     try {
       for await (const chunk of input.invokeStream(candidate, target)) {
         if (firstTokenMs === undefined) {
@@ -321,6 +360,9 @@ export async function* streamRoutedRequest(
       outcome.lastError = error;
       recordFailure(input, candidate, error);
 
+      const protocol = wireProtocolSchema.parse(candidate.platform.protocol);
+      const failure = classifyProviderFailure(error, { protocol });
+
       outcome.attempts.push({
         ...toTraceCandidate(candidate),
         status: "failed",
@@ -341,6 +383,12 @@ export async function* streamRoutedRequest(
       if (index < input.candidates.length - 1) {
         outcome.fallbacks.push(toTraceCandidate(candidate));
       }
+
+      if (shouldSkipRemainingOnEndpoint(failure)) {
+        skippedEndpoints.add(candidate.endpoint.id);
+      }
+    } finally {
+      activeRequestTracker.release(candidate.account.id);
     }
   }
 }

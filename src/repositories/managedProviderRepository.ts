@@ -668,7 +668,7 @@ export class ManagedProviderRepository {
            AND model.enabled = 1
           WHERE endpoint.provider_id = ${managedProvidersTable.id}
             AND endpoint.enabled = 1
-            AND (account.expires_at IS NULL OR account.expires_at > ${nowValue})
+            -- 到期时间只用于排序，不作为过滤条件
             AND CASE
               WHEN account.quota_json IS NULL OR json_valid(account.quota_json) = 0 THEN 1
               WHEN json_type(account.quota_json, '$.remaining_usd') IN ('integer', 'real')

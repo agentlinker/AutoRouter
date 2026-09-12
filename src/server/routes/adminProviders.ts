@@ -548,12 +548,7 @@ function serializeProviderDetails(details: ReturnType<ManagedProviderRepository[
     if (!account.enabled) {
       return false;
     }
-    if (account.expires_at) {
-      const expiresAt = Date.parse(account.expires_at);
-      if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
-        return false;
-      }
-    }
+    // 到期时间只用于排序提示，不作为可用性过滤条件
     if (
       account.quota &&
       typeof account.quota.remaining_usd === "number" &&

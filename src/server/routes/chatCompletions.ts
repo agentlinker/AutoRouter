@@ -62,7 +62,8 @@ export async function registerChatCompletionsRoute(
         sessionId ? state.stickySessions.get(sessionId) : null,
         state.modelStatuses ?? {},
         "openai-chat-completions",
-        state.accountEndpoints
+        state.accountEndpoints,
+        state.poolCursors
       );
     } catch (error) {
       recordRouteSelectionFailure(runtimeManager, error, {
@@ -214,7 +215,9 @@ export async function registerChatCompletionsRoute(
         state.traceStore.append({
           ...buildBaseTrace(),
           policy_hits: withPolicyHits(
-            ...(sessionId ? ["session_sticky"] : []),
+            ...(sessionId
+              ? [routeDecision.stickyHit ? "sticky_hit" : "session_present"]
+              : []),
             "stream_partial_failed"
           ),
           execution: {
@@ -264,7 +267,9 @@ export async function registerChatCompletionsRoute(
       state.traceStore.append({
         ...baseTrace,
         policy_hits: withPolicyHits(
-          ...(sessionId ? ["session_sticky"] : []),
+          ...(sessionId
+            ? [routeDecision.stickyHit ? "sticky_hit" : "session_present"]
+            : []),
           "fallback_chain"
         ),
         execution: {
@@ -305,7 +310,11 @@ export async function registerChatCompletionsRoute(
 
     state.traceStore.append({
       ...baseTrace,
-      policy_hits: withPolicyHits(...(sessionId ? ["session_sticky"] : [])),
+      policy_hits: withPolicyHits(
+        ...(sessionId
+          ? [routeDecision.stickyHit ? "sticky_hit" : "session_present"]
+          : [])
+      ),
       execution: {
         status: fallbackHistory.length > 0 ? "success_with_fallback" : "success",
         latency_ms: latencyMs,

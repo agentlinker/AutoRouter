@@ -5,6 +5,7 @@ import { DEFAULT_RUNTIME_STATUS_SETTINGS } from "./runtimeStatus.js";
 import type { RuntimeManagerLike, RuntimeSnapshot } from "./runtimeTypes.js";
 import { CredentialStore } from "./credentialStore.js";
 import { ModelCatalog } from "../catalog/modelCatalog.js";
+import { poolCursors } from "../routing/keyPool.js";
 
 export class RuntimeManager implements RuntimeManagerLike {
   private readonly projector: RuntimeConfigProjector;
@@ -32,7 +33,8 @@ export function createStaticRuntimeManager(state: RouterState): RuntimeManagerLi
     modelStatuses: state.modelStatuses ?? {},
     runtimeStatusSettings: state.runtimeStatusSettings ?? DEFAULT_RUNTIME_STATUS_SETTINGS,
     modelCatalog: new ModelCatalog(state.config),
-    credentialStore: new CredentialStore(new Map())
+    credentialStore: new CredentialStore(new Map()),
+    poolCursors
   };
 
   return {

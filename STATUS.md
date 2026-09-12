@@ -8,24 +8,26 @@
 
 ## 二、本次变更影响范围
 
-- 配置与 Admin 仅接受 `openai-responses`、`openai-chat-completions`、`anthropic-messages`。
-- 数据库事务迁移旧协议和 Endpoint key，不合成 Chat Completions Endpoint，并清除来源不明的旧 OpenAI 观测。
-- 新增 Account-Endpoint 状态、仓储、路由过滤、Admin API 和 UI 控件；Account identity 保持 Provider-scoped。
-- 三条网关入口只调用匹配协议的原生 adapter；跨协议请求、响应和流转换已删除。
-- 结构化失败归因按 kind、scope、confidence、retryable 分派运行状态，并保留上游机器字段。
-- Trace、explain、Admin trace UI 已展示 required/actual protocol、operation 和失败归因。
-- `unknown` 运行态在模型列表和 Provider 模型路由状态中统一显示为待验证且可尝试，不再误报不可用。
-- 真实网关请求会按实际候选 Endpoint 即时回写 Account-Endpoint 与模型组合状态；Admin 页面由用户手动刷新读取最新状态。
-- Provider 详情区分“账号协议连通性”和“模型连通性”；模型组合按可用、待验证、不可用显示不同背景色，模型列表统计改为可用路由。
-- 接口契约发生破坏性变化；迁移影响记录于 README、ADR 和 RELEASE_NOTES。
+- **移除 expiry 硬过滤**：projector、Admin 序列化、SQL 可用性统计均不再因 `expires_at` 已过而排除 Key；到期时间仅用于 Key 池内排序。
+- **两阶段调度**：`selectRoute` 先按 Provider 分组排序（priority 降序），组内按 Key 池策略（到期升序 → 最少活跃 → 轮询）选择凭证；sticky 命中置顶。Key 数量不影响跨 Provider 排序。
+- **活跃请求计数**：`ActiveRequestTracker` 进程内计数，选择与占用原子完成；流式/非流式均在 `finally` 释放。
+- **连接故障短路**：Endpoint 级连接故障跳过同 Endpoint 其余 Key，不再遍历不可达地址。
+- **Admin 四视图**：Provider 详情页改为 概览 / API Keys / 模型 / 设置 四个 Tab；API Keys 表支持点击展开协议状态（替代独立连通性大矩阵）。
+- **到期时间 tooltip**：统一文案"到期时间越早…不作为过滤条件…不填表示不过期"，列表、创建表单、编辑表单一致。
+- **统一可用性投影**：`projectAccountAvailability` / `projectProviderAvailability` 区分人工停用、待验证、部分可用、不可用。
+- **Trace 增强**：`session_sticky` 拆分为 `sticky_hit`（实际命中）和 `session_present`（有 session 无 sticky）；`selectRoute` 返回 `stickyHit`。
+- 新增 `src/routing/keyPool.ts`、`src/routing/activeRequests.ts`、`tests/routing/keyPool.test.ts`（11 个测试）。
+- 接口契约：`RuntimeSnapshot` 新增 `poolCursors` 字段；`selectRoute` 新增 `poolCursors` 参数和 `stickyHit` 返回值；`AccountRuntimeState` 新增 `expires_at`。
 
 ## 三、已知风险点
 
+- 同一上游共享预算不会因多个 Key 被重复展示为多份独立容量——当前只展示逐 Key 额度，不做求和。
+- sticky 为进程内 Map，无 TTL/持久化，重启丢失。
+- Admin 构建成功，但仍有单个压缩后资源块超过 500 kB 的既有构建警告。
 - 未记录的 relay message 字符串不会扩大 scope；需要稳定机器码后才能新增 provider profile。
-- MiMo SGP 独立入口未获官方资料确认，预设已移除，用户仍可显式创建自定义 Endpoint。
-- Admin 构建成功，但仍有单个压缩后资源块超过 500 kB 的既有构建警告，不影响本次功能。
-- 回滚必须恢复迁移前数据库备份和旧二进制。
 
 ## 四、下次最该做的事
 
-收集真实 relay 的稳定机器错误码，为高频 Provider 增加经过测试的精确 failure profile，避免长期停留在保守 scope。
+- 补充两阶段调度的集成测试（多 Key 轮换、并发最少活跃、sticky 优先于到期）。
+- 大型 Key 池的 UI 分页/筛选。
+- 收集真实 relay 的稳定机器错误码，为高频 Provider 增加精确 failure profile。

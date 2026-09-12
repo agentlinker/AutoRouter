@@ -109,7 +109,8 @@ export async function registerResponsesRoute(
         null,
         state.modelStatuses ?? {},
         "openai-responses",
-        state.accountEndpoints
+        state.accountEndpoints,
+        state.poolCursors
       );
     } catch (error) {
       recordRouteSelectionFailure(runtimeManager, error, {

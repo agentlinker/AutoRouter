@@ -34,12 +34,7 @@ export function isAccountSchedulable(account: ProviderAccount) {
   if (!account.enabled) {
     return false;
   }
-  if (account.expires_at) {
-    const expiresAt = Date.parse(account.expires_at);
-    if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
-      return false;
-    }
-  }
+  // 到期时间只用于 Key 池内排序，不作为过滤条件；实际过滤以凭证不能使用为准。
   if (
     account.quota &&
     typeof account.quota.remaining_usd === "number" &&
