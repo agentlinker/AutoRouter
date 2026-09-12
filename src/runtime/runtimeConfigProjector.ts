@@ -22,6 +22,7 @@ import {
 } from "./runtimeStatus.js";
 import type { AppSettingsRepository } from "../repositories/appSettingsRepository.js";
 import { accountModelStatusKey } from "../state/routerState.js";
+import { poolCursors } from "../routing/keyPool.js";
 
 export interface RuntimeProjectorOptions {
   baseConfig: RouterConfig;
@@ -320,14 +321,9 @@ export class RuntimeConfigProjector {
         account.status_message = bundle.credential.statusMessage ?? null;
         account.status_cooldown_until = bundle.credential.statusCooldownUntil ?? null;
 
-        if (bundle.credential.expiresAt) {
-          const expiresAt = Date.parse(bundle.credential.expiresAt);
-          if (Number.isFinite(expiresAt) && expiresAt <= now.getTime()) {
-            account.available = false;
-            account.disabled_reason = "account_expired";
-            account.disabled_message = "Account expired";
-          }
-        }
+        // 到期时间只参与 Key 池内排序，不作为过滤条件。
+        // 实际过滤以凭证不能使用为准（鉴权失败、余额耗尽等）。
+        account.expires_at = bundle.credential.expiresAt ?? null;
 
         const unavailable = accountUnavailableReason({
           runtimeStatus: accountStatus,
@@ -421,7 +417,8 @@ export class RuntimeConfigProjector {
       stickySessions: this.options.stickySessions,
       traceStore: this.options.traceStore,
       modelCatalog: new ModelCatalog(config),
-      credentialStore
+      credentialStore,
+      poolCursors
     };
   }
 }

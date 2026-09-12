@@ -307,7 +307,8 @@ describe("Anthropic Messages compatibility", () => {
     expect(trace?.request.stream).toBe(true);
     // session 不再因为 inject 不透传 header 而丢失
     expect(trace?.session_id).toBe("anthropic-session");
-    expect(trace?.policy_hits).toContain("session_sticky");
+    // 首次请求无 sticky 记录，标记为 session_present
+    expect(trace?.policy_hits).toContain("session_present");
     // selector 后缀被显式记录
     expect(trace?.request.requested_context_window).toBe(1_000_000);
     // usage 记账走通（inject 时代同样能记，但这里确认迁移后没丢）

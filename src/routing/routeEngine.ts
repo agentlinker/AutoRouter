@@ -20,6 +20,8 @@ import { accountModelStatusKey } from "../state/routerState.js";
 import { HttpError } from "../utils/httpErrors.js";
 import { modelFilterReason, resolveAccountExecutionGate } from "../runtime/runtimeStatus.js";
 import type { StickyRoute } from "./stickySession.js";
+import { selectKeyFromPool, type KeyPoolCandidate } from "./keyPool.js";
+import { activeRequestTracker } from "./activeRequests.js";
 
 export interface SelectedRoute {
   requestedModel: string;
@@ -317,12 +319,14 @@ export function selectRoute(
   stickyRoute: StickyRoute | null | undefined,
   modelStatuses: Record<string, ModelRuntimeStatusState>,
   requiredProtocol: WireProtocol,
-  accountEndpoints: AccountEndpointRuntimeState[] = []
+  accountEndpoints: AccountEndpointRuntimeState[] = [],
+  poolCursors: Map<string, string> = new Map()
 ): {
   selected: SelectedRoute;
   /**
-   * 已按 provider priority → score → candidateIndex 排好序的完整候选列表，
-   * 字段是 runtime 对象引用。调用方直接按此顺序做 fallback，无需再排序或反查。
+   * 已按两阶段调度排好序的完整候选列表：
+   * 先按 Provider 优先级分组，组内按 Key 池策略（到期升序 → 最少活跃 → 轮询）排序。
+   * sticky 命中时置顶。调用方直接按此顺序做 fallback。
    */
   ordered: Array<SelectedRoute & { score: number; sticky: boolean }>;
   requestedModel: string;
@@ -334,6 +338,8 @@ export function selectRoute(
   /** 命中候选中存在元数据缺失（context_window 未知）的情况，供 policy_hits 观测 */
   contextWindowUnknown: boolean;
   requiredProtocol: WireProtocol;
+  /** sticky 命中的候选 ID，供 trace 解释 */
+  stickyHit: boolean;
 } {
   const resolvedTarget = modelCatalog.resolveRequestTarget(routeId);
   if (!resolvedTarget) {
@@ -568,17 +574,114 @@ export function selectRoute(
     });
   }
 
-  passed.sort(compareRouteCandidateOrder);
+  // ── 两阶段调度 ──
+  // 阶段 1：按 Provider 分组，按 priority 排序（Key 数量不影响跨 Provider 排序）
+  // 阶段 2：组内按 Key 池策略排序（sticky 优先 → 到期升序 → 最少活跃 → 轮询）
+
+  // 分组：同一 Provider 的候选归为一组
+  const providerGroups = new Map<string, Array<SelectedRoute & { score: number; sticky: boolean }>>();
+  for (const candidate of passed) {
+    const group = providerGroups.get(candidate.provider.id);
+    if (group) {
+      group.push(candidate);
+    } else {
+      providerGroups.set(candidate.provider.id, [candidate]);
+    }
+  }
+
+  // 组间排序：priority 降序，同 priority 按组内最高分降序
+  const sortedGroups = Array.from(providerGroups.values()).sort((a, b) => {
+    const priorityA = a[0]?.provider.priority ?? 0;
+    const priorityB = b[0]?.provider.priority ?? 0;
+    const priorityDelta = priorityB - priorityA;
+    if (priorityDelta !== 0) {
+      return priorityDelta;
+    }
+    const maxScoreA = Math.max(...a.map((c) => c.score));
+    const maxScoreB = Math.max(...b.map((c) => c.score));
+    return maxScoreB - maxScoreA;
+  });
+
+  // 组内排序：sticky 优先，然后按 Key 池策略
+  const ordered: Array<SelectedRoute & { score: number; sticky: boolean }> = [];
+  let stickyHit = false;
+
+  for (const group of sortedGroups) {
+    if (group.length === 0) {
+      continue;
+    }
+
+    // sticky 命中：仍符合条件的 sticky Key 优先于到期排序
+    const stickyCandidate = group.find((c) => c.sticky);
+    if (stickyCandidate) {
+      stickyHit = true;
+      ordered.push(stickyCandidate);
+      // 同组其余候选按池策略排序
+      const remaining = group.filter((c) => !c.sticky);
+      appendPoolOrdered(remaining, ordered, poolCursors);
+    } else {
+      appendPoolOrdered(group, ordered, poolCursors);
+    }
+  }
 
   return {
-    selected: passed[0],
-    ordered: passed,
+    selected: ordered[0],
+    ordered,
     requestedModel: resolvedTarget.requested,
     normalizedModel: resolvedTarget.normalized,
     candidates: evaluations,
     filtered,
     requestedContextWindow: resolvedTarget.requestedContextWindow,
     contextWindowUnknown,
-    requiredProtocol
+    requiredProtocol,
+    stickyHit
   };
+}
+
+/**
+ * 按 Key 池策略（到期升序 → 最少活跃 → 轮询）排序并追加到 ordered 列表。
+ * 同一 account 的多个 candidate 保持相对顺序。
+ */
+function appendPoolOrdered(
+  group: Array<SelectedRoute & { score: number; sticky: boolean }>,
+  ordered: Array<SelectedRoute & { score: number; sticky: boolean }>,
+  poolCursors: Map<string, string>
+): void {
+  if (group.length <= 1) {
+    ordered.push(...group);
+    return;
+  }
+
+  // 按 account 去重（同一 account 可能有多个 candidate，但池选择按 account 维度）
+  const accountCandidates = new Map<string, KeyPoolCandidate>();
+  for (const candidate of group) {
+    if (!accountCandidates.has(candidate.account.id)) {
+      accountCandidates.set(candidate.account.id, {
+        account: candidate.account,
+        candidateIndex: candidate.candidateIndex
+      });
+    }
+  }
+
+  const poolKey = group[0]
+    ? `${group[0].provider.id}|${group[0].endpoint.id}|${group[0].modelId}`
+    : "unknown";
+  const selected = selectKeyFromPool({
+    candidates: Array.from(accountCandidates.values()),
+    activeCounts: activeRequestTracker.snapshot(),
+    poolCursors,
+    poolKey
+  });
+
+  if (!selected) {
+    ordered.push(...group);
+    return;
+  }
+
+  // 选中的 account 的候选排前面，其余按 candidateIndex 保持原序
+  const selectedAccountId = selected.account.id;
+  const selectedCandidates = group.filter((c) => c.account.id === selectedAccountId);
+  const otherCandidates = group.filter((c) => c.account.id !== selectedAccountId)
+    .sort((a, b) => a.candidateIndex - b.candidateIndex);
+  ordered.push(...selectedCandidates, ...otherCandidates);
 }

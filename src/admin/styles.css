@@ -981,6 +981,81 @@ button:disabled {
   margin-top: 6px;
 }
 
+.detail-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0;
+  margin-bottom: 18px;
+}
+
+.detail-tab {
+  padding: 8px 16px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.detail-tab:hover {
+  color: var(--ink);
+}
+
+.detail-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 500;
+}
+
+.account-row-clickable {
+  cursor: pointer;
+}
+
+.account-row-clickable:hover {
+  background: var(--surface-2);
+}
+
+.account-protocol-details {
+  padding: 10px 16px 14px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.account-protocol-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.account-protocol-row .protocol-label {
+  min-width: 160px;
+  font-weight: 500;
+  font-size: 13px;
+}
+
+.model-connectivity-details {
+  margin-top: 16px;
+}
+
+.model-connectivity-details summary {
+  cursor: pointer;
+  font-weight: 500;
+  padding: 8px 0;
+  color: var(--muted);
+}
+
+.model-connectivity-details summary:hover {
+  color: var(--ink);
+}
+
 .detail-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

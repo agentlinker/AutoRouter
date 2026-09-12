@@ -112,7 +112,8 @@ export async function registerAnthropicMessagesRoute(
         sessionId ? state.stickySessions.get(sessionId) : null,
         state.modelStatuses ?? {},
         "anthropic-messages",
-        state.accountEndpoints
+        state.accountEndpoints,
+        state.poolCursors
       );
     } catch (error) {
       recordRouteSelectionFailure(runtimeManager, error, {
@@ -283,7 +284,9 @@ export async function registerAnthropicMessagesRoute(
           "anthropic_inbound",
           "anthropic_native",
           "anthropic_native_stream",
-          ...(sessionId ? ["session_sticky"] : []),
+          ...(sessionId
+            ? [routeDecision.stickyHit ? "sticky_hit" : "session_present"]
+            : []),
           ...(streamOutcome.fallbacks.length > 0 ? ["fallback_chain"] : []),
           ...(streamOutcome.partialFailure ? ["stream_partial_failed"] : []),
           ...(routeDecision.contextWindowUnknown ? ["context_window_unknown"] : [])
@@ -355,7 +358,9 @@ export async function registerAnthropicMessagesRoute(
     const policyHits = [
       "anthropic_inbound",
       "anthropic_native",
-      ...(sessionId ? ["session_sticky"] : []),
+      ...(sessionId
+        ? [routeDecision.stickyHit ? "sticky_hit" : "session_present"]
+        : []),
       ...(outcome.fallbacks.length > 0 ? ["fallback_chain"] : []),
       ...(routeDecision.contextWindowUnknown ? ["context_window_unknown"] : [])
     ];

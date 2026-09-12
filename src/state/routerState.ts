@@ -74,6 +74,8 @@ export interface AccountRuntimeState {
   disabled_reason?: string;
   disabled_message?: string;
   recent_error_count: number;
+  /** 配置的到期时间，仅用于 Key 池内排序，不作为过滤条件 */
+  expires_at?: string | null;
   quota?: {
     monthly_usd_limit?: number;
     remaining_usd?: number;

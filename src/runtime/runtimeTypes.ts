@@ -33,6 +33,8 @@ export interface RuntimeSnapshot {
   traceStore: TraceStore;
   modelCatalog: ModelCatalog;
   credentialStore: CredentialStore;
+  /** Key 池轮询游标：poolKey → 上次选中的 accountId，进程内运行态 */
+  poolCursors: Map<string, string>;
 }
 
 export interface RuntimeManagerLike {

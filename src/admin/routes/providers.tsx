@@ -67,6 +67,7 @@ import { AppDialog } from "../components/Dialog.js";
 import { Sidebar } from "../components/Sidebar.js";
 import { providerKindLabel } from "../providerLabels.js";
 import {
+  EXPIRY_TOOLTIP_TEXT,
   isManualRecoveryRequired,
   runtimeStatusBadgeClass,
   runtimeStatusDetail,
@@ -786,6 +787,7 @@ export function ProviderDetailPage() {
     modelKey: string;
     endpointKey: string;
   } | null>(null);
+  const [detailTab, setDetailTab] = useState<"overview" | "keys" | "models" | "settings">("overview");
   const mutation = useMutation({
     mutationFn: async (action: "sync" | "toggle" | "delete") => {
       if (!provider) {
@@ -841,6 +843,18 @@ export function ProviderDetailPage() {
     return <NotFoundPanel title="Provider 不存在" />;
   }
 
+  const invalidateAll = () => {
+    void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
+    void queryClient.invalidateQueries({ queryKey: providerQueryKey(token, providerKey) });
+  };
+
+  const detailTabs = [
+    { key: "overview" as const, label: "概览" },
+    { key: "keys" as const, label: "API Keys" },
+    { key: "models" as const, label: "模型" },
+    { key: "settings" as const, label: "设置" }
+  ];
+
   return (
     <section className="page-panel detail-page">
       <div className="detail-header">
@@ -864,36 +878,112 @@ export function ProviderDetailPage() {
         </div>
       </div>
 
+      <nav className="detail-tabs" role="tablist" aria-label="Provider 详情视图">
+        {detailTabs.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            role="tab"
+            aria-selected={detailTab === tab.key}
+            className={`detail-tab${detailTab === tab.key ? " active" : ""}`}
+            onClick={() => setDetailTab(tab.key)}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </nav>
+
+      {detailTab === "overview" ? (
+        <ProviderOverviewTab
+          provider={provider}
+          mutation={mutation}
+        />
+      ) : null}
+
+      {detailTab === "keys" ? (
+        <ProviderAccountsPanel
+          token={token}
+          provider={provider}
+          onChanged={invalidateAll}
+          onTest={setTestSelection}
+        />
+      ) : null}
+
+      {detailTab === "models" ? (
+        <ProviderModelsTab
+          provider={provider}
+          modelMutation={modelMutation}
+          onTest={setTestSelection}
+          onChanged={invalidateAll}
+        />
+      ) : null}
+
+      {detailTab === "settings" ? (
+        <ProviderSettingsTab
+          provider={provider}
+          mutation={mutation}
+        />
+      ) : null}
+
+      {testSelection ? (
+        <ProviderModelTestDialog
+          token={token}
+          provider={provider}
+          initialSelection={testSelection}
+          onChanged={invalidateAll}
+          onClose={() => setTestSelection(null)}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+function ProviderOverviewTab(props: {
+  provider: ProviderDetails;
+  mutation: { isPending: boolean; mutate: (action: "sync" | "toggle" | "delete") => void };
+}) {
+  const { provider } = props;
+  const accounts = provider.accounts ?? [];
+  const schedulableCount = accounts.filter(isAccountSchedulable).length;
+
+  return (
+    <>
       <div className="detail-grid">
         <MetricCard label="模型数量" value={String(provider.models.length)} />
         <MetricCard
-          label="Accounts"
-          value={`${provider.available_account_count ?? 0}/${provider.account_count ?? provider.accounts?.length ?? 0}`}
+          label="API Keys"
+          value={`${schedulableCount}/${accounts.length}`}
+        />
+        <MetricCard
+          label="可用路由"
+          value={String(
+            provider.models.reduce(
+              (sum, model) => sum + modelRouteSummary(provider, model).availableRoutes,
+              0
+            )
+          )}
         />
       </div>
 
       <div className="panel detail-card">
-        <h3>基础信息</h3>
+        <h3>状态概览</h3>
         <dl>
           <dt>启用</dt>
           <dd>
             <SwitchControl
               checked={provider.enabled}
-              disabled={mutation.isPending}
+              disabled={props.mutation.isPending}
               label={`${provider.display_name} 启用开关`}
-              onChange={() => mutation.mutate("toggle")}
+              onChange={() => props.mutation.mutate("toggle")}
             />
           </dd>
           <dt>Provider 类型</dt>
           <dd>{providerKindLabel(provider.provider_kind)}</dd>
-          <dt>Accounts</dt>
+          <dt>来源优先级</dt>
+          <dd>{provider.priority ?? 0}</dd>
+          <dt>API Keys</dt>
           <dd>
-            {provider.account_count ?? provider.accounts?.length ?? 1} keys /
-            {" "}
-            {provider.available_account_count ??
-              provider.accounts?.filter(isAccountSchedulable).length ??
-              0}{" "}
-            available
+            {accounts.length} keys / {schedulableCount} 可调度
           </dd>
           <dt>官网地址</dt>
           <dd>
@@ -905,12 +995,6 @@ export function ProviderDetailPage() {
               "未填写"
             )}
           </dd>
-          <dt>模型目录</dt>
-          <dd>{provider.model_catalog_url || provider.latest_sync?.catalog_url || "未配置"}</dd>
-          <dt>添加时间</dt>
-          <dd>{formatDateTime(provider.created_at)}</dd>
-          <dt>修改时间</dt>
-          <dd>{formatDateTime(provider.updated_at)}</dd>
           <dt>最近同步</dt>
           <dd>
             {provider.latest_sync?.status ?? "暂无记录"}
@@ -918,166 +1002,201 @@ export function ProviderDetailPage() {
             {provider.latest_sync?.error_message ? ` · ${provider.latest_sync.error_message}` : ""}
           </dd>
         </dl>
-        <h3>协议配置</h3>
-        <div className="model-capability-table endpoint-table">
-          <div className="model-capability-header">
-            <span>协议</span>
-            <span>Base URL</span>
-            <span>状态</span>
-            <span>自定义 Headers</span>
-          </div>
-          {provider.endpoints.map((endpoint) => (
-            <div className="model-capability-row" key={endpoint.endpoint_key}>
-              <span className="detail-table-text endpoint-protocol-cell">
-                {protocolDisplayLabel(endpoint.protocol)}
-              </span>
-              <div className="model-name-cell">
-                <span className="detail-table-text endpoint-base-url-cell">{endpoint.base_url}</span>
-              </div>
-              <span
-                className={endpoint.enabled ? runtimeStatusBadgeClass(endpoint) : "badge warning"}
-                title={runtimeStatusDetail(endpoint)}
-              >
-                {endpoint.enabled ? runtimeStatusDisplayLabel(endpoint) : "已停用"}
-              </span>
-              <span className="detail-table-text endpoint-headers-cell">
-                {formatCustomHeaders(endpoint.custom_headers)}
-              </span>
-            </div>
-          ))}
+      </div>
+    </>
+  );
+}
+
+function ProviderModelsTab(props: {
+  provider: ProviderDetails;
+  modelMutation: {
+    isPending: boolean;
+    mutate: (input: {
+      model_key: string;
+      enabled?: boolean;
+      supports_streaming?: boolean;
+      supports_tools?: boolean;
+      supports_json_mode?: boolean;
+    }) => void;
+  };
+  onTest: (selection: { accountKey: string; modelKey: string; endpointKey: string }) => void;
+  onChanged: () => void;
+}) {
+  const { provider, modelMutation } = props;
+
+  return (
+    <div className="panel detail-card">
+      <h3>模型列表</h3>
+      <div className="model-capability-table provider-model-table provider-detail-model-table">
+        <div className="model-capability-header">
+          <span>模型</span>
+          <span title="可调度且可见此模型的账户数 / Provider 账户总数">可用账户</span>
+          <span title="当前有成功记录且可调度的路由数 / 可见账户与已启用 Endpoint 的组合数">
+            可用路由
+          </span>
+          <span>启用</span>
+          <span>路由状态</span>
+          <span>Streaming</span>
+          <span>Tools</span>
+          <span>JSON</span>
         </div>
-        <ProviderAccountsPanel
-          token={token}
+        {provider.models.map((model) => {
+          const summary = modelRouteSummary(provider, model);
+          const routeStatus = modelRouteStatus(provider, model);
+          const RouteStatusIcon =
+            routeStatus.state === "available"
+              ? CircleCheck
+              : routeStatus.state === "partial"
+                ? CircleAlert
+                : CircleX;
+          return (
+            <div className="model-capability-row" key={model.model_key}>
+              <div className="model-name-cell">
+                <strong title={model.model_name}>{model.model_name}</strong>
+              </div>
+              <span className="detail-table-text endpoint-protocol-cell">
+                {summary.availableAccounts}/{summary.accounts}
+              </span>
+              <span className="detail-table-text endpoint-protocol-cell">
+                {summary.availableRoutes}/{summary.combinations}
+              </span>
+              <div className="detail-table-text provider-model-enabled-cell">
+                <SwitchControl
+                  checked={model.enabled !== false}
+                  disabled={modelMutation.isPending}
+                  label={`${model.model_name} 启用开关`}
+                  onChange={(checked) =>
+                    modelMutation.mutate({
+                      model_key: model.model_key,
+                      enabled: checked
+                    })
+                  }
+                />
+              </div>
+              <div className="runtime-status-cell">
+                <span
+                  className={`provider-model-route-status ${routeStatus.state}`}
+                  title={routeStatus.tooltip}
+                  aria-label={routeStatus.tooltip}
+                >
+                  <RouteStatusIcon size={14} strokeWidth={2.5} aria-hidden="true" />
+                  {routeStatus.state === "available"
+                    ? "可用"
+                    : routeStatus.state === "partial"
+                      ? "部分可用/待验证"
+                      : "不可用"}
+                </span>
+              </div>
+              <CapabilityToggle
+                checked={model.supports_streaming}
+                disabled={modelMutation.isPending}
+                label="Streaming"
+                onChange={(checked) =>
+                  modelMutation.mutate({
+                    model_key: model.model_key,
+                    supports_streaming: checked
+                  })
+                }
+              />
+              <CapabilityToggle
+                checked={model.supports_tools}
+                disabled={modelMutation.isPending}
+                label="Tools"
+                onChange={(checked) =>
+                  modelMutation.mutate({
+                    model_key: model.model_key,
+                    supports_tools: checked
+                  })
+                }
+              />
+              <CapabilityToggle
+                checked={model.supports_json_mode}
+                disabled={modelMutation.isPending}
+                label="JSON"
+                onChange={(checked) =>
+                  modelMutation.mutate({
+                    model_key: model.model_key,
+                    supports_json_mode: checked
+                  })
+                }
+              />
+            </div>
+          );
+        })}
+      </div>
+      {/* 模型连通性：按 Key × 协议排列，收进展开项 */}
+      <details className="model-connectivity-details">
+        <summary>模型连通性（Key × 协议）</summary>
+        <ProviderConnectivityMatrix
+          token=""
           provider={provider}
-          onChanged={() => {
-            void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
-            void queryClient.invalidateQueries({ queryKey: providerQueryKey(token, providerKey) });
-          }}
+          onTest={props.onTest}
+          onChanged={props.onChanged}
         />
+      </details>
+    </div>
+  );
+}
+
+function ProviderSettingsTab(props: {
+  provider: ProviderDetails;
+  mutation: { isPending: boolean; mutate: (action: "sync" | "toggle" | "delete") => void };
+}) {
+  const { provider } = props;
+
+  return (
+    <div className="panel detail-card">
+      <h3>共享配置</h3>
+      <dl>
+        <dt>模型目录</dt>
+        <dd>{provider.model_catalog_url || provider.latest_sync?.catalog_url || "未配置"}</dd>
+        <dt>信任级别</dt>
+        <dd>{provider.trust_level}</dd>
+        <dt>隐私级别</dt>
+        <dd>{provider.privacy_level}</dd>
+        <dt>用量信任</dt>
+        <dd>{provider.usage_trust}</dd>
+        <dt>添加时间</dt>
+        <dd>{formatDateTime(provider.created_at)}</dd>
+        <dt>修改时间</dt>
+        <dd>{formatDateTime(provider.updated_at)}</dd>
+      </dl>
+
+      <h3>协议配置</h3>
+      <div className="model-capability-table endpoint-table">
+        <div className="model-capability-header">
+          <span>协议</span>
+          <span>Base URL</span>
+          <span>状态</span>
+          <span>自定义 Headers</span>
+        </div>
+        {provider.endpoints.map((endpoint) => (
+          <div className="model-capability-row" key={endpoint.endpoint_key}>
+            <span className="detail-table-text endpoint-protocol-cell">
+              {protocolDisplayLabel(endpoint.protocol)}
+            </span>
+            <div className="model-name-cell">
+              <span className="detail-table-text endpoint-base-url-cell">{endpoint.base_url}</span>
+            </div>
+            <span
+              className={endpoint.enabled ? runtimeStatusBadgeClass(endpoint) : "badge warning"}
+              title={runtimeStatusDetail(endpoint)}
+            >
+              {endpoint.enabled ? runtimeStatusDisplayLabel(endpoint) : "已停用"}
+            </span>
+            <span className="detail-table-text endpoint-headers-cell">
+              {formatCustomHeaders(endpoint.custom_headers)}
+            </span>
+          </div>
+        ))}
       </div>
 
-      <div className="panel detail-card">
-        <h3>模型列表</h3>
-        <div className="model-capability-table provider-model-table provider-detail-model-table">
-          <div className="model-capability-header">
-            <span>模型</span>
-            <span title="可调度且可见此模型的账户数 / Provider 账户总数">可用账户</span>
-            <span title="当前有成功记录且可调度的路由数 / 可见账户与已启用 Endpoint 的组合数">
-              可用路由
-            </span>
-            <span>启用</span>
-            <span>路由状态</span>
-            <span>Streaming</span>
-            <span>Tools</span>
-            <span>JSON</span>
-          </div>
-          {provider.models.map((model) => {
-            const summary = modelRouteSummary(provider, model);
-            const routeStatus = modelRouteStatus(provider, model);
-            const RouteStatusIcon =
-              routeStatus.state === "available"
-                ? CircleCheck
-                : routeStatus.state === "partial"
-                  ? CircleAlert
-                  : CircleX;
-            return (
-              <div className="model-capability-row" key={model.model_key}>
-                <div className="model-name-cell">
-                  <strong title={model.model_name}>{model.model_name}</strong>
-                </div>
-                <span className="detail-table-text endpoint-protocol-cell">
-                  {summary.availableAccounts}/{summary.accounts}
-                </span>
-                <span className="detail-table-text endpoint-protocol-cell">
-                  {summary.availableRoutes}/{summary.combinations}
-                </span>
-                <div className="detail-table-text provider-model-enabled-cell">
-                  <SwitchControl
-                    checked={model.enabled !== false}
-                    disabled={modelMutation.isPending}
-                    label={`${model.model_name} 启用开关`}
-                    onChange={(checked) =>
-                      modelMutation.mutate({
-                        model_key: model.model_key,
-                        enabled: checked
-                      })
-                    }
-                  />
-                </div>
-                <div className="runtime-status-cell">
-                  <span
-                    className={`provider-model-route-status ${routeStatus.state}`}
-                    title={routeStatus.tooltip}
-                    aria-label={routeStatus.tooltip}
-                  >
-                    <RouteStatusIcon size={14} strokeWidth={2.5} aria-hidden="true" />
-                    {routeStatus.state === "available"
-                      ? "可用"
-                      : routeStatus.state === "partial"
-                        ? "部分可用/待验证"
-                        : "不可用"}
-                  </span>
-                </div>
-                <CapabilityToggle
-                  checked={model.supports_streaming}
-                  disabled={modelMutation.isPending}
-                  label="Streaming"
-                  onChange={(checked) =>
-                    modelMutation.mutate({
-                      model_key: model.model_key,
-                      supports_streaming: checked
-                    })
-                  }
-                />
-                <CapabilityToggle
-                  checked={model.supports_tools}
-                  disabled={modelMutation.isPending}
-                  label="Tools"
-                  onChange={(checked) =>
-                    modelMutation.mutate({
-                      model_key: model.model_key,
-                      supports_tools: checked
-                    })
-                  }
-                />
-                <CapabilityToggle
-                  checked={model.supports_json_mode}
-                  disabled={modelMutation.isPending}
-                  label="JSON"
-                  onChange={(checked) =>
-                    modelMutation.mutate({
-                      model_key: model.model_key,
-                      supports_json_mode: checked
-                    })
-                  }
-                />
-              </div>
-            );
-          })}
-        </div>
-        <ProviderConnectivityMatrix
-          token={token}
-          provider={provider}
-          onTest={setTestSelection}
-          onChanged={() => {
-            void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
-            void queryClient.invalidateQueries({ queryKey: providerQueryKey(token, providerKey) });
-          }}
-        />
-      </div>
-      {testSelection ? (
-        <ProviderModelTestDialog
-          token={token}
-          provider={provider}
-          initialSelection={testSelection}
-          onChanged={() => {
-            void queryClient.invalidateQueries({ queryKey: providersQueryKey(token) });
-            void queryClient.invalidateQueries({ queryKey: providerQueryKey(token, providerKey) });
-          }}
-          onClose={() => setTestSelection(null)}
-        />
-      ) : null}
-    </section>
+      <h3>池策略说明</h3>
+      <p className="muted compact-note">
+        Key 池默认策略：到期时间越早越优先（仅排序，不过滤）；同到期时间选择最少活跃请求；同负载轮询。
+        到期时间 tooltip：{EXPIRY_TOOLTIP_TEXT}
+      </p>
+    </div>
   );
 }
 
@@ -1924,7 +2043,7 @@ function ProviderFormPage(props: {
                   />
                 </label>
                 <label className="field">
-                  <span>过期时间</span>
+                  <span title={EXPIRY_TOOLTIP_TEXT}>到期时间 ⓘ</span>
                   <input
                     type="datetime-local"
                     step="60"
@@ -1940,6 +2059,9 @@ function ProviderFormPage(props: {
                       }
                     }}
                   />
+                  <small className="muted" title={EXPIRY_TOOLTIP_TEXT}>
+                    仅用于排序，不作为过滤条件
+                  </small>
                 </label>
                 <label className="field">
                   <span>剩余额度 USD</span>
@@ -2931,9 +3053,11 @@ function ProviderAccountsPanel(props: {
   token: string;
   provider: ProviderDetails;
   onChanged: () => void;
+  onTest?: (selection: { accountKey: string; modelKey: string; endpointKey: string }) => void;
 }) {
   const accounts = props.provider.accounts ?? [];
   const [message, setMessage] = useState<{ text: string; mode?: "success" | "error" } | null>(null);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
 
   const toggleMutation = useMutation({
     mutationFn: async (input: { account_key: string; enabled: boolean }) =>
@@ -2976,73 +3100,174 @@ function ProviderAccountsPanel(props: {
   });
 
   return (
-    <>
+    <div className="panel detail-card">
       <h3>API Keys</h3>
+      <p className="muted compact-note">
+        点击任意 Key 行展开协议状态。到期时间：{EXPIRY_TOOLTIP_TEXT}
+      </p>
       <div className="model-capability-table provider-model-table provider-accounts-table">
         <div className="model-capability-header">
           <span>API Key</span>
           <span>启用</span>
-          <span>调度状态</span>
-          <span>过期时间</span>
+          <span>有效可用性</span>
+          <span title={EXPIRY_TOOLTIP_TEXT}>到期时间 ⓘ</span>
           <span>额度</span>
           <span>备注</span>
           <span>操作</span>
         </div>
         {accounts.map((account) => (
-          <div className="model-capability-row" key={account.account_key}>
-            <div className="model-name-cell">
-              <span className="detail-table-text">{account.key_hint ?? "hidden"}</span>
-            </div>
-            <div className="detail-table-text provider-model-enabled-cell">
-              <SwitchControl
-                checked={account.enabled}
-                disabled={toggleMutation.isPending}
-                label={`${account.account_key} 启用开关`}
-                onChange={(checked) =>
-                  toggleMutation.mutate({
-                    account_key: account.account_key,
-                    enabled: checked
-                  })
-                }
-              />
-            </div>
-            <span
-              className={`${runtimeStatusBadgeClass(account)} detail-status-badge`}
-              title={runtimeStatusDetail(account)}
-            >
-              {runtimeStatusDisplayLabel(account)}
-            </span>
-            <span className="detail-table-text">{account.expires_at ? formatDateTime(account.expires_at) : "未设置"}</span>
-            <span className="detail-table-text">{formatQuotaSummary(account.quota)}</span>
-            <span className="detail-table-text">{account.remark?.trim() || "未填写"}</span>
-            <select
-              className="account-action-select"
-              aria-label={`${account.account_key} 操作`}
-              disabled={toggleMutation.isPending || syncMutation.isPending || deleteMutation.isPending}
-              defaultValue=""
-              onChange={(event) => {
-                const action = event.currentTarget.value;
-                event.currentTarget.value = "";
-                if (action === "recover") {
-                  toggleMutation.mutate({ account_key: account.account_key, enabled: true });
-                }
-                if (action === "sync") {
-                  syncMutation.mutate(account.account_key);
-                }
-                if (action === "delete") {
-                  deleteMutation.mutate(account.account_key);
-                }
-              }}
-            >
-              <option value="" disabled>选择操作</option>
-              {isManualRecoveryRequired(account) ? <option value="recover">恢复调度</option> : null}
-              <option value="sync">同步模型</option>
-              <option value="delete" disabled={accounts.length <= 1}>删除</option>
-            </select>
-          </div>
+          <AccountRowWithProtocols
+            key={account.account_key}
+            account={account}
+            provider={props.provider}
+            expanded={expandedKey === account.account_key}
+            onToggleExpand={() =>
+              setExpandedKey((current) =>
+                current === account.account_key ? null : account.account_key
+              )
+            }
+            toggleMutation={toggleMutation}
+            syncMutation={syncMutation}
+            deleteMutation={deleteMutation}
+            accountCount={accounts.length}
+            onTest={props.onTest}
+          />
         ))}
       </div>
       {message ? <p className={`status ${message.mode ?? ""}`}>{message.text}</p> : null}
+    </div>
+  );
+}
+
+function AccountRowWithProtocols(props: {
+  account: NonNullable<ProviderDetails["accounts"]>[number];
+  provider: ProviderDetails;
+  expanded: boolean;
+  onToggleExpand: () => void;
+  toggleMutation: { isPending: boolean; mutate: (input: { account_key: string; enabled: boolean }) => void };
+  syncMutation: { isPending: boolean; mutate: (accountKey: string) => void };
+  deleteMutation: { isPending: boolean; mutate: (accountKey: string) => void };
+  accountCount: number;
+  onTest?: (selection: { accountKey: string; modelKey: string; endpointKey: string }) => void;
+}) {
+  const { account, provider, expanded } = props;
+  const endpoints = provider.endpoints;
+
+  return (
+    <>
+      <div
+        className="model-capability-row account-row-clickable"
+        onClick={props.onToggleExpand}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); props.onToggleExpand(); } }}
+        aria-expanded={expanded}
+      >
+        <div className="model-name-cell">
+          <span className="detail-table-text">
+            {expanded ? "▾ " : "▸ "}{account.key_hint ?? account.account_key}
+          </span>
+        </div>
+        <div className="detail-table-text provider-model-enabled-cell" onClick={(e) => e.stopPropagation()}>
+          <SwitchControl
+            checked={account.enabled}
+            disabled={props.toggleMutation.isPending}
+            label={`${account.account_key} 启用开关`}
+            onChange={(checked) =>
+              props.toggleMutation.mutate({
+                account_key: account.account_key,
+                enabled: checked
+              })
+            }
+          />
+        </div>
+        <span
+          className={`${runtimeStatusBadgeClass(account)} detail-status-badge`}
+          title={runtimeStatusDetail(account)}
+        >
+          {runtimeStatusDisplayLabel(account)}
+        </span>
+        <span className="detail-table-text" title={EXPIRY_TOOLTIP_TEXT}>
+          {account.expires_at ? formatDateTime(account.expires_at) : "未设置"}
+        </span>
+        <span className="detail-table-text">{formatQuotaSummary(account.quota)}</span>
+        <span className="detail-table-text">{account.remark?.trim() || "未填写"}</span>
+        <select
+          className="account-action-select"
+          aria-label={`${account.account_key} 操作`}
+          disabled={props.toggleMutation.isPending || props.syncMutation.isPending || props.deleteMutation.isPending}
+          defaultValue=""
+          onClick={(e) => e.stopPropagation()}
+          onChange={(event) => {
+            const action = event.currentTarget.value;
+            event.currentTarget.value = "";
+            if (action === "recover") {
+              props.toggleMutation.mutate({ account_key: account.account_key, enabled: true });
+            }
+            if (action === "sync") {
+              props.syncMutation.mutate(account.account_key);
+            }
+            if (action === "delete") {
+              props.deleteMutation.mutate(account.account_key);
+            }
+          }}
+        >
+          <option value="" disabled>选择操作</option>
+          {isManualRecoveryRequired(account) ? <option value="recover">恢复调度</option> : null}
+          <option value="sync">同步模型</option>
+          <option value="delete" disabled={props.accountCount <= 1}>删除</option>
+        </select>
+      </div>
+      {expanded ? (
+        <div className="account-protocol-details">
+          {endpoints.map((endpoint) => {
+            const relation = (provider.account_endpoints ?? []).find(
+              (item) =>
+                item.account_key === account.account_key &&
+                item.endpoint_key === endpoint.endpoint_key
+            );
+            const testModel = account.models?.find((m) => m.enabled !== false);
+            return (
+              <div className="account-protocol-row" key={endpoint.endpoint_key}>
+                <span className="protocol-label">{endpointProtocolLabel(endpoint.protocol)}</span>
+                <span
+                  className={relation?.enabled === false ? "badge warning" : runtimeStatusBadgeClass(relation ?? { runtime_status: "unknown" })}
+                  title={relation ? runtimeStatusDetail(relation) : "未验证（可尝试）"}
+                >
+                  {relation?.enabled === false
+                    ? "人工关闭"
+                    : relation
+                      ? runtimeStatusDisplayLabel(relation)
+                      : "未验证"}
+                </span>
+                <span className="muted compact-note">
+                  {relation?.last_success_at
+                    ? `最近成功: ${formatDateTime(relation.last_success_at)}`
+                    : relation?.last_error_at
+                      ? `最近失败: ${formatDateTime(relation.last_error_at)}${relation.last_error_code ? ` · ${relation.last_error_code}` : ""}`
+                      : "无观测"}
+                </span>
+                {props.onTest && testModel && relation?.enabled !== false ? (
+                  <button
+                    type="button"
+                    className="ghost-action small-action"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      props.onTest!({
+                        accountKey: account.account_key,
+                        modelKey: testModel.model_key,
+                        endpointKey: endpoint.endpoint_key
+                      });
+                    }}
+                  >
+                    <FlaskConical size={14} /> 测试
+                  </button>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
     </>
   );
 }
