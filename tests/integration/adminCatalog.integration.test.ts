@@ -34,7 +34,7 @@ describe("admin catalog integration", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("lists logical catalog records and reloads runtime after disabling an instance", async () => {
+  it.each(["catalog-model", "deepseek-v4-flash:0731"])("lists %s and reloads runtime after disabling an instance", async (modelName) => {
     const config = loadConfig({
       override: {
         server: {
@@ -92,9 +92,9 @@ describe("admin catalog integration", () => {
           },
           models: [
             {
-              modelKey: "catalog-provider/catalog-model",
-              providerModelId: "catalog-model",
-              modelName: "catalog-model",
+              modelKey: `catalog-provider/${modelName}`,
+              providerModelId: modelName,
+              modelName,
               contextWindow: 64_000,
               supportsStreaming: true,
               supportsTools: false,
@@ -122,7 +122,8 @@ describe("admin catalog integration", () => {
 
     expect(listResponse.statusCode).toBe(200);
     expect(listResponse.json().data[0]).toMatchObject({
-      logical_name: "catalog-model",
+      logical_name: modelName,
+      display_name: modelName,
       context_window: 64_000
     });
     expect(listResponse.json().data[0].instances).toHaveLength(1);
@@ -135,13 +136,13 @@ describe("admin catalog integration", () => {
 
     const patchResponse = await server.inject({
       method: "PATCH",
-      url: "/admin/api/catalog/models/catalog-model/instances",
+      url: `/admin/api/catalog/models/${encodeURIComponent(modelName)}/instances`,
       headers: {
         authorization: "Bearer admin-token"
       },
       payload: {
         provider_key: "catalog-provider",
-        model_key: "catalog-provider/catalog-model",
+        model_key: `catalog-provider/${modelName}`,
         enabled: false
       }
     });
@@ -159,7 +160,7 @@ describe("admin catalog integration", () => {
 
     expect(modelsResponse.statusCode).toBe(200);
     const listedModels = modelsResponse.json().data.map((item: { id: string }) => item.id);
-    expect(listedModels).not.toContain("catalog-model");
-    expect(listedModels).not.toContain("catalog-provider/catalog-model");
+    expect(listedModels).not.toContain(modelName);
+    expect(listedModels).not.toContain(`catalog-provider/${modelName}`);
   });
 });

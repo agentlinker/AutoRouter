@@ -134,6 +134,30 @@ describe("legacy logical name repair", () => {
     expect(aliasesOf("deepseek-v4-pro")).toContain("deepseek-v-4-pro");
   });
 
+  it.each([null, "DeepSeek Flash July"])("repairs a truncated tag while preserving custom display name %s", (displayName) => {
+    const providerId = insertProvider("ollama-official");
+    const logicalId = insertLogical("0731", "provider_derived");
+    if (displayName) {
+      sqlite.prepare("UPDATE logical_models SET display_name = ? WHERE id = ?").run(displayName, logicalId);
+    }
+    const modelId = insertModel({
+      providerId,
+      endpointId: null,
+      providerModelId: "deepseek-v4-flash:0731",
+      modelName: "0731",
+      logicalModelId: logicalId
+    });
+
+    runMigrations(sqlite);
+    runMigrations(sqlite);
+
+    expect(logicalNames()).toEqual(["deepseek-v4-flash:0731"]);
+    expect(sqlite.prepare("SELECT display_name FROM logical_models WHERE id = ?").get(logicalId))
+      .toEqual({ display_name: displayName ?? "deepseek-v4-flash:0731" });
+    expect(sqlite.prepare("SELECT model_name, provider_model_id FROM managed_models WHERE id = ?").get(modelId))
+      .toEqual({ model_name: "deepseek-v4-flash:0731", provider_model_id: "deepseek-v4-flash:0731" });
+  });
+
   it("keeps model_name aligned with the repaired logical name", () => {
     const providerId = insertProvider("relay-b");
     const endpointId = insertEndpoint(providerId, "default", "openai");
