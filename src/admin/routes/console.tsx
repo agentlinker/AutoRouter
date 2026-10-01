@@ -331,12 +331,10 @@ function TraceDetailPanel(props: {
                 <th>Provider</th>
                 <th>API Key</th>
                 <th>模型</th>
-                <th>Endpoint</th>
                 <th>协议</th>
                 <th>状态</th>
                 <th>原因</th>
                 <th>失败归因</th>
-                <th>实际上游 URL</th>
                 <th>流完整性</th>
                 <th>首字耗时</th>
                 <th>当次耗时</th>
@@ -352,9 +350,7 @@ function TraceDetailPanel(props: {
                     <td>{item.api_key}</td>
                     <td>
                       <strong>{item.model}</strong>
-                      {item.model_id ? <span className="table-subtext"><code>{item.model_id}</code></span> : null}
                     </td>
-                    <td><code>{item.endpoint}</code></td>
                     <td>{item.actual_protocol ?? item.required_protocol ?? "—"}</td>
                     <td>
                       <span className={routeOutcomeBadgeClass(item.status)}>
@@ -374,9 +370,6 @@ function TraceDetailPanel(props: {
                         : "—"}
                     </td>
                     <td>
-                      {item.actual_upstream_url ? <code>{item.actual_upstream_url}</code> : "—"}
-                    </td>
-                    <td>
                       {item.stream_completed === null
                         ? "—"
                         : item.stream_completed
@@ -390,7 +383,7 @@ function TraceDetailPanel(props: {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={14} className="muted">没有路由候选记录。</td>
+                  <td colSpan={12} className="muted">没有路由候选记录。</td>
                 </tr>
               )}
             </tbody>
@@ -717,7 +710,10 @@ export function TraceListPage() {
                     <td>{trace.selected_model ?? "未命中"}</td>
                     <td><TraceStatusBadge status={trace.status} /></td>
                     <td>{trace.policy_hits.join(", ") || "无策略命中"}</td>
-                    <td>{formatNumber(trace.latency_ms)} ms</td>
+                    <td>
+                      <span title="成功上游尝试的首字耗时，不含此前重试">首字 {formatLatency(trace.first_token_ms)}</span>
+                      <span className="table-subtext">总计 {formatLatency(trace.latency_ms)}</span>
+                    </td>
                     <td>{formatNumber(trace.total_tokens)}</td>
                     <td>
                       <Link to="/trace/$traceId" params={{ traceId: trace.trace_id }}>

@@ -84,6 +84,8 @@ export interface TraceRecord {
   selected_model: string | null;
   status: "success" | "success_with_fallback" | "failed";
   latency_ms: number;
+  /** First-token duration of the successful upstream attempt, excluding prior retries. */
+  first_token_ms: number | null;
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
