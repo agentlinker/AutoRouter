@@ -9,6 +9,8 @@
 ## 二、本次变更影响范围
 
 - Trace 展示：候选模型仅保留模型名，移除 Endpoint 与实际上游地址列；缺少尝试协议时显示请求协议。列表延迟分两行显示成功尝试首字耗时和整次请求总耗时。涉及管理端页面、类型、Trace 序列化及回归测试；管理接口新增可空的首字耗时字段。验证：31 个相关测试、类型检查及管理端构建通过。
+- 入站请求：新增 zstd、gzip、deflate body 解压，并向 Fastify 报告原始编码长度，修复 Codex Responses 压缩请求被 `FST_ERR_CTP_INVALID_CONTENT_LENGTH` 拒绝的问题；新增压缩请求集成测试。
+
 - **移除 expiry 硬过滤**：projector、Admin 序列化、SQL 可用性统计均不再因 `expires_at` 已过而排除 Key；到期时间仅用于 Key 池内排序。
 - **两阶段调度**：`selectRoute` 先按 Provider 分组排序（priority 降序），组内按 Key 池策略（到期升序 → 最少活跃 → 轮询）选择凭证；sticky 命中置顶。Key 数量不影响跨 Provider 排序。
 - **活跃请求计数**：`ActiveRequestTracker` 进程内计数，选择与占用原子完成；流式/非流式均在 `finally` 释放。

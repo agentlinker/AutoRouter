@@ -1,4 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import { createGunzip, createInflate, createZstdDecompress } from "node:zlib";
 import { ZodError } from "zod";
 
 import { registerExplainRoute } from "./routes/explain.js";
@@ -78,6 +79,32 @@ export async function createServer(
     logger: false,
     bodyLimit: initialState.config.server.body_limit_bytes,
     requestTimeout: initialState.config.server.request_timeout_ms
+  });
+
+  // Codex compresses Responses requests with zstd. Fastify's JSON parser checks
+  // the decompressed stream length against the wire Content-Length unless the
+  // pre-parser reports the original encoded length.
+  fastify.addHook("preParsing", async (request, _reply, payload) => {
+    const encoding = request.headers["content-encoding"]?.trim().toLowerCase();
+    const contentLength = Number(request.headers["content-length"]);
+    if (!encoding || !Number.isFinite(contentLength)) {
+      return payload;
+    }
+
+    const decompressor = encoding === "zstd"
+      ? createZstdDecompress()
+      : encoding === "gzip"
+        ? createGunzip()
+        : encoding === "deflate"
+          ? createInflate()
+          : undefined;
+    if (!decompressor) {
+      return payload;
+    }
+
+    const decoded = payload.pipe(decompressor);
+    (decoded as typeof decoded & { receivedEncodedLength?: number }).receivedEncodedLength = contentLength;
+    return decoded;
   });
 
   fastify.addHook("onRequest", async (request, reply) => {
