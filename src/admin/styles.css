@@ -2007,3 +2007,32 @@ button:disabled {
   max-width: 280px;
   overflow-wrap: anywhere;
 }
+
+.trace-failure-part {
+  display: block;
+  white-space: normal;
+}
+
+.trace-failure-part + .trace-failure-part {
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+.trace-failure-more {
+  margin-top: 4px;
+  padding: 0;
+  color: var(--accent);
+  background: transparent;
+  cursor: pointer;
+}
+
+.trace-failure-details {
+  max-height: 60vh;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.trace-failure-details p + p {
+  margin-top: 12px;
+}

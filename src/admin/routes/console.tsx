@@ -27,6 +27,7 @@ import {
   updateSettingsSection
 } from "../api/settings.js";
 import { AppDialog, type AppDialogTone } from "../components/Dialog.js";
+import { TraceFailureReason } from "../components/TraceFailureReason.js";
 import { getTokensOverview } from "../api/tokens.js";
 import {
   getTraceDetail,
@@ -333,9 +334,7 @@ function TraceDetailPanel(props: {
                 <th>模型</th>
                 <th>协议</th>
                 <th>状态</th>
-                <th>原因</th>
-                <th>失败归因</th>
-                <th>流完整性</th>
+                <th>失败原因</th>
                 <th>首字耗时</th>
                 <th>当次耗时</th>
                 <th>Score</th>
@@ -358,23 +357,7 @@ function TraceDetailPanel(props: {
                       </span>
                     </td>
                     <td className="route-outcome-reason">
-                      {item.reason ? item.reason : "—"}
-                    </td>
-                    <td>
-                      {item.failure_kind
-                        ? [
-                            `${item.failure_kind} · ${item.failure_scope ?? "unknown"} · ${item.failure_confidence ?? "unknown"}`,
-                            item.status_code ? `HTTP ${item.status_code}` : null,
-                            item.provider_code ?? item.provider_type
-                          ].filter(Boolean).join(" · ")
-                        : "—"}
-                    </td>
-                    <td>
-                      {item.stream_completed === null
-                        ? "—"
-                        : item.stream_completed
-                          ? `完整 · ${item.stream_terminal_event ?? "终止事件"}`
-                          : `未完成 · ${item.stream_terminal_event ?? "无终止事件"}`}
+                      <TraceFailureReason item={item} />
                     </td>
                     <td>{item.status === "success" || item.status === "failed" ? formatLatency(item.first_token_ms) : "—"}</td>
                     <td>{item.status === "success" || item.status === "failed" ? formatLatency(item.latency_ms) : "—"}</td>
@@ -383,7 +366,7 @@ function TraceDetailPanel(props: {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={12} className="muted">没有路由候选记录。</td>
+                  <td colSpan={10} className="muted">没有路由候选记录。</td>
                 </tr>
               )}
             </tbody>
@@ -690,7 +673,6 @@ export function TraceListPage() {
                 <th>请求模型</th>
                 <th>选中模型</th>
                 <th>状态</th>
-                <th>策略命中</th>
                 <th>延迟</th>
                 <th>Tokens</th>
                 <th>详情</th>
@@ -709,7 +691,6 @@ export function TraceListPage() {
                     </td>
                     <td>{trace.selected_model ?? "未命中"}</td>
                     <td><TraceStatusBadge status={trace.status} /></td>
-                    <td>{trace.policy_hits.join(", ") || "无策略命中"}</td>
                     <td>
                       <span title="成功上游尝试的首字耗时，不含此前重试">首字 {formatLatency(trace.first_token_ms)}</span>
                       <span className="table-subtext">总计 {formatLatency(trace.latency_ms)}</span>
@@ -724,7 +705,7 @@ export function TraceListPage() {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={10} className="muted">还没有 trace 记录。</td>
+                  <td colSpan={9} className="muted">还没有 trace 记录。</td>
                 </tr>
               )}
             </tbody>
