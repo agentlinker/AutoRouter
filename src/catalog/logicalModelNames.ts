@@ -8,7 +8,9 @@
  */
 export function toLogicalModelName(modelName: string): string {
   const trimmed = modelName.trim();
-  const basename = trimmed.split(/[/:]/).filter(Boolean).at(-1) ?? trimmed;
+  // 冒号是模型标签的一部分；只剥离已知协议前缀，不能把 model:tag 截成 tag。
+  const unprefixed = trimmed.replace(/^(?:openai|anthropic):/i, "");
+  const basename = unprefixed.split("/").filter(Boolean).at(-1) ?? unprefixed;
   return basename
     .replace(/[_\s]+/g, "-")
     .replace(/-+/g, "-")

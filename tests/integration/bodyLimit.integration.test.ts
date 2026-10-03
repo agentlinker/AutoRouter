@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { rmSync } from "node:fs";
+import { zstdCompressSync } from "node:zlib";
+import { MockAgent, setGlobalDispatcher } from "undici";
 
 import { buildProviderRegistry } from "../../src/catalog/providerRegistry.js";
 import { PriceTable } from "../../src/catalog/priceTable.js";
@@ -15,14 +17,51 @@ import { createLogger } from "../../src/utils/logger.js";
 
 describe("server body limit", () => {
   const traceDatabasePath = "/tmp/auto-router-body-limit-traces.db";
+  let upstream: MockAgent;
 
   beforeEach(() => {
     vi.stubEnv("AUTO_ROUTER_TOKEN", "test-token");
+    upstream = new MockAgent();
+    upstream.disableNetConnect();
+    setGlobalDispatcher(upstream);
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
     rmSync(traceDatabasePath, { force: true });
+    return upstream.close();
+  });
+
+  it("accepts zstd-compressed Responses requests", async () => {
+    upstream.get("https://example.com").intercept({ path: "/v1/responses", method: "POST" })
+      .reply(200, { id: "response", object: "response", output: [] });
+
+    const config = loadConfig({
+      override: {
+        trace: { directory: "/tmp/auto-router-body-limit-traces", log_prompts: false },
+        platforms: { openai: { protocol: "openai-responses" } },
+        providers: { demo: { display_name: "Demo", trust_level: "medium", privacy_level: "normal", usage_trust: "medium" } },
+        endpoints: { "demo-openai": { provider: "demo", platform: "openai", adapter: "openai_compatible", base_url: "https://example.com/v1" } },
+        accounts: { "demo-account": { endpoint: "demo-openai", account_type: "local_model" } },
+        models: { "demo-model": { endpoint: "demo-openai", model_name: "demo-model", context_window: 128000 } },
+        routes: { auto: { policy: "balanced", candidates: [{ account: "demo-account", model: "demo-model" }] } },
+        policies: { balanced: { min_trust_level: "low", fallback_enabled: true } }
+      }
+    });
+    const databaseClient = createDatabaseClient(":memory:");
+    const state: RouterState = {
+      config, logger: createLogger(), ...buildProviderRegistry(config),
+      priceTable: new PriceTable(config), adapters: new AdapterRegistry(),
+      stickySessions: new StickySessionStore(), traceStore: new TraceStore(new RouteTraceRepository(databaseClient.db))
+    };
+    const gateway = await createServer(state);
+    const payload = zstdCompressSync(Buffer.from(JSON.stringify({ model: "auto", input: "Hello" })));
+    const response = await gateway.inject({ method: "POST", url: "/v1/responses",
+      headers: { authorization: "Bearer test-token", "content-type": "application/json", "content-encoding": "zstd" },
+      payload });
+    expect(response.statusCode).toBe(200);
+    await gateway.close();
+    databaseClient.sqlite.close();
   });
 
   it("rejects oversized request bodies with HTTP 413 before routing", async () => {

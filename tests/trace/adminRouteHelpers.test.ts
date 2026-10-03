@@ -58,6 +58,53 @@ function traceWithSelectedAccountHash(): RouteTrace {
 }
 
 describe("serializeTrace", () => {
+  it("shows the request protocol for successful attempts without protocol metadata", () => {
+    const trace = traceWithSelectedAccountHash();
+    trace.request.required_protocol = "openai-responses";
+    trace.attempts = [{ ...trace.candidates[0]!, status: "success" }];
+
+    const result = serializeTrace(trace);
+
+    expect(result.route_items[0]?.required_protocol).toBe("openai-responses");
+    expect(result.route_items[0]?.actual_protocol).toBeNull();
+  });
+
+  it("preserves recorded attempt protocols", () => {
+    const trace = traceWithSelectedAccountHash();
+    trace.request.required_protocol = "openai-responses";
+    trace.attempts = [{
+      ...trace.candidates[0]!, status: "failed",
+      required_protocol: "anthropic-messages", actual_protocol: "anthropic-messages"
+    }];
+
+    expect(serializeTrace(trace).route_items[0]).toMatchObject({
+      required_protocol: "anthropic-messages", actual_protocol: "anthropic-messages"
+    });
+  });
+
+  it("exposes successful first-token latency independently of total and failed attempt latency", () => {
+    const trace = traceWithSelectedAccountHash();
+    trace.execution.latency_ms = 900;
+    trace.attempts = [
+      { ...trace.candidates[0]!, status: "failed", latency_ms: 200, first_token_ms: 100 },
+      { ...trace.candidates[0]!, status: "success", latency_ms: 700, first_token_ms: 0 }
+    ];
+
+    const result = serializeTrace(trace);
+
+    expect(result.first_token_ms).toBe(0);
+    expect(result.latency_ms).toBe(900);
+  });
+
+  it("keeps missing or unsuccessful first-token latency unknown", () => {
+    const trace = traceWithSelectedAccountHash();
+    expect(serializeTrace(trace).first_token_ms).toBeNull();
+    trace.attempts = [{ ...trace.candidates[0]!, status: "failed", first_token_ms: 30 }];
+    expect(serializeTrace(trace).first_token_ms).toBeNull();
+    trace.attempts = [{ ...trace.candidates[0]!, status: "success" }];
+    expect(serializeTrace(trace).first_token_ms).toBeNull();
+  });
+
   it("exposes provider api key hints for selected and candidate accounts", () => {
     const snapshot = {
       accounts: [
