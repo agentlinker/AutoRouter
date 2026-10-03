@@ -17,6 +17,7 @@ import {
   Lock,
   LogOut,
   Network,
+  Palette,
   Plus,
   RefreshCw,
   Route,
@@ -86,6 +87,7 @@ import {
 import { normalizeProviderModelTestSelection } from "../utils/providerModelTestSelection.js";
 import { providerKeyPattern, suggestProviderKey } from "../../utils/providerKey.js";
 import { readSidebarCollapsed, writeSidebarCollapsed } from "../utils/sidebarCollapse.js";
+import { applyTheme, readTheme, writeTheme, type ThemeId } from "../utils/theme.js";
 
 export const providerTokenStorageKey = "autorouter_admin_token";
 // Form 内部状态：custom_headers 是 key-value 数组
@@ -320,7 +322,12 @@ export function SwitchControl(props: {
 }
 
 export function getStoredToken() {
-  return localStorage.getItem(providerTokenStorageKey) ?? "";
+  try {
+    return localStorage.getItem(providerTokenStorageKey) ?? "";
+  } catch {
+    // 存储不可用时仍允许打开认证页并切换当前会话主题。
+    return "";
+  }
 }
 
 const defaultProviderListParams: ProviderListParams = {
@@ -437,9 +444,27 @@ export const navItems = [
   }
 ] as const;
 
+function ThemeToggle(props: { theme: ThemeId; onChange: (theme: ThemeId) => void }) {
+  return (
+    <label className="theme-toggle">
+      <Palette size={15} aria-hidden="true" />
+      <span>样式</span>
+      <select
+        aria-label="切换界面样式"
+        value={props.theme}
+        onChange={(event) => props.onChange(event.target.value as ThemeId)}
+      >
+        <option value="midnight">当前深色</option>
+        <option value="wise">Wise</option>
+      </select>
+    </label>
+  );
+}
+
 export function AdminRoot() {
   const [tokenInput, setTokenInput] = useState(getStoredToken);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [theme, setTheme] = useState<ThemeId>(readTheme);
   // 惰性初始化：localStorage 只在首次挂载时读一次
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed);
   const { token, saveToken, clearToken } = useAdminToken();
@@ -491,6 +516,12 @@ export function AdminRoot() {
     });
   }
 
+  function changeTheme(nextTheme: ThemeId) {
+    setTheme(nextTheme);
+    applyTheme(nextTheme);
+    writeTheme(nextTheme);
+  }
+
   if (!isAuthenticated) {
     return (
       <main className="auth-shell">
@@ -540,6 +571,7 @@ export function AdminRoot() {
             <p className={`status ${authError ? "error" : ""}`}>
               {authError ?? (providersQuery.isFetching ? "正在验证..." : "等待验证")}
             </p>
+            <ThemeToggle theme={theme} onChange={changeTheme} />
           </div>
         </section>
       </main>
@@ -561,6 +593,7 @@ export function AdminRoot() {
             <p>{activeNavItem.description}</p>
           </div>
           <div className="topbar-actions">
+            <ThemeToggle theme={theme} onChange={changeTheme} />
             <span className="badge success">
               <ShieldCheck size={13} />
               已验证

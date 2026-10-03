@@ -4,6 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AutoRouter Admin</title>
+    <script>
+      (() => {
+        try {
+          const theme = localStorage.getItem("autorouter_admin_theme");
+          document.documentElement.dataset.theme = theme === "wise" ? "wise" : "midnight";
+        } catch {
+          document.documentElement.dataset.theme = "midnight";
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

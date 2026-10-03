@@ -29,9 +29,12 @@ import {
   ProviderEditPage,
   ProviderListPage,
   ProviderNewPage,
-  providerTokenStorageKey
+  getStoredToken
 } from "./routes/providers.js";
+import { applyTheme, readTheme } from "./utils/theme.js";
 import "./styles.css";
+
+applyTheme(readTheme());
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -180,7 +183,7 @@ const router = createRouter({
   basepath: "/admin",
   context: {
     queryClient,
-    getToken: () => localStorage.getItem(providerTokenStorageKey) ?? ""
+    getToken: getStoredToken
   }
 });
 
